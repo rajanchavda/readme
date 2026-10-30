@@ -1,0 +1,53 @@
+name: Readme
+options:
+  bundleIdPrefix: com.rajanchavda
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+targets:
+  Readme:
+    type: application
+    platform: macOS
+    sources: [Readme]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rajanchavda.Readme
+        CODE_SIGN_ENTITLEMENTS: Readme/Readme.entitlements
+        ENABLE_APP_SANDBOX: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Readme
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books
+    info:
+      path: Readme/Info.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: EPUB Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Default
+            LSItemContentTypes: [org.idpf.epub-container]
+  ReadmeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [ReadmeTests]
+    dependencies:
+      - target: Readme
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rajanchavda.ReadmeTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Readme.app/Contents/MacOS/Readme"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  Readme:
+    build:
+      targets:
+        Readme: all
+        ReadmeTests: [test]
+    test:
+      targets: [ReadmeTests]
