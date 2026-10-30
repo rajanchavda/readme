@@ -1,0 +1,237 @@
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;1,400&display=swap');
+
+  #stage {
+    --desk: #3A332C; --page: #F5EFE2; --ink: #2B261F; --soft: #8A7C66; --spine: rgba(70,50,25,.32); --chrome: rgba(40,34,28,.72); --chrome-ink: #F5EFE2;
+    --size: 18px;
+    position: relative; height: 620px; background: var(--desk); border-radius: 10px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; padding: 34px; box-sizing: border-box;
+    transition: background .2s ease-out; outline: none; cursor: default;
+  }
+  #stage[data-theme="sepia"] { --desk: #4A3A28; --page: #EFE0C4; --ink: #33291B; --soft: #8D7650; --spine: rgba(80,50,15,.36); }
+  #stage[data-theme="night"] { --desk: #17181A; --page: #26272A; --ink: #BDB9AF; --soft: #6F6D66; --spine: rgba(0,0,0,.45); --chrome: rgba(70,70,74,.72); --chrome-ink: #E6E3DB; }
+  #stage:fullscreen { height: 100vh; border-radius: 0; padding: 3vh 3vw; --size: 24px; }
+  #stage:fullscreen .book { max-width: 1500px; }
+  #stage:fullscreen:not(.awake) { cursor: none; }
+
+  .book { position: relative; width: 100%; max-width: 980px; height: 100%; perspective: 2400px; }
+  #stage.single .book { max-width: 560px; }
+
+  .pg {
+    position: absolute; top: 0; bottom: 0; box-sizing: border-box; background: var(--page); color: var(--ink);
+    font-family: 'EB Garamond', Georgia, serif; font-size: var(--size); line-height: 1.5;
+    padding: 40px 52px 28px; display: flex; flex-direction: column; overflow: hidden;
+    transition: background .2s ease-out, color .2s ease-out;
+  }
+  .pg.l { left: 0; width: 50%; box-shadow: inset -26px 0 26px -20px var(--spine); border-radius: 3px 0 0 3px; }
+  .pg.r { left: 50%; width: 50%; box-shadow: inset 26px 0 26px -20px var(--spine); border-radius: 0 3px 3px 0; }
+  #stage.single .pg.base.l { width: 100%; box-shadow: none; border-radius: 3px; }
+  #stage.single .pg.base.r { display: none; }
+  .pg .t { text-align: center; font-size: 11px; letter-spacing: .18em; color: var(--soft); margin-bottom: 18px; }
+  .pg .txt { flex: 1; min-height: 0; overflow: hidden; text-align: justify; hyphens: auto; }
+  .pg .txt p { margin: 0; text-indent: 1.2em; }
+  .pg .txt p:first-child { text-indent: 0; }
+  .pg .n { text-align: center; font-size: 13px; color: var(--soft); margin-top: 12px; }
+
+  /* The turning page is a chain of thin strips, each hinged on the last, so it can bend. */
+  .cast { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: linear-gradient(90deg, transparent 18%, rgba(0,0,0,.2) 50%, transparent 82%); }
+  #stage.single .cast { display: none; }
+  .leaf { position: absolute; top: 0; transform-style: preserve-3d; }
+  .strip { position: absolute; top: 0; height: 100%; transform-origin: 0 50%; transform-style: preserve-3d; }
+  .face { position: absolute; top: 0; left: 0; height: 100%; overflow: hidden; -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+  .face.back { transform: rotateY(180deg); }
+  .face .pg { top: 0; bottom: auto; }
+  .shade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+
+  .bar { position: absolute; left: 0; bottom: 0; height: 1px; background: var(--soft); transition: width .2s ease-out; }
+
+  .chrome {
+    position: absolute; z-index: 5; top: 12px; left: 50%; transform: translate(-50%, -6px); opacity: 0;
+    display: flex; gap: 4px; align-items: center; padding: 5px 8px; border-radius: 9px;
+    background: var(--chrome); color: var(--chrome-ink); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    font: 12px -apple-system, system-ui, sans-serif; white-space: nowrap;
+    transition: opacity .2s ease-out, transform .2s ease-out; pointer-events: none;
+  }
+  #stage.awake .chrome { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+  .chrome button { all: unset; cursor: pointer; padding: 3px 9px; border-radius: 6px; }
+  .chrome button:hover { background: rgba(255,255,255,.14); }
+  .chrome button.on { background: rgba(255,255,255,.22); }
+  .chrome .left { opacity: .7; padding: 0 9px; }
+
+  .hint { font-size: .85rem; color: var(--text-secondary); margin-top: .75rem; }
+</style>
+
+<h2>Open Book, now with a page curl and fullscreen</h2>
+<p class="subtitle">Turn pages with the arrow keys, space, or by clicking the page edges. Press F for fullscreen, and F or Esc to leave.</p>
+
+<div id="stage" tabindex="0" data-theme="paper">
+  <div class="book" id="book">
+    <div class="pg base l" id="L"></div>
+    <div class="pg base r" id="R"></div>
+    <div class="cast" id="cast"></div>
+  </div>
+  <div class="chrome" id="chrome">
+    <button data-t="paper" class="on">Paper</button>
+    <button data-t="sepia">Sepia</button>
+    <button data-t="night">Night</button>
+    <span class="left">23 min left in chapter</span>
+    <button id="narrow">Narrow window</button>
+    <button id="full">Fullscreen</button>
+  </div>
+  <div class="bar" id="bar"></div>
+</div>
+<p class="hint">Only four pages of text are loaded here, so you can turn forward once and back again.</p>
+
+<script>
+(function () {
+  var pages = [
+    "<p>Call me Ishmael. Some years ago&mdash;never mind how long precisely&mdash;having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; whenever it is a damp, drizzly November in my soul; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people&rsquo;s hats off&mdash;then, I account it high time to get to sea as soon as I can.</p>",
+    "<p>This is my substitute for pistol and ball. With a philosophical flourish Cato throws himself upon his sword; I quietly take to the ship. There is nothing surprising in this. If they but knew it, almost all men in their degree, some time or other, cherish very nearly the same feelings towards the ocean with me.</p><p>There now is your insular city of the Manhattoes, belted round by wharves as Indian isles by coral reefs&mdash;commerce surrounds it with her surf. Right and left, the streets take you waterward. Its extreme downtown is the battery, where that noble mole is washed by waves, and cooled by breezes, which a few hours previous were out of sight of land. Look at the crowds of water-gazers there.</p>",
+    "<p>Circumambulate the city of a dreamy Sabbath afternoon. Go from Corlears Hook to Coenties Slip, and from thence, by Whitehall, northward. What do you see?&mdash;Posted like silent sentinels all around the town, stand thousands upon thousands of mortal men fixed in ocean reveries. Some leaning against the spiles; some seated upon the pier-heads; some looking over the bulwarks of ships from China; some high aloft in the rigging, as if striving to get a still better seaward peep. But these are all landsmen; of week days pent up in lath and plaster&mdash;tied to counters, nailed to benches, clinched to desks.</p>",
+    "<p>How then is this? Are the green fields gone? What do they here?</p><p>But look! here come more crowds, pacing straight for the water, and seemingly bound for a dive. Strange! Nothing will content them but the extremest limit of the land; loitering under the shady lee of yonder warehouses will not suffice. No. They must get just as nigh the water as they possibly can without falling in. And there they stand&mdash;miles of them&mdash;leagues. Inlanders all, they come from lanes and alleys, streets and avenues&mdash;north, east, south, and west. Yet here they all unite.</p>"
+  ];
+  var DURATION = 520, STRIPS = 28, BEND = 34;
+  var stage = document.getElementById('stage'), book = document.getElementById('book');
+  var L = document.getElementById('L'), R = document.getElementById('R'), cast = document.getElementById('cast');
+  var i = 0, sleep, active = null;
+
+  function single() { return stage.classList.contains('single'); }
+  function step() { return single() ? 1 : 2; }
+  function inner(n, side) {
+    if (n === null || !pages[n]) return '';
+    return '<div class="t">' + (side === 'l' ? 'LOOMINGS' : 'MOBY-DICK') + '</div><div class="txt">' + pages[n] + '</div><div class="n">' + (n + 1) + '</div>';
+  }
+  function draw() {
+    L.innerHTML = inner(i, 'l');
+    R.innerHTML = inner(i + 1, 'r');
+    document.getElementById('bar').style.width = ((i + step()) / pages.length * 100) + '%';
+  }
+  function face(html, side, cls, width, height, offset, sw) {
+    var f = document.createElement('div');
+    f.className = 'face ' + cls;
+    f.style.width = (sw + 0.6) + 'px';
+    f.innerHTML = '<div class="pg ' + side + '" style="left:' + (-offset) + 'px;width:' + width + 'px;height:' + height + 'px">' + html + '</div><div class="shade"></div>';
+    return f;
+  }
+  function buildLeaf(front, back) {
+    var solo = single(), w = solo ? book.clientWidth : book.clientWidth / 2, h = book.clientHeight, sw = w / STRIPS;
+    var leaf = document.createElement('div');
+    leaf.className = 'leaf';
+    leaf.style.cssText = 'left:' + (solo ? 0 : w) + 'px;width:' + w + 'px;height:' + h + 'px';
+    var parent = leaf, strips = [];
+    for (var k = 0; k < STRIPS; k++) {
+      var s = document.createElement('div');
+      s.className = 'strip';
+      s.style.cssText = 'left:' + (k ? sw : 0) + 'px;width:' + sw + 'px';
+      s.appendChild(face(inner(front, 'r'), 'r', 'front', w, h, k * sw, sw));
+      s.appendChild(face(inner(back, 'l'), 'l', 'back', w, h, w - (k + 1) * sw, sw));
+      parent.appendChild(s);
+      parent = s;
+      strips.push(s);
+    }
+    book.appendChild(leaf);
+    return { leaf: leaf, strips: strips };
+  }
+  function pose(a, t) {
+    var e = t * t * (3 - 2 * t), s = Math.sin(Math.PI * t);
+    var b = BEND * Math.sin(2 * Math.PI * t);
+    var root = -180 * e + b, d = 2 * b / (STRIPS - 1), prev = 0;
+    a.strips.forEach(function (strip, k) {
+      var cum = Math.max(-179.5, Math.min(0, root - k * d));
+      strip.style.transform = 'rotateY(' + (cum - prev) + 'deg)';
+      var dark = Math.abs(Math.sin(cum * Math.PI / 180)) * 0.16;
+      strip.children[0].lastChild.style.opacity = dark;
+      strip.children[1].lastChild.style.opacity = dark;
+      prev = cum;
+    });
+    cast.style.opacity = s;
+    if (single()) a.leaf.style.opacity = t > 0.7 ? (1 - t) / 0.3 : 1;
+  }
+  function finish() {
+    if (!active) return;
+    cancelAnimationFrame(active.raf);
+    active.leaf.remove();
+    cast.style.opacity = 0;
+    i = active.next;
+    active = null;
+    draw();
+  }
+  function start(dir) {
+    finish();
+    var next = i + dir * step();
+    if (next < 0 || next >= pages.length) return null;
+    var front, back;
+    if (single()) {
+      L.innerHTML = inner(dir > 0 ? next : i, 'l');
+      front = dir > 0 ? i : next; back = null;
+    } else {
+      L.innerHTML = inner(dir > 0 ? i : next, 'l');
+      R.innerHTML = inner(dir > 0 ? i + 3 : i + 1, 'r');
+      front = dir > 0 ? i + 1 : next + 1;
+      back = dir > 0 ? i + 2 : i;
+    }
+    active = buildLeaf(front, back);
+    active.next = next;
+    active.dir = dir;
+    return active;
+  }
+  function turn(dir) {
+    var a = start(dir), began = null;
+    if (!a) return;
+    pose(a, dir > 0 ? 0 : 1);
+    function frame(now) {
+      if (began === null) began = now;
+      var p = Math.min(1, (now - began) / DURATION);
+      pose(a, dir > 0 ? p : 1 - p);
+      if (p < 1) a.raf = requestAnimationFrame(frame); else finish();
+    }
+    a.raf = requestAnimationFrame(frame);
+  }
+  function wake() {
+    stage.classList.add('awake');
+    clearTimeout(sleep);
+    sleep = setTimeout(function () { stage.classList.remove('awake'); }, 1600);
+  }
+  function toggleFull() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (stage.requestFullscreen) stage.requestFullscreen().catch(function () {});
+  }
+
+  stage.addEventListener('mousemove', wake);
+  stage.addEventListener('mouseleave', function () { stage.classList.remove('awake'); });
+  stage.addEventListener('click', function (e) {
+    stage.focus({ preventScroll: true });
+    if (e.target.closest('.chrome')) return;
+    var box = stage.getBoundingClientRect();
+    turn(e.clientX - box.left < box.width / 2 ? -1 : 1);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); turn(1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); turn(-1); }
+    if (e.key === 'f' || e.key === 'F') toggleFull();
+  });
+  document.addEventListener('fullscreenchange', function () {
+    finish();
+    document.getElementById('full').textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+  });
+  document.getElementById('full').addEventListener('click', toggleFull);
+  document.querySelectorAll('.chrome button[data-t]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      stage.dataset.theme = b.dataset.t;
+      document.querySelectorAll('.chrome button[data-t]').forEach(function (o) { o.classList.toggle('on', o === b); });
+    });
+  });
+  document.getElementById('narrow').addEventListener('click', function () {
+    finish();
+    var on = stage.classList.toggle('single');
+    this.classList.toggle('on', on);
+    if (!on && i % 2) i--;
+    draw();
+  });
+
+  draw();
+  var frozen = /freeze=([\d.]+)/.exec(location.hash);
+  if (frozen) { var a = start(1); if (a) pose(a, parseFloat(frozen[1])); }
+})();
+</script>

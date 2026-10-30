@@ -1,0 +1,95 @@
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,300&display=swap');
+
+  .looks { display: grid; grid-template-columns: 1fr; gap: 1.5rem; max-width: 980px; }
+  .looks .card-image { aspect-ratio: auto; display: block; background: none; }
+  .win { position: relative; overflow: hidden; background: linear-gradient(#3A332C, #2F2923); padding: 0 40px 26px; font-family: 'EB Garamond', Georgia, serif; color: #F5EFE2; }
+
+  .cv { position: relative; flex: none; width: var(--w, 112px); aspect-ratio: 2 / 3; border-radius: 2px 3px 3px 2px; background: var(--c); color: var(--i); padding: calc(var(--w, 112px) * .09); box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 4px 10px rgba(0,0,0,.45); transition: transform .2s ease-out, box-shadow .2s ease-out; }
+  .cv::before { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 5%; background: linear-gradient(90deg, rgba(0,0,0,.2), rgba(255,255,255,.08) 60%, transparent); }
+  .cv:hover { transform: translateY(-8px); }
+  .cv b { font-family: 'Fraunces', Georgia, serif; font-weight: 600; font-size: calc(var(--w, 112px) * .135); line-height: 1.08; display: block; }
+  .cv i { font-size: calc(var(--w, 112px) * .095); font-style: italic; opacity: .85; }
+
+  .shelf { display: flex; align-items: flex-end; gap: 22px; height: 210px; position: relative; padding-left: 14px; }
+  .shelf::after { content: ''; position: absolute; left: -40px; right: -40px; bottom: -14px; height: 14px; background: linear-gradient(#6B5A46, #4A3D2F); box-shadow: 0 10px 18px rgba(0,0,0,.45); }
+  .shelf + .shelf { margin-top: 24px; }
+
+  .note { position: absolute; font-size: 14px; color: #D9CDB7; font-style: italic; white-space: nowrap; }
+
+  /* A: Ribbon */
+  .ribbon { position: absolute; right: 16%; top: 100%; width: 9px; height: 30px; background: #C2452D; clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 80%, 0 100%); z-index: 3; box-shadow: 0 2px 3px rgba(0,0,0,.4); }
+
+  /* B: Pulled forward */
+  .lit::before { content: ''; position: absolute; left: -30px; top: 0; bottom: 0; width: 240px; background: radial-gradient(60% 75% at 50% 45%, rgba(255,226,170,.26), transparent 100%); pointer-events: none; }
+  .forward { --w: 134px; z-index: 2; box-shadow: 0 14px 26px rgba(0,0,0,.6), 0 2px 4px rgba(0,0,0,.4); margin-bottom: -8px; }
+
+  /* C: Reading ledge */
+  .ledge { height: 262px; gap: 28px; }
+  .ledge .cv { --w: 150px; box-shadow: 0 12px 24px rgba(0,0,0,.55); }
+  .ledge .info { padding-bottom: 20px; }
+  .ledge .eyebrow { font-size: 12px; letter-spacing: .18em; color: #B8A98F; }
+  .ledge h4 { font-family: 'Fraunces', Georgia, serif; font-weight: 300; font-size: 34px; line-height: 1.05; margin: 6px 0 4px; color: #F5EFE2; }
+  .ledge .auth { font-style: italic; font-size: 17px; color: #D9CDB7; }
+  .ledge .left { font-size: 15px; margin-top: 10px; color: #D9CDB7; }
+</style>
+
+<h2>How should your current book stand out on the shelf?</h2>
+<p class="subtitle">In all three, it's always the first book on the top shelf, because the shelves are sorted by most recently read.</p>
+
+<div class="looks">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="win">
+      <div class="shelf" data-books="0,1,2,3,4,5" data-mark="ribbon"></div>
+    </div></div>
+    <div class="card-body"><h3>A. Ribbon Bookmark</h3><p>A small red ribbon hangs from the book you're in the middle of, and over the shelf edge. Quiet, but other part-read books would have one too.</p></div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="win">
+      <div class="shelf lit" data-books="0,1,2,3,4,5" data-mark="forward"></div>
+    </div></div>
+    <div class="card-body"><h3>B. Pulled Forward</h3><p>Your book sits slightly larger and in front of the others, as if you just put it back, with a warm light falling on it.</p></div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="win">
+      <div class="shelf ledge">
+        <div data-books="0" data-big></div>
+        <div class="info">
+          <div class="eyebrow">CONTINUE READING</div>
+          <h4>Moby-Dick</h4>
+          <div class="auth">Herman Melville</div>
+          <div class="left">Chapter 1, Loomings &middot; 23 min left</div>
+        </div>
+      </div>
+      <div class="shelf" data-books="1,2,3,4,5,6"></div>
+    </div></div>
+    <div class="card-body"><h3>C. Its Own Shelf</h3><p>Your current book gets the whole top shelf, with its title and time left beside it. Unmissable, and the "Continue reading" card from your write-up.</p></div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var books = [
+    ['Moby-Dick', 'Herman Melville', '#22404F', '#EDE3CF'],
+    ['Pride and Prejudice', 'Jane Austen', '#E6D9C2', '#5A2F2A'],
+    ['Frankenstein', 'Mary Shelley', '#2A2A2E', '#C9B98F'],
+    ['The Odyssey', 'Homer', '#A8482F', '#F4E7D2'],
+    ['Middlemarch', 'George Eliot', '#4F5D3F', '#EFE8D4'],
+    ['Dracula', 'Bram Stoker', '#5B1A1F', '#EADAC2'],
+    ['Walden', 'Henry David Thoreau', '#D9CFA8', '#39452C']
+  ];
+  document.querySelectorAll('[data-books]').forEach(function (box) {
+    var mark = box.dataset.mark;
+    var html = box.dataset.books.split(',').map(function (n, pos) {
+      var b = books[n], first = pos === 0;
+      return '<div class="cv' + (first && mark === 'forward' ? ' forward' : '') + '" style="--c:' + b[2] + ';--i:' + b[3] + '"><b>' + b[0] + '</b><i>' + b[1] + '</i>' +
+        (first && mark === 'ribbon' ? '<div class="ribbon"></div>' : '') + '</div>';
+    }).join('');
+    if (box.hasAttribute('data-big')) box.outerHTML = html; else box.innerHTML = html;
+  });
+})();
+</script>
