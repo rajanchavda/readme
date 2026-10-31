@@ -334,19 +334,62 @@ enum ImageDiff {
     @Test func commitRotatesAndRefreshesWithoutWaiting() async throws {
         let start = try await view.open(fixture("long.epub"), at: nil)
         await cache.refresh(around: start)
+        await cache.neighboursReady()
         let oldCurrent = try #require(cache.image(for: .current))
         let oldNext = try #require(cache.image(for: .next))
+        let oldAfterNext = try #require(cache.image(for: .afterNext))
 
         await cache.commit(.forward)
         #expect(cache.image(for: .previous) === oldCurrent)
         #expect(cache.image(for: .current) === oldNext)
-        #expect(cache.image(for: .next) == nil)
+        // Promoted at once, so the next turn needn't wait for anything.
+        #expect(cache.image(for: .next) === oldAfterNext)
 
         await cache.neighboursReady()
-        #expect(cache.image(for: .next) != nil)
+        #expect(cache.image(for: .afterNext) != nil)
         // Only what's missing was rendered.
         #expect(cache.image(for: .previous) === oldCurrent)
         #expect(cache.image(for: .current) === oldNext)
+        #expect(cache.image(for: .next) === oldAfterNext)
+    }
+
+    /// The images promoted by a landing were rendered from further off, and must be just as true.
+    @Test func promotedImagesMatchTheirLandings() async throws {
+        _ = try await view.open(fixture("long.epub"), at: nil)
+        try await walkToLastSpreadOfFirstChapter()
+        await cache.refresh(around: try #require(view.currentLocation))
+        for direction in [TurnDirection.forward, .forward, .forward, .backward, .backward, .backward] {
+            await cache.neighboursReady()
+            let promised = try #require(cache.image(for: direction == .forward ? .next : .previous))
+            await cache.commit(direction)
+            let difference = ImageDiff.fractionDifferent(try await snapshot(view), promised)
+            #expect(difference < Self.landingTolerance, "Landed \(difference) from its preview")
+        }
+    }
+
+    @Test func theFurtherSlotsAreNilPastTheEnds() async throws {
+        _ = try await view.open(fixture("no-cover.epub"), at: nil)
+        let end = try #require(await view.go(toFraction: 1))
+        await cache.refresh(around: end)
+        await cache.neighboursReady()
+        #expect(cache.image(for: .next) == nil)
+        #expect(cache.image(for: .afterNext) == nil)
+        #expect(cache.image(for: .beforePrevious) != nil)
+    }
+
+    /// The buffer's cost: five whole spreads at backing scale, on a window the size of a big screen.
+    @Test func theBufferIsFiveSpreads() async throws {
+        window.setContentSize(NSSize(width: 1512, height: 982))
+        _ = try await view.open(fixture("long.epub"), at: nil)
+        let there = try #require(await view.go(toFraction: 0.5))
+        await cache.refresh(around: there)
+        await cache.neighboursReady()
+        let slots: [SpreadSlot] = [.current, .next, .previous, .afterNext, .beforePrevious]
+        let images = try slots.map { try #require(cache.image(for: $0)) }
+        let scale = window.backingScaleFactor
+        #expect(images.allSatisfy { $0.width == Int(1512 * scale) && $0.height == Int(982 * scale) })
+        let spreadBytes = images[0].bytesPerRow * images[0].height
+        #expect(cache.bufferedBytes == 5 * spreadBytes)
     }
 
     @Test func commitPastTheEndsChangesNothing() async throws {

@@ -73,9 +73,31 @@ private func relativeRotation(of layer: CALayer) -> Double {
     }
 
     private func coordinator(
-        reduceMotion: Bool = false, patience: Duration = .seconds(30)
+        reduceMotion: Bool = false, patience: Duration = TurnCoordinator.defaultPatience
     ) -> TurnCoordinator {
         TurnCoordinator(book: view, cache: cache, curl: curl, reduceMotion: { reduceMotion }, patience: patience)
+    }
+
+    /// Where `count` forward turns should end up, found by walking in a second view.
+    private func locationAfter(_ count: Int, from fraction: Double? = nil) async throws -> ReaderLocation {
+        let otherWindow = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        otherWindow.isReleasedWhenClosed = false
+        let walker = BookWebView(frame: view.frame)
+        otherWindow.contentView = walker
+        var location = try await walker.open(fixture("long.epub"), at: nil)
+        if let fraction { location = try #require(await walker.go(toFraction: fraction)) }
+        for _ in 0..<count { location = try #require(await walker.next()) }
+        return location
+    }
+
+    /// Opens the long book on screen, as in the app, with the buffer full.
+    private func openWithFullBuffer(at fraction: Double? = nil) async throws -> ReaderLocation {
+        window.orderFrontRegardless()
+        var location = try await view.open(fixture("long.epub"), at: nil)
+        if let fraction { location = try #require(await view.go(toFraction: fraction)) }
+        await cache.refresh(around: location)
+        await cache.neighboursReady()
+        return location
     }
 
     private func waitUntilDone(_ turns: TurnCoordinator) async throws {
@@ -148,7 +170,7 @@ private func relativeRotation(of layer: CALayer) -> Double {
     }
 
     @Test func facesShowTheRightBitmaps() throws {
-                let front = try spread(width: 1000, left: red, right: red)
+        let front = try spread(width: 1000, left: red, right: red)
         let back = try spread(width: 1000, left: blue, right: blue)
         curl.begin(.forward, front: front, back: back, beneathLeft: front, beneathRight: back)
         for faces in curl.stripFaces {
@@ -208,6 +230,45 @@ private func relativeRotation(of layer: CALayer) -> Double {
         #expect(abs(ends.0 - ends.1) > 0.05)
     }
 
+    /// `CurlPose` stops 0.5 degrees short of flat, which would be a jump at the very start of a
+    /// backward turn.
+    @Test func aTurnBackwardStartsExactlyFlat() throws {
+        #expect(CurlView.drawnAngles(t: 1).allSatisfy { $0 == -180 })
+        let half = try spread(width: 1000, left: red, right: red)
+        curl.begin(.backward, front: half, back: half, beneathLeft: half, beneathRight: half)
+        #expect(curl.progress == 1)
+        #expect(abs(abs(relativeRotation(of: try #require(curl.stripLayers.first))) - 180) < 0.001)
+        for strip in curl.stripLayers.dropFirst() {
+            #expect(abs(relativeRotation(of: strip)) < 0.001)
+        }
+    }
+
+    /// Away from the very end, the page follows the approved geometry exactly, and getting flat
+    /// is gradual.
+    @Test func flatteningOnlyTouchesTheEnd() {
+        for t in [0, 0.25, 0.5, 0.75, 0.94] {
+            #expect(CurlView.drawnAngles(t: t) == CurlPose.angles(t: t))
+        }
+        let steps = stride(from: 0.95, through: 1, by: 0.01).map { CurlView.drawnAngles(t: $0)[0] }
+        for (earlier, later) in zip(steps, steps.dropFirst()) {
+            #expect(abs(later - earlier) < 0.2)
+        }
+    }
+
+    @Test func clicksOnlyTurnPagesOnTheBooksEdges() {
+        let desk = TrialDeskView(
+            frame: NSRect(x: 0, y: 0, width: 1048, height: 620),
+            bookFrame: NSRect(x: 34, y: 34, width: 980, height: 552))
+        #expect(desk.turn(at: NSPoint(x: 40, y: 300)) == .backward)
+        #expect(desk.turn(at: NSPoint(x: 1000, y: 300)) == .forward)
+        #expect(desk.turn(at: NSPoint(x: 524, y: 300)) == nil)
+        // The bare desk, on all sides.
+        #expect(desk.turn(at: NSPoint(x: 10, y: 300)) == nil)
+        #expect(desk.turn(at: NSPoint(x: 1040, y: 300)) == nil)
+        #expect(desk.turn(at: NSPoint(x: 40, y: 10)) == nil)
+        #expect(desk.turn(at: NSPoint(x: 1000, y: 610)) == nil)
+    }
+
     @Test func perspectiveMatchesTheMockup() throws {
         _ = try preparedCurl()
         let stage = try #require(curl.stripLayers.first?.superlayer)
@@ -217,7 +278,7 @@ private func relativeRotation(of layer: CALayer) -> Double {
     // MARK: Playing
 
     @Test func aFinishedPlayLandsFlatOnTheBackPage() async throws {
-                let front = try spread(width: 1000, left: red, right: red)
+        let front = try spread(width: 1000, left: red, right: red)
         let back = try spread(width: 1000, left: blue, right: blue)
         let left = try spread(width: 1000, left: green, right: green)
         let right = try spread(width: 1000, left: yellow, right: yellow)
@@ -241,7 +302,7 @@ private func relativeRotation(of layer: CALayer) -> Double {
     }
 
     @Test func aPlayBackLandsFlatOnTheFrontPage() throws {
-                let front = try spread(width: 1000, left: red, right: red)
+        let front = try spread(width: 1000, left: red, right: red)
         let back = try spread(width: 1000, left: blue, right: blue)
         let left = try spread(width: 1000, left: green, right: green)
         let right = try spread(width: 1000, left: yellow, right: yellow)
@@ -372,27 +433,127 @@ private func relativeRotation(of layer: CALayer) -> Double {
         #expect(view.currentLocation?.cfi == start.cfi)
     }
 
-    /// The new neighbour can't be ready this soon, so the second turn has no curl, but still counts.
-    @Test func aSecondPressSnapsTheCurlToItsEnd() async throws {
-        let otherWindow = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        otherWindow.isReleasedWhenClosed = false
-        let walker = BookWebView(frame: view.frame)
-        otherWindow.contentView = walker
-        _ = try await walker.open(fixture("long.epub"), at: nil)
-        _ = try #require(await walker.next())
-        let expected = try #require(await walker.next())
+    /// Long enough for a move to land, and well inside the curl it started.
+    private static let midCurl: Duration = .milliseconds(200)
 
-        let start = try await view.open(fixture("long.epub"), at: nil)
-        await cache.refresh(around: start)
+    @Test func aForwardPressDuringAForwardCurlStartsTheNextAtOnce() async throws {
+        defer { window.orderOut(nil) }
+        let expected = try await locationAfter(2)
+        _ = try await openWithFullBuffer()
         let turns = coordinator()
         turns.turn(.forward)
+        let first = try #require(curl.stripLayers.first)
+        try await Task.sleep(for: Self.midCurl)
         #expect(curl.isPlaying)
+
         turns.turn(.forward)
+        #expect(curl.isPlaying)
+        #expect(curl.direction == .forward)
+        #expect(curl.progress == 0)
+        #expect(curl.stripLayers.count == CurlPose.strips)
+        #expect(curl.stripLayers.first !== first)
+        try await waitUntilDone(turns)
+        #expect(view.currentLocation?.cfi == expected.cfi)
+    }
+
+    @Test func aBackwardPressDuringABackwardCurlStartsTheNextAtOnce() async throws {
+        defer { window.orderOut(nil) }
+        let start = try await openWithFullBuffer(at: 0.5)
+        let turns = coordinator()
+        turns.turn(.backward)
+        let first = try #require(curl.stripLayers.first)
+        try await Task.sleep(for: Self.midCurl)
+        #expect(curl.isPlaying)
+
+        turns.turn(.backward)
+        #expect(curl.isPlaying)
+        #expect(curl.direction == .backward)
+        #expect(curl.progress == 1)
+        #expect(curl.stripLayers.first !== first)
+        try await waitUntilDone(turns)
+
+        // Two forward turns should come straight back.
+        _ = await view.next()
+        let back = try #require(await view.next())
+        #expect(back.cfi == start.cfi)
+    }
+
+    /// Before the first move has landed the slots can't be trusted, so this one can't curl yet.
+    @Test func aSecondPressBeforeTheLandingStillCounts() async throws {
+        defer { window.orderOut(nil) }
+        let expected = try await locationAfter(2)
+        _ = try await openWithFullBuffer()
+        let turns = coordinator()
+        turns.turn(.forward)
+        turns.turn(.forward)
+        // The first has snapped to its end, and lies flat over the book.
         #expect(!curl.isPlaying)
         #expect(curl.stripLayers.isEmpty)
         #expect(curl.isShowing)
         try await waitUntilDone(turns)
         #expect(view.currentLocation?.cfi == expected.cfi)
+    }
+
+    private func expectEveryPressCurls(every gap: Duration, turnCount: Int) async throws {
+        defer { window.orderOut(nil) }
+        let expected = try await locationAfter(turnCount)
+        _ = try await openWithFullBuffer()
+        let turns = coordinator()
+        var curls = 0
+        for index in 0..<turnCount {
+            let pressed = ContinuousClock.now
+            let promised = try #require(cache.image(for: .next), "No image ready for turn \(index)")
+            turns.turn(.forward)
+            if curl.isPlaying && curl.stripLayers.count == CurlPose.strips { curls += 1 }
+            try await Task.sleep(until: pressed + Self.midCurl + .milliseconds(100))
+            let shown = try await snapshot()
+            let difference = ImageDiff.fractionDifferent(shown, promised)
+            #expect(difference < SpreadCacheTests.landingTolerance, "Turn \(index) landed \(difference) away")
+            try await Task.sleep(until: pressed + gap)
+        }
+        #expect(curls == turnCount)
+        try await waitUntilDone(turns)
+        #expect(view.currentLocation?.cfi == expected.cfi)
+    }
+
+    @Test func aPressEveryPointFourSecondsAlwaysCurls() async throws {
+        try await expectEveryPressCurls(every: .milliseconds(400), turnCount: 10)
+    }
+
+    @Test func aPressEverySecondAlwaysCurls() async throws {
+        try await expectEveryPressCurls(every: .seconds(1), turnCount: 4)
+    }
+
+    /// A press must never look ignored, whatever the buffer has.
+    @Test func aPressThatOutrunsTheBufferChangesThePageQuickly() async throws {
+        defer { window.orderOut(nil) }
+        window.orderFrontRegardless()
+        let start = try await view.open(fixture("long.epub"), at: nil)
+        let turns = coordinator()
+        let pressed = ContinuousClock.now
+        turns.turn(.forward)
+        while view.currentLocation?.cfi == start.cfi {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(ContinuousClock.now - pressed < .milliseconds(250))
+        #expect(curl.stripLayers.isEmpty)
+    }
+
+    /// A snapshot that never answers mustn't leave a curl lying over the book.
+    @Test func theCurlComesOffIfThePageNeverReportsPainted() async throws {
+        let start = try await view.open(fixture("long.epub"), at: nil)
+        await cache.refresh(around: start)
+        let turns = TurnCoordinator(
+            book: view, cache: cache, curl: curl, reduceMotion: { false }, takeSnapshot: { _, _ in })
+        turns.turn(.forward)
+        curl.snapToEnd()
+        #expect(curl.isShowing)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while curl.isShowing && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!curl.isShowing)
+        #expect(view.currentLocation?.cfi != start.cfi)
     }
 
     @Test func turningBackPlaysFromTheEnd() async throws {
@@ -410,7 +571,7 @@ private func relativeRotation(of layer: CALayer) -> Double {
     /// Nothing's ready, so there's nothing right to curl with.
     @Test func aTurnWithoutImagesShowsNoCurlAndStillHappens() async throws {
         let start = try await view.open(fixture("long.epub"), at: nil)
-        let turns = coordinator(patience: .milliseconds(100))
+        let turns = coordinator()
         turns.turn(.forward)
         #expect(turns.isTurning)
         #expect(curl.stripLayers.isEmpty)
@@ -419,11 +580,11 @@ private func relativeRotation(of layer: CALayer) -> Double {
         #expect(view.currentLocation?.cfi != start.cfi)
     }
 
-    /// Once a refresh is on the way, the turn waits for it and gets its curl.
+    /// Given the patience to outlast a whole refresh, the turn waits for it and gets its curl.
     @Test func aTurnWaitsForNeighboursThatAreComing() async throws {
         let start = try await view.open(fixture("long.epub"), at: nil)
         let refresh = Task { await cache.refresh(around: start) }
-        let turns = coordinator()
+        let turns = coordinator(patience: .seconds(30))
         turns.turn(.forward)
         #expect(curl.stripLayers.isEmpty)
         var curled = false
@@ -438,12 +599,7 @@ private func relativeRotation(of layer: CALayer) -> Double {
 
     /// Every press counts, however few of them got a curl.
     @Test func aBurstLandsWhereItShould() async throws {
-        let otherWindow = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        otherWindow.isReleasedWhenClosed = false
-        let walker = BookWebView(frame: view.frame)
-        otherWindow.contentView = walker
-        var expected = try await walker.open(fixture("long.epub"), at: nil)
-        for _ in 0..<8 { expected = try #require(await walker.next()) }
+        let expected = try await locationAfter(8)
 
         let start = try await view.open(fixture("long.epub"), at: nil)
         await cache.refresh(around: start)

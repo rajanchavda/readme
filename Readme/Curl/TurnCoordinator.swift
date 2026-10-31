@@ -38,20 +38,29 @@ struct TurnImages {
 
 /// Turns the pages of a book: it plays the curl over the web view and moves the web view beneath it.
 ///
-/// The curl only ever uses images known to belong to where the book is. Without them a turn waits a
-/// moment for them, and if they don't come, or another press arrives first, the page just changes
-/// with no curl, so every press counts and input never queues up behind the animation.
+/// The curl only ever uses images known to belong to where the book is. A press that outruns them
+/// waits only briefly, then the page just changes with no curl, as it does if another press arrives
+/// first, so every press counts and the book never seems to ignore one.
 @MainActor
 final class TurnCoordinator {
+    /// How long a press waits for images before the page changes without a curl. A page takes about
+    /// another 120 ms to move, so this is what keeps a press from looking ignored.
+    static let defaultPatience: Duration = .milliseconds(50)
+    /// How long a press waits for the move before it to land, which is usually about 120 ms.
+    private static let landingPatience: Duration = .milliseconds(150)
+    private static let paintTimeout: Duration = .milliseconds(500)
+
     private let book: BookWebView
     private let cache: SpreadCache
     private let curl: CurlView
     private let reduceMotion: () -> Bool
     private let patience: Duration
+    private let takeSnapshot: (WKSnapshotConfiguration, @escaping () -> Void) -> Void
 
-    /// Moves of the book that haven't finished. Until they have, the cache's images may be stale
-    /// and the location may not be final.
+    /// Moves of the book that haven't finished settling.
     private var moves = 0
+    /// Moves that haven't landed. Until they have, the cache's images and the location are out of date.
+    private var unlanded = 0
     private var waitingTurn: TurnDirection?
     private var waitingTask: Task<Void, Never>?
     /// Identifies the latest curl, so an earlier one's landing doesn't remove it.
@@ -63,13 +72,18 @@ final class TurnCoordinator {
     init(
         book: BookWebView, cache: SpreadCache, curl: CurlView,
         reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
-        patience: Duration = .milliseconds(750)
+        patience: Duration = TurnCoordinator.defaultPatience,
+        takeSnapshot: ((WKSnapshotConfiguration, @escaping () -> Void) -> Void)? = nil
     ) {
         self.book = book
         self.cache = cache
         self.curl = curl
         self.reduceMotion = reduceMotion
         self.patience = patience
+        self.takeSnapshot = takeSnapshot ?? { [weak book] configuration, finished in
+            guard let webView = book?.webView else { return finished() }
+            webView.takeSnapshot(with: configuration) { _, _ in finished() }
+        }
     }
 
     func turn(_ direction: TurnDirection) {
@@ -81,7 +95,7 @@ final class TurnCoordinator {
             waitingTurn = nil
             _ = move(earlier)
         }
-        if moves == 0, startOrDecline(direction) { return }
+        if unlanded == 0, startOrDecline(direction) { return }
         waitingTurn = direction
         waitingTask = Task { [weak self] in await self?.waitAndTurn(direction) }
     }
@@ -95,21 +109,26 @@ final class TurnCoordinator {
         cache.image(for: direction == .forward ? .next : .previous)
     }
 
-    /// Checks repeatedly because the cache has no event to wait on that can also be given up on.
+    /// Waits for a move still landing, as its images will be good then, and briefly for images that
+    /// may be about to arrive. Checks repeatedly because the cache has no event to wait on that can
+    /// also be given up on.
     private func waitAndTurn(_ direction: TurnDirection) async {
-        let deadline = ContinuousClock.now + patience
-        while ContinuousClock.now < deadline {
-            if moves == 0, isPastTheEnd(direction) || image(for: direction) != nil { break }
-            try? await Task.sleep(for: .milliseconds(20))
+        let pressed = ContinuousClock.now
+        while true {
+            let isWaitingUsefully = unlanded > 0
+                ? ContinuousClock.now < pressed + Self.landingPatience
+                : image(for: direction) == nil && !isPastTheEnd(direction) && ContinuousClock.now < pressed + patience
+            guard isWaitingUsefully else { break }
+            try? await Task.sleep(for: .milliseconds(10))
             if Task.isCancelled { return }
         }
         waitingTurn = nil
-        if moves == 0, startOrDecline(direction) { return }
+        if unlanded == 0, startOrDecline(direction) { return }
         _ = move(direction)
     }
 
     /// True if that settles the turn: it's past the end of the book, or its curl has started. Only
-    /// call this with no moves running, when the location and images can be trusted.
+    /// call this with nothing left to land, when the location and images can be trusted.
     private func startOrDecline(_ direction: TurnDirection) -> Bool {
         if isPastTheEnd(direction) { return true }
         guard let target = image(for: direction), let current = cache.image(for: .current) else { return false }
@@ -144,8 +163,9 @@ final class TurnCoordinator {
     /// The web view's move. They reach the book in the order they're made.
     private func move(_ direction: TurnDirection) -> Task<Void, Never> {
         moves += 1
+        unlanded += 1
         return Task { [weak self, cache] in
-            await cache.commit(direction)
+            await cache.commit(direction, onLanded: { self?.unlanded -= 1 })
             self?.moves -= 1
         }
     }
@@ -161,13 +181,34 @@ final class TurnCoordinator {
     }
 
     /// A snapshot that waits for screen updates only returns once they've reached this process, and
-    /// a one-pixel one costs almost nothing.
+    /// a one-pixel one costs almost nothing. If it never returns, waiting longer won't help: the book
+    /// is better uncovered, as the page beneath has landed by now.
     private func pagePainted() async {
         let configuration = WKSnapshotConfiguration()
         configuration.rect = CGRect(x: 0, y: 0, width: 1, height: 1)
         configuration.snapshotWidth = 1
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            book.webView.takeSnapshot(with: configuration) { _, _ in continuation.resume() }
+            let wait = OneShot(continuation)
+            takeSnapshot(configuration) { wait.finish() }
+            Task {
+                try? await Task.sleep(for: Self.paintTimeout)
+                wait.finish()
+            }
         }
+    }
+}
+
+/// Finishes a wait once, whichever of its endings comes first.
+@MainActor
+private final class OneShot {
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func finish() {
+        continuation?.resume()
+        continuation = nil
     }
 }

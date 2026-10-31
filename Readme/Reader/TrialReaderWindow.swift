@@ -35,7 +35,8 @@ final class TrialReaderWindow: NSObject {
             contentRect: frame, styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.title = "Readme"
-        desk = TrialDeskView(frame: frame)
+        desk = TrialDeskView(
+            frame: frame, bookFrame: frame.insetBy(dx: Self.deskMargin, dy: Self.deskMargin))
         window.contentView = desk
         hint = NSTextField(labelWithString: "Press ⌘O to open a book")
         hint.textColor = NSColor(srgbRed: 0.96, green: 0.94, blue: 0.89, alpha: 0.7)
@@ -129,13 +130,16 @@ final class TrialReaderWindow: NSObject {
 }
 
 /// The surface the book lies on. It takes clicks on the outer parts of the book, which turn pages,
-/// and leaves the rest to the web view, so text can still be selected.
-private final class TrialDeskView: NSView {
+/// and leaves the rest of the book to the web view, so text can still be selected. Clicks on the bare
+/// desk do nothing.
+final class TrialDeskView: NSView {
     private static let edgeShare: CGFloat = 0.2
 
     var onEdgeClick: ((TurnDirection) -> Void)?
+    private let bookFrame: NSRect
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, bookFrame: NSRect) {
+        self.bookFrame = bookFrame
         super.init(frame: frame)
         wantsLayer = true
         layer?.backgroundColor = CGColor(srgbRed: 0x3A / 255, green: 0x33 / 255, blue: 0x2C / 255, alpha: 1)
@@ -146,17 +150,23 @@ private final class TrialDeskView: NSView {
         fatalError("TrialDeskView is created in code")
     }
 
+    /// Which way a click at `point` turns the page, if it does.
+    func turn(at point: NSPoint) -> TurnDirection? {
+        guard bookFrame.contains(point) else { return nil }
+        let band = bookFrame.width * Self.edgeShare
+        if point.x < bookFrame.minX + band { return .backward }
+        if point.x > bookFrame.maxX - band { return .forward }
+        return nil
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
-        if local.x < bounds.width * Self.edgeShare || local.x > bounds.width * (1 - Self.edgeShare) {
-            return self
-        }
-        return super.hitTest(point)
+        return turn(at: local) != nil ? self : super.hitTest(point)
     }
 
     override func mouseUp(with event: NSEvent) {
-        let x = convert(event.locationInWindow, from: nil).x
-        onEdgeClick?(x < bounds.width / 2 ? .backward : .forward)
+        guard let direction = turn(at: convert(event.locationInWindow, from: nil)) else { return }
+        onEdgeClick?(direction)
     }
 }

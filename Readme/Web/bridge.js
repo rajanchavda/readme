@@ -6,6 +6,7 @@ import { SectionProgress } from './foliate/progress.js'
 const COMMAND_MS = 15000
 const SECTION_MS = 10000
 const SETTLE_MS = 100
+const HIDDEN_SETTLE_MS = 40
 const RELAYOUT_MS = 150
 const RESOURCES_MS = 5000
 const DEFAULT_INLINE_SIZE = 720
@@ -38,11 +39,11 @@ const currentDocument = () => view?.renderer?.getContents?.()[0]?.doc ?? null
 
 // Lets layout that follows a move land: fonts, then the resize observers, which run in a
 // rendering update. A page that isn't visible gets no animation frames, hence the timer.
-const settle = async () => {
+const settle = async (hiddenWait = SETTLE_MS) => {
     const fonts = currentDocument()?.fonts?.ready
     if (fonts) await withTimeout(fonts, SETTLE_MS, 'fonts').catch(() => {})
     await new Promise(resolve => {
-        const timer = setTimeout(resolve, SETTLE_MS)
+        const timer = setTimeout(resolve, document.hidden ? hiddenWait : SETTLE_MS)
         requestAnimationFrame(() => requestAnimationFrame(() => {
             clearTimeout(timer)
             resolve()
@@ -241,7 +242,9 @@ const settled = async () => {
                 RESOURCES_MS, 'resources').catch(() => {})
             // foliate paginates again from a resize observer, which a hidden page runs late if at all.
             if (document.hidden) view.renderer.render()
-            await settle()
+            // A move has already waited its full time, and the offscreen view has to keep up with a
+            // reader turning pages.
+            await settle(HIDDEN_SETTLE_MS)
         }
         post()
         return location()
@@ -274,6 +277,11 @@ const open = async (url, cfi, css, columns) => {
         else post()
     })
     view.addEventListener('external-link', event => event.preventDefault())
+    // Otherwise a big image can be painted blank and repainted later when it's decoded, which a page
+    // that isn't visible may never do, leaving a gap in a snapshot.
+    view.addEventListener('load', ({ detail: { doc } }) => {
+        for (const image of doc.querySelectorAll('img, image')) image.decoding = 'sync'
+    })
     document.body.append(view)
     await view.open(book)
 

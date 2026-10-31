@@ -30,6 +30,7 @@ final class CurlView: NSView {
 
     private static let perspective: CGFloat = 2400
     private static let crossfadeDuration = 0.2
+    private static let flatteningShare = 0.05
     /// Display links don't tick for a window that's hidden or covered, but a turn must still end.
     private static let safetyMargin: Duration = .milliseconds(250)
 
@@ -224,7 +225,7 @@ final class CurlView: NSView {
         guard let cast else { return }
         progress = t
         withoutActions {
-            let angles = CurlPose.angles(t: t)
+            let angles = Self.drawnAngles(t: t)
             var previous = 0.0
             for (index, strip) in strips.enumerated() {
                 let angle = angles[index]
@@ -242,6 +243,14 @@ final class CurlView: NSView {
             }
             cast.opacity = Float(CurlPose.cast(t: t))
         }
+    }
+
+    /// `CurlPose.angles`, except that `CurlPose` stops 0.5 degrees short of flat, which would make the
+    /// page jump as a backward turn begins and a forward one ends. This closes the gap over the last
+    /// `flatteningShare` of the turn.
+    static func drawnAngles(t: Double) -> [Double] {
+        let closing = min(1, max(0, (t - (1 - flatteningShare)) / flatteningShare)) * 0.5
+        return CurlPose.angles(t: t).map { max(-180, $0 - closing) }
     }
 
     /// Runs from one progress to another at the curl's pace, then lays the page flat where it fell.
