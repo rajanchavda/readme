@@ -22,6 +22,11 @@ enum BookWebViewError: Error, Equatable {
 final class BookWebView: NSView {
     var onRelocate: ((ReaderLocation) -> Void)?
     private(set) var currentLocation: ReaderLocation?
+    /// The book that's open, its styles and its column limit, so a second view can be made to match.
+    private(set) var bookURL: URL?
+    private(set) var css = ""
+    private(set) var columns = 2
+    var isBookOpen: Bool { isOpen }
     let webView: WKWebView
     /// Messages the page sent that weren't the bridge's. Nothing in a book should be able to send any.
     private(set) var rejectedMessageCount = 0
@@ -53,8 +58,6 @@ final class BookWebView: NSView {
     /// The call running bridge.js's `open`. Replacing the page can leave it unanswered.
     private var openReply: Reply?
     private var loadTimer: Task<Void, Never>?
-    private var css = ""
-    private var columns = 2
 
     override init(frame: NSRect) {
         let webRoot = Bundle.main.resourceURL!.appendingPathComponent("Web", isDirectory: true)
@@ -92,6 +95,7 @@ final class BookWebView: NSView {
         openReply = nil
         isOpen = false
         currentLocation = nil
+        bookURL = nil
         guard FileManager.default.isReadableFile(atPath: url.path) else {
             throw BookWebViewError.unreadable
         }
@@ -125,6 +129,7 @@ final class BookWebView: NSView {
         guard generation == openGeneration else { throw BookWebViewError.superseded }
         guard let location else { throw BookWebViewError.openFailed("The book has no pages") }
         isOpen = true
+        self.bookURL = url
         currentLocation = location
         if bounds.size != sizeAtOpen { scheduleRelayout() }
         return location
@@ -228,6 +233,19 @@ final class BookWebView: NSView {
         } catch {
             Self.log.error("Navigation failed: \(String(describing: error), privacy: .public)")
             return nil
+        }
+    }
+
+    /// Returns once the page has stopped changing, which a move doesn't wait for: any relayout has
+    /// run, fonts and images are in, and foliate has paginated around them. Take snapshots after this.
+    func settle() async {
+        guard isOpen else { return }
+        await relayoutTask?.value
+        do {
+            let location = try await call("return await readmeBridge.settled()", as: ReaderLocation.self)
+            if let location { currentLocation = location }
+        } catch {
+            Self.log.error("Settling failed: \(String(describing: error), privacy: .public)")
         }
     }
 

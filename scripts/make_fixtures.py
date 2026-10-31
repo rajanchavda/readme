@@ -315,8 +315,143 @@ def drm_book():
     )
 
 
+def spreads_book():
+    """Chapters of rising length, so several of them end on a half-empty two-page spread."""
+    rng = random.Random(7)
+    chapters = []
+    for number, count in enumerate((3, 5, 7, 9, 11, 13, 15), start=1):
+        title = f"Chapter {number}"
+        chapters.append(
+            Chapter(f"ch{number}", title, xhtml(title, f"<h1>{title}</h1>\n{paragraphs(rng, count)}"))
+        )
+    write_epub("spreads.epub", "Spreads Book", chapters)
+
+
+def tiny_font():
+    """A TrueType font whose every printable character is one wide box.
+
+    It's far wider than any system font, so text reflows visibly if the font arrives late.
+    """
+    units = 1000
+    box = struct.pack(">hhhhh", 1, 0, 0, 800, 700)  # one contour and its bounds
+    box += struct.pack(">HH", 3, 0)  # last point of the contour, no instructions
+    box += bytes([0x01] * 4)  # four on-curve points with 16-bit coordinates
+    box += struct.pack(">hhhh", 0, 800, 0, -800)  # x deltas
+    box += struct.pack(">hhhh", 0, 0, 700, 0)  # y deltas
+    box += b"\x00" * (-len(box) % 4)
+    segments = struct.pack(
+        ">HHHHHHHHHHHHHHHH",
+        4, 16 + 16, 0,  # format, length, language
+        4, 4, 1, 0,  # twice the segment count, then the search fields
+        126, 0xFFFF,  # segment ends
+        0,  # reserved
+        32, 0xFFFF,  # segment starts
+        (1 - 32) & 0xFFFF, 1,  # id deltas, so all of 32 to 126 map to glyph 1
+        0, 0,  # range offsets
+    )
+    cmap = struct.pack(">HHHHI", 0, 1, 3, 1, 12) + segments
+    name_text = "Fixture".encode("utf-16-be")
+    name = struct.pack(">HHH", 0, 2, 6 + 24)
+    name += struct.pack(">HHHHHH", 3, 1, 0x409, 1, len(name_text), 0)
+    name += struct.pack(">HHHHHH", 3, 1, 0x409, 4, len(name_text), 0)
+    name += name_text
+    head = struct.pack(
+        ">IIIIHHQQhhhhHHhhh",
+        0x00010000, 0x00010000, 0, 0x5F0F3CF5, 0, units, 0, 0,
+        0, 0, 800, 700, 0, 8, 2, 0, 0,
+    )
+    hhea = struct.pack(
+        ">IhhhHhhhhhhhhhhhH",
+        0x00010000, 800, -200, 0, units, 0, 0, 800, 1, 0, 0, 0, 0, 0, 0, 0, 2,
+    )
+    maxp = struct.pack(">IHHHHHHHHHHHHHH", 0x00010000, 2, 4, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+    os2 = struct.pack(
+        ">HhHHHhhhhhhhhhhh10sIIII4sHHHhhhHH",
+        1, units, 400, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b"\x00" * 10, 0, 0, 0, 0,
+        b"NONE", 0x40, 32, 126, 800, -200, 0, 800, 200,
+    ) + struct.pack(">II", 1, 0)
+    post = struct.pack(">IIhhIIIII", 0x00030000, 0, -100, 50, 0, 0, 0, 0, 0)
+    tables = {
+        b"OS/2": os2,
+        b"cmap": cmap,
+        b"glyf": box,
+        b"head": head,
+        b"hhea": hhea,
+        b"hmtx": struct.pack(">HhHh", units, 0, units, 0),
+        b"loca": struct.pack(">HHH", 0, 0, len(box) // 2),
+        b"maxp": maxp,
+        b"name": name,
+        b"post": post,
+    }
+
+    def checksum(data):
+        padded = data + b"\x00" * (-len(data) % 4)
+        return sum(struct.unpack(f">{len(padded) // 4}I", padded)) & 0xFFFFFFFF
+
+    directory = struct.pack(">IHHHH", 0x00010000, len(tables), 128, 3, len(tables) * 16 - 128)
+    offset = len(directory) + 16 * len(tables)
+    body = b""
+    for tag, data in tables.items():
+        directory += struct.pack(">4sIII", tag, checksum(data), offset + len(body), len(data))
+        body += data + b"\x00" * (-len(data) % 4)
+    font = bytearray(directory + body)
+    # head's checkSumAdjustment, which is taken over the whole file.
+    head_offset = offset + sum(
+        len(data) + (-len(data) % 4) for tag, data in tables.items() if tag < b"head"
+    )
+    struct.pack_into(">I", font, head_offset + 8, (0xB1B0AFBA - checksum(bytes(font))) & 0xFFFFFFFF)
+    return bytes(font)
+
+
+def late_resources_book():
+    """Everything here can land after navigation: a web font and large images with no set size."""
+    rng = random.Random(8)
+    chapters = []
+    for number in range(1, 4):
+        title = f"Chapter {number}"
+        body = (
+            f"<h1>{title}</h1>\n{paragraphs(rng, 2)}\n"
+            f'<p><img src="plate{number}.png" alt=""/></p>\n{paragraphs(rng, 6)}\n'
+            # Not waited for by the chapter's load event, and it moves the text after it.
+            f'<p><img loading="lazy" src="plate{number}.png" alt=""/></p>\n{paragraphs(rng, 3)}\n'
+            f'<p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">'
+            f'<image href="plate{number}.png" width="300" height="300"/></svg></p>\n'
+            f"{paragraphs(rng, 2)}"
+        )
+        head = '<link rel="stylesheet" href="fixture.css"/>'
+        chapters.append(Chapter(f"ch{number}", title, xhtml(title, body, head)))
+    plates = {
+        # Large enough to take a while to decode, though one colour keeps the file small.
+        f"plate{number}.png": png(4000, 3000, (40 * number, 90, 200 - 40 * number))
+        for number in range(1, 4)
+    }
+    write_epub(
+        "late-resources.epub",
+        "Late Resources Book",
+        chapters,
+        extra_files={
+            **plates,
+            "fixture.ttf": tiny_font(),
+            "fixture.css": (
+                '@font-face { font-family: "Fixture"; src: url("fixture.ttf"); }\n'
+                'body { font-family: "Fixture", serif; }\n'
+            ),
+        },
+        extra_manifest=[
+            *(
+                f'<item id="plate{number}" href="plate{number}.png" media-type="image/png"/>'
+                for number in range(1, 4)
+            ),
+            '<item id="font" href="fixture.ttf" media-type="font/ttf"/>',
+            '<item id="css" href="fixture.css" media-type="text/css"/>',
+        ],
+    )
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    spreads_book()
+    late_resources_book()
     long_book()
     write_epub("no-cover.epub", "No Cover Book", short_chapters(random.Random(4)))
     broken_chapter_book()

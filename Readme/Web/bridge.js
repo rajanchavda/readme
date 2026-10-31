@@ -7,6 +7,7 @@ const COMMAND_MS = 15000
 const SECTION_MS = 10000
 const SETTLE_MS = 100
 const RELAYOUT_MS = 150
+const RESOURCES_MS = 5000
 const DEFAULT_INLINE_SIZE = 720
 // foliate's #container is the view less a 3.5% gutter on each side.
 const CONTAINER_SHARE = 0.93
@@ -48,6 +49,15 @@ const settle = async () => {
         }))
     })
 }
+
+// Images count as loaded once fetched, but are painted blank until decoded. An SVG <image> has
+// no decode() of its own, so an <img> decodes the same file for it.
+const decodedImages = doc => [...doc.querySelectorAll('img, image')].map(element => {
+    if (element.decode) return element.decode()
+    const source = new Image()
+    source.src = element.href?.baseVal ?? ''
+    return source.decode()
+})
 
 const location = () => {
     if (!latest) return null
@@ -214,7 +224,28 @@ const relayout = () => enqueue(async () => {
 
 const scheduleRelayout = () => {
     clearTimeout(relayoutTimer)
-    relayoutTimer = setTimeout(() => relayout().catch(error => console.warn(error)), RELAYOUT_MS)
+    relayoutTimer = setTimeout(() => {
+        relayoutTimer = null
+        relayout().catch(error => console.warn(error))
+    }, RELAYOUT_MS)
+}
+
+// Resolves to the location once the page is done changing, so what's on it can be photographed:
+// a pending relayout has run, fonts and images are in, and foliate has paginated around them.
+const settled = async () => {
+    while (relayoutTimer !== null) await new Promise(resolve => setTimeout(resolve, 25))
+    return enqueue(async () => {
+        const doc = currentDocument()
+        if (doc) {
+            await withTimeout(Promise.allSettled([doc.fonts.ready, ...decodedImages(doc)]),
+                RESOURCES_MS, 'resources').catch(() => {})
+            // foliate paginates again from a resize observer, which a hidden page runs late if at all.
+            if (document.hidden) view.renderer.render()
+            await settle()
+        }
+        post()
+        return location()
+    })
 }
 
 const firstSectionIndex = () => book.sections.findIndex(section => section.linear !== 'no')
@@ -324,6 +355,7 @@ globalThis.readmeBridge = {
     open,
     currentDocument,
     location,
+    settled,
     next: () => navigate(() => view.next()),
     previous: () => navigate(() => view.prev()),
     goToCFI: cfi => navigate(() => view.goTo(cfi)),
