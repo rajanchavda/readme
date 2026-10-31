@@ -14,7 +14,12 @@ targets:
   Readme:
     type: application
     platform: macOS
-    sources: [Readme]
+    sources:
+      - path: Readme
+        excludes: ["Web/**"]
+      - path: Readme/Web
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rajanchavda.Readme
@@ -34,7 +39,12 @@ targets:
   ReadmeTests:
     type: bundle.unit-test
     platform: macOS
-    sources: [ReadmeTests]
+    sources:
+      - path: ReadmeTests
+        excludes: ["Fixtures/**"]
+      - path: ReadmeTests/Fixtures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Readme
     settings:

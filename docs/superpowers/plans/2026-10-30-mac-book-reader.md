@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Apple silicon only, macOS 14 or later.
-- Sandboxed, no private APIs, no network access at runtime. No backend or accounts.
+- Sandboxed, no private APIs, no network use at runtime. No backend or accounts. WKWebView in a sandboxed app requires the `com.apple.security.network.client` entitlement, so that one is allowed, and a `WKContentRuleList` blocks all http(s) and ws(s) loads from books.
 - All costs stay at zero: ad-hoc signing (`CODE_SIGN_IDENTITY = "-"`) until the owner pays Apple's fee.
 - Bundle ID `com.rajanchavda.Readme`, display name `Readme` (working name; keep it in one build setting).
 - Never use the `gh` CLI. Plain `git` only. Temporary files go in `scratchpad/`, never `/tmp`.
@@ -48,7 +48,7 @@ Nothing else gets built until the owner has tried this.
 - [ ] **Step 1:** Run `git init -b main`, then commit the existing spec, plan, `.gitignore` and mockup copies as the first commit. Create a branch `build/v1` for the work.
 - [ ] **Step 2:** Write `SmokeTests.appIdentity`: `#expect(Bundle(for: BundleToken.self).bundleIdentifier == "com.rajanchavda.Readme")`, using the app bundle.
 - [ ] **Step 3:** Run `scripts/test.sh SmokeTests`. Expected: FAIL (no project yet).
-- [ ] **Step 4:** Write `project.yml`: macOS 14 target, Swift 6, sandbox on with `com.apple.security.files.user-selected.read-only`, no network entitlements, ad-hoc signing, `CFBundleDocumentTypes` for `org.idpf.epub-container`. Write an app that opens an empty window.
+- [ ] **Step 4:** Write `project.yml`: macOS 14 target, Swift 6, sandbox on with `com.apple.security.files.user-selected.read-only`, no other entitlements yet, ad-hoc signing, `CFBundleDocumentTypes` for `org.idpf.epub-container`. Write an app that opens an empty window.
 - [ ] **Step 5:** Run `scripts/test.sh SmokeTests`. Expected: PASS.
 - [ ] **Step 6:** Commit: `chore: add project skeleton`.
 
@@ -369,7 +369,7 @@ shade = |sin(angle)| * 0.16;  cast = sin(pi*t)
 **Interfaces:**
 - Produces: `build/Readme.dmg`.
 
-- [ ] **Step 1:** Write `scripts/check_release.sh`, which fails unless: `codesign -d --entitlements -` shows the sandbox on and no network entitlements; `lipo -archs` shows `arm64`; `LSMinimumSystemVersion` is `14.0`; and `THIRD_PARTY_NOTICES.md` names foliate-js, zip.js, EB Garamond, Literata and Fraunces.
+- [ ] **Step 1:** Write `scripts/check_release.sh`, which fails unless: `codesign -d --entitlements -` shows the sandbox on, `network.client` as the only network entitlement and no `network.server`; `lipo -archs` shows `arm64`; `LSMinimumSystemVersion` is `14.0`; and `THIRD_PARTY_NOTICES.md` names foliate-js, zip.js, EB Garamond, Literata and Fraunces.
 - [ ] **Step 2:** Run it. Expected: FAIL.
 - [ ] **Step 3:** Confirm each bundled font's and library's licence allows commercial shipping, and include their licence text in the notices. Stop and tell the owner if any doesn't. Write `package.sh` using `hdiutil`, and add a simple app icon. Write `docs/install.md`: plain steps for a reader to open the app the first time through System Settings, Privacy & Security, "Open Anyway".
 - [ ] **Step 4:** Run `scripts/package.sh && scripts/check_release.sh`. Expected: PASS.
