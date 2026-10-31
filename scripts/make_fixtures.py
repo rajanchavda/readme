@@ -275,6 +275,35 @@ def remote_image_book():
     )
 
 
+def link_hints_book():
+    """Hints that may open connections without passing the content rule list."""
+    hints = (
+        '<link rel="preconnect" href="https://www.apple.com/"/>'
+        '<link rel="DNS-Prefetch" href="https://www.apple.com/"/>'
+        '<link rel="prefetch" href="https://www.apple.com/a"/>'
+        '<link rel="preload stylesheet" as="style" href="https://www.apple.com/b.css"/>'
+    )
+    head = hints + '<link rel="stylesheet" href="style.css"/>'
+    body = (
+        "<h1>Link Hints</h1>\n"
+        "<p>Plain text.</p>\n"
+        '<iframe id="inner" src="inner.xhtml"></iframe>\n'
+    )
+    write_epub(
+        "link-hints.epub",
+        "Link Hints Book",
+        [Chapter("ch1", "Link Hints", xhtml("Link Hints", body, head))],
+        extra_files={
+            "style.css": "h1 { color: rgb(1, 2, 3); }\n",
+            "inner.xhtml": xhtml("Inner", "<p>Inner.</p>", hints),
+        },
+        extra_manifest=[
+            '<item id="style" href="style.css" media-type="text/css"/>',
+            '<item id="inner" href="inner.xhtml" media-type="application/xhtml+xml"/>',
+        ],
+    )
+
+
 def drm_book():
     rng = random.Random(3)
     cipher = rng.randbytes(8192)
@@ -294,6 +323,7 @@ def main():
     write_epub("no-toc.epub", "No TOC Book", short_chapters(random.Random(5)), has_toc=False)
     scripted_book()
     remote_image_book()
+    link_hints_book()
     drm_book()
     (OUT / "not-an-epub.epub").write_bytes(random.Random(6).randbytes(4096))
 

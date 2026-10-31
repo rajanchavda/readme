@@ -11,18 +11,31 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
     /// iframes, and they inherit this policy through their `blob:` URLs.
     nonisolated static let contentSecurityPolicy = "default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * 'unsafe-inline'; font-src * blob: data: readme-book:"
 
-    private static let host = "app"
+    private nonisolated static let host = "app"
     private static let bookFolder = "/book/"
     private nonisolated static let chunkSize = 256 * 1024
 
     private let webRoot: URL
     private var bookPath: String?
     private var bookFile: URL?
-    private var running: [ObjectIdentifier: any WKURLSchemeTask] = [:]
-    private var readers: [ObjectIdentifier: Task<Void, Never>] = [:]
+    /// Keyed by an ID of our own. A stopped task's address can be reused by a new one, and a reader
+    /// still winding down must not be able to write to that.
+    private var running: [UUID: any WKURLSchemeTask] = [:]
+    private var readers: [UUID: Task<Void, Never>] = [:]
+    private var ids: [ObjectIdentifier: UUID] = [:]
 
     init(webRoot: URL) {
         self.webRoot = webRoot
+    }
+
+    /// The reader page, whatever query it's asked for with.
+    nonisolated static func isReader(_ url: URL) -> Bool {
+        url.scheme == scheme && url.host == host && url.path == readerURL.path
+    }
+
+    /// The reader page, tagged so its `ready` message can be told from an earlier page's.
+    nonisolated static func readerURL(load: String) -> URL {
+        URL(string: "\(readerURL.absoluteString)?load=\(load)")!
     }
 
     /// Makes `file` available to the page and returns the URL to fetch it from.
@@ -44,11 +57,12 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
-        let id = ObjectIdentifier(task)
+        let id = UUID()
+        ids[ObjectIdentifier(task)] = id
         running[id] = task
         let url = task.request.url
         let file = fileToServe(for: url)
-        let isReader = url == Self.readerURL
+        let isReader = url.map(Self.isReader) ?? false
         let isBook = file != nil && file == bookFile
         readers[id] = Task.detached { [weak self] in
             await Self.stream(file, id: id, isReader: isReader, isBook: isBook, to: self)
@@ -56,7 +70,7 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
-        let id = ObjectIdentifier(task)
+        guard let id = ids.removeValue(forKey: ObjectIdentifier(task)) else { return }
         running[id] = nil
         readers.removeValue(forKey: id)?.cancel()
     }
@@ -70,7 +84,7 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
     }
 
     private nonisolated static func stream(
-        _ file: URL?, id: ObjectIdentifier, isReader: Bool, isBook: Bool, to scheme: BookScheme?
+        _ file: URL?, id: UUID, isReader: Bool, isBook: Bool, to scheme: BookScheme?
     ) async {
         guard let file, let handle = try? FileHandle(forReadingFrom: file) else {
             await scheme?.respond(id, status: 404, length: 0, mimeType: "text/plain", isReader: false)
@@ -95,7 +109,7 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
     // WebKit throws an exception if a task it has stopped is sent anything, so each of these
     // checks that the task is still running.
 
-    private func respond(_ id: ObjectIdentifier, status: Int, length: UInt64, mimeType: String, isReader: Bool) {
+    private func respond(_ id: UUID, status: Int, length: UInt64, mimeType: String, isReader: Bool) {
         guard let task = running[id], let url = task.request.url else { return }
         var headers = ["Content-Type": mimeType, "Content-Length": String(length), "Cache-Control": "no-store"]
         if isReader { headers["Content-Security-Policy"] = Self.contentSecurityPolicy }
@@ -103,13 +117,14 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
         task.didReceive(response)
     }
 
-    private func deliver(_ id: ObjectIdentifier, _ data: Data) {
+    private func deliver(_ id: UUID, _ data: Data) {
         running[id]?.didReceive(data)
     }
 
-    private func finish(_ id: ObjectIdentifier, error: (any Error)?) {
+    private func finish(_ id: UUID, error: (any Error)?) {
         guard let task = running.removeValue(forKey: id) else { return }
         readers[id] = nil
+        ids[ObjectIdentifier(task)] = nil
         if let error { task.didFailWithError(error) } else { task.didFinish() }
     }
 

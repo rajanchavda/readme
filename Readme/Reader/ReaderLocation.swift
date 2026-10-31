@@ -18,8 +18,7 @@ struct TOCEntry: Decodable, Sendable, Equatable {
     var title: String
     var href: String
     var level: Int
-    /// Progress through the book at the start of the visible spread, unlike foliate's own value,
-    /// which is the end of it. It's 0 on the first page and stays below 1 on the last spread, so use
-    /// `isAtEnd` to detect the end of the book.
+    /// Roughly where this entry starts in the book, for `BookWebView.go(toFraction:)`. An entry with a
+    /// fragment is placed by the share of its section's text that comes before the fragment.
     var fraction: Double
 }

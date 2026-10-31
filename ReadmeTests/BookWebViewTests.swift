@@ -79,6 +79,77 @@ private func fixture(_ name: String) throws -> URL {
         #expect(await view.toc().count == 3)
     }
 
+    @Test func overlappingOpensLeaveTheNewestOpen() async throws {
+        _ = try await view.open(fixture("long.epub"), at: nil)
+        // Second open while the first is at each stage: page loading, then book opening.
+        for delay in [0, 5, 20, 50, 100] {
+            let first = Task { try await view.open(fixture("long.epub"), at: nil) }
+            if delay == 0 {
+                while !view.webView.isLoading { await Task.yield() }
+            } else {
+                try await Task.sleep(for: .milliseconds(delay))
+            }
+            let started = ContinuousClock.now
+            let second = try await view.open(fixture("no-cover.epub"), at: nil)
+            #expect(second.isAtStart)
+            _ = await first.result
+            // The replaced open gives up promptly rather than waiting out its timeout.
+            #expect(ContinuousClock.now - started < .seconds(10))
+            #expect(await view.toc().count == 3)
+            #expect(await view.next() != nil)
+        }
+    }
+
+    @Test func overlappingOpensWithoutWaitingLeaveTheNewestOpen() async throws {
+        let first = Task { try await view.open(fixture("long.epub"), at: nil) }
+        let second = Task { try await view.open(fixture("no-cover.epub"), at: nil) }
+        #expect(try await second.value.isAtStart)
+        await #expect(throws: BookWebViewError.superseded) { _ = try await first.value }
+        #expect(await view.toc().count == 3)
+    }
+
+    /// The timing is out of our hands in the tests above, so this delivers WebKit's report of a
+    /// cancelled earlier load directly, while the newest load is still under way.
+    @Test func cancelledEarlierLoadDoesNotFailTheNewestOpen() async throws {
+        _ = try await view.open(fixture("no-cover.epub"), at: nil)
+        let open = Task { try await view.open(fixture("no-cover.epub"), at: nil) }
+        while !view.webView.isLoading { await Task.yield() }
+        let cancelled = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+        let delegate = try #require(view.webView.navigationDelegate)
+        let other = WKWebView()
+        let earlier = try #require(other.loadHTMLString("", baseURL: nil))
+        delegate.webView?(view.webView, didFailProvisionalNavigation: earlier, withError: cancelled)
+        delegate.webView?(view.webView, didFail: earlier, withError: cancelled)
+        #expect(try await open.value.isAtStart)
+    }
+
+    @Test func earlierPagesReadyMessageIsIgnored() async throws {
+        _ = try await view.open(fixture("no-cover.epub"), at: nil)
+        let open = Task { try await view.open(fixture("no-cover.epub"), at: nil) }
+        while !view.webView.isLoading { await Task.yield() }
+        view.readerIsReady(load: "stale")
+        view.readerIsReady(load: nil)
+        // Still waiting for the new page's own message.
+        #expect(view.isLoadingReader)
+        #expect(try await open.value.isAtStart)
+    }
+
+    @Test func reloadCannotWipeAnOpenBook() async throws {
+        _ = try await view.open(fixture("no-cover.epub"), at: nil)
+        view.webView.reload()
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(await view.next() != nil)
+
+        _ = try? await view.call("location.reload()", as: Bool.self, timeout: .seconds(1))
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(await view.next() != nil)
+
+        view.webView.load(URLRequest(url: BookScheme.readerURL))
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(await view.next() != nil)
+        #expect(try await view.open(fixture("no-cover.epub"), at: nil).isAtStart)
+    }
+
     // MARK: Moving
 
     @Test func nextAdvances() async throws {
@@ -236,6 +307,31 @@ private func fixture(_ name: String) throws -> URL {
             """,
             as: String.self)
         #expect(state == "blocked")
+    }
+
+    @Test func connectionHintsAreRemovedBeforeRendering() async throws {
+        _ = try await view.open(fixture("link-hints.epub"), at: nil)
+        let rels = try await view.call(
+            """
+            const doc = readmeBridge.currentDocument()
+            const inner = doc.getElementById('inner')?.contentDocument
+            return {
+                chapter: [...doc.querySelectorAll('link')].map(link => link.getAttribute('rel')),
+                inner: inner ? [...inner.querySelectorAll('link')].map(link => link.getAttribute('rel')) : null,
+                innerText: inner?.body?.textContent?.trim() ?? null,
+                color: doc.defaultView.getComputedStyle(doc.querySelector('h1')).color,
+            }
+            """,
+            as: LinkReport.self)
+        let report = try #require(rels)
+        #expect(report.chapter == ["stylesheet"])
+        #expect(report.inner == [])
+        #expect(report.innerText == "Inner.")
+        // The brief's `style-src *` doesn't match the `blob:` URLs foliate gives a book's stylesheets,
+        // so they don't apply. Adding `blob:` to it makes this pass. Awaiting a decision on the CSP.
+        withKnownIssue("The CSP blocks a book's own stylesheets") {
+            #expect(report.color == "rgb(1, 2, 3)")
+        }
     }
 
     @Test func openThrowsIfTheRemoteBlockFailsToCompile() async throws {
@@ -409,6 +505,63 @@ private func fixture(_ name: String) throws -> URL {
         #expect(onSpread == true)
     }
 
+    private func columnWidth(becomes isExpected: (Double) -> Bool) async throws -> Double {
+        var width = try await columnWidth()
+        for _ in 0..<50 where !isExpected(width) {
+            try await Task.sleep(for: .milliseconds(100))
+            width = try await columnWidth()
+        }
+        return width
+    }
+
+    @Test func enlargingANarrowViewLiftsTheColumnCap() async throws {
+        window.setContentSize(NSSize(width: 640, height: 500))
+        _ = try await view.open(fixture("long.epub"), at: nil)
+        let before = try #require(await view.go(toFraction: 0.5))
+        #expect(try await columnWidth() < 300)
+        var seen: [ReaderLocation] = []
+        view.onRelocate = { seen.append($0) }
+
+        window.setContentSize(NSSize(width: 1400, height: 900))
+
+        #expect(try await columnWidth { $0 > 400 } > 400)
+        try await settleMessages()
+        let after = try #require(view.currentLocation)
+        #expect(after.chapterTitle == before.chapterTitle)
+        #expect(abs(after.fraction - before.fraction) < 0.01)
+        // A hidden page can finish laying out a moment later, so the end of the visible range may be
+        // reported again, but each report has the same start.
+        #expect(seen.last == after)
+        #expect(seen.allSatisfy { abs($0.fraction - before.fraction) < 0.01 })
+    }
+
+    @Test func shrinkingAWideViewKeepsTwoColumns() async throws {
+        _ = try await view.open(fixture("long.epub"), at: nil)
+        let before = try #require(await view.go(toFraction: 0.5))
+
+        window.setContentSize(NSSize(width: 640, height: 500))
+
+        #expect(try await columnWidth { $0 < 300 } < 300)
+        try await settleMessages()
+        let after = try #require(view.currentLocation)
+        #expect(after.chapterTitle == before.chapterTitle)
+        #expect(abs(after.fraction - before.fraction) < 0.01)
+    }
+
+    @Test func oneColumnChoiceSurvivesAResize() async throws {
+        _ = try await view.open(fixture("long.epub"), at: nil)
+        await view.applyStyles(css: "", columns: 1)
+        let one = try await columnWidth()
+        window.setContentSize(NSSize(width: 1400, height: 900))
+        try await Task.sleep(for: .seconds(1))
+        // Still a single column, capped at foliate's line length.
+        #expect(try await columnWidth() >= one * 0.9)
+        let columns = try await view.call(
+            "return document.querySelector('foliate-view').renderer.getAttribute('max-column-count')",
+            as: String.self)
+        #expect(columns == "1")
+    }
+
     // MARK: Offscreen use
 
     @Test func snapshotFromHiddenWindowHasInk() async throws {
@@ -419,6 +572,16 @@ private func fixture(_ name: String) throws -> URL {
     }
 
     // MARK: Scheme and policy
+
+    @Test func readerAlwaysGetsTheCSP() async throws {
+        _ = try await view.open(fixture("no-cover.epub"), at: nil)
+        for path in ["reader.html", "reader.html?x", "reader.html?load=1#y"] {
+            let header = try await view.call(
+                "return (await fetch(path)).headers.get('Content-Security-Policy')",
+                arguments: ["path": path], as: String.self)
+            #expect(header == BookScheme.contentSecurityPolicy)
+        }
+    }
 
     @Test func contentSecurityPolicyIsExact() {
         #expect(BookScheme.contentSecurityPolicy == "default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * 'unsafe-inline'; font-src * blob: data: readme-book:")
@@ -441,10 +604,22 @@ private func fixture(_ name: String) throws -> URL {
         #expect(BookWebView.allowsNavigation(to: URL(string: "blob:readme-book://app/x")!, inMainFrame: false))
         #expect(BookWebView.allowsNavigation(to: URL(string: "about:blank")!, inMainFrame: false))
         #expect(!BookWebView.allowsNavigation(to: URL(string: "https://example.com")!, inMainFrame: false))
+        #expect(!BookWebView.allowsNavigation(to: reader, inMainFrame: false))
+        #expect(!BookWebView.allowsNavigation(to: URL(string: "readme-book://app/bridge.js")!, inMainFrame: false))
+        #expect(BookWebView.allowsNavigation(to: URL(string: "readme-book://app/reader.html?load=3")!, inMainFrame: true))
+        #expect(!BookWebView.allowsNavigation(to: URL(string: "readme-book://other/reader.html")!, inMainFrame: true))
+        #expect(!BookWebView.allowsNavigation(to: URL(string: "readme-book://app/foliate/view.js")!, inMainFrame: true))
         #expect(!BookWebView.allowsNavigation(to: URL(string: "file:///etc/passwd")!, inMainFrame: false))
     }
 
     // MARK: Helpers
+
+    private struct LinkReport: Decodable {
+        var chapter: [String]
+        var inner: [String]?
+        var innerText: String?
+        var color: String
+    }
 
     /// Lets relocate messages that are already on their way arrive.
     private func settleMessages() async throws {

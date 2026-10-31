@@ -44,6 +44,14 @@ final class BookWebView: NSView {
     var remoteBlockRules = BookWebView.defaultRemoteBlockRules
     private var openGeneration = 0
     private var pendingLoad: CheckedContinuation<Void, any Error>?
+    /// The navigation `pendingLoad` waits on, and the tag its `ready` message will carry. WebKit
+    /// also reports on loads that have been replaced, which mustn't settle a newer one.
+    private var pendingNavigation: WKNavigation?
+    private var pendingLoadID: String?
+    private var loadCount = 0
+    private var relayoutTask: Task<Void, Never>?
+    /// The call running bridge.js's `open`. Replacing the page can leave it unanswered.
+    private var openReply: Reply?
     private var loadTimer: Task<Void, Never>?
     private var css = ""
     private var columns = 2
@@ -69,11 +77,19 @@ final class BookWebView: NSView {
         fatalError("BookWebView is created in code")
     }
 
+    override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize != frame.size
+        super.setFrameSize(newSize)
+        if changed && isOpen { scheduleRelayout() }
+    }
+
     // MARK: Opening
 
     func open(_ url: URL, at cfi: String?) async throws -> ReaderLocation {
         openGeneration += 1
         let generation = openGeneration
+        openReply?.finish(.failure(BookWebViewError.superseded))
+        openReply = nil
         isOpen = false
         currentLocation = nil
         guard FileManager.default.isReadableFile(atPath: url.path) else {
@@ -81,6 +97,7 @@ final class BookWebView: NSView {
         }
         // The page can't paginate at no size. Later layout resizes it and foliate re-renders.
         if bounds.isEmpty { setFrameSize(NSSize(width: 1000, height: 700)) }
+        let sizeAtOpen = bounds.size
 
         try await blockRemoteLoads()
         guard generation == openGeneration else { throw BookWebViewError.superseded }
@@ -98,14 +115,18 @@ final class BookWebView: NSView {
                     "columns": columns,
                 ],
                 as: ReaderLocation.self,
-                timeout: Self.openTimeout)
+                timeout: Self.openTimeout,
+                isOpenCall: true)
         } catch BookWebViewError.javaScript(let message) {
+            // The page was replaced by a newer open, which is why this call failed.
+            guard generation == openGeneration else { throw BookWebViewError.superseded }
             throw BookWebViewError.openFailed(message)
         }
         guard generation == openGeneration else { throw BookWebViewError.superseded }
         guard let location else { throw BookWebViewError.openFailed("The book has no pages") }
         isOpen = true
         currentLocation = location
+        if bounds.size != sizeAtOpen { scheduleRelayout() }
         return location
     }
 
@@ -126,6 +147,8 @@ final class BookWebView: NSView {
             throw BookWebViewError.openFailed("Content rules did not compile: \(error)")
         }
         guard let compiled else { throw BookWebViewError.openFailed("Content rules did not compile") }
+        // Overlapping opens can both get here.
+        guard !isBlockingRemoteLoads else { return }
         webView.configuration.userContentController.add(compiled)
         isBlockingRemoteLoads = true
     }
@@ -139,7 +162,11 @@ final class BookWebView: NSView {
                 try? await Task.sleep(for: Self.loadTimeout)
                 if !Task.isCancelled { self?.finishLoad(.failure(BookWebViewError.timedOut)) }
             }
-            webView.load(URLRequest(url: BookScheme.readerURL))
+            loadCount += 1
+            let id = String(loadCount)
+            let url = BookScheme.readerURL(load: id)
+            pendingLoadID = id
+            pendingNavigation = webView.load(URLRequest(url: url))
         }
     }
 
@@ -148,6 +175,28 @@ final class BookWebView: NSView {
         loadTimer = nil
         pendingLoad?.resume(with: result)
         pendingLoad = nil
+        pendingNavigation = nil
+        pendingLoadID = nil
+    }
+
+    fileprivate func navigationFailed(_ navigation: WKNavigation?, error: any Error) {
+        guard let navigation, navigation === pendingNavigation else { return }
+        finishLoad(.failure(BookWebViewError.openFailed(error.localizedDescription)))
+    }
+
+    var isLoadingReader: Bool { pendingLoad != nil }
+
+    /// Settles the current load if `load` is its tag. An earlier page's message is ignored.
+    func readerIsReady(load: String?) {
+        guard let load, load == pendingLoadID else { return }
+        finishLoad(.success(()))
+    }
+
+    /// The main frame only changes while `open` is loading the reader, which rules out a reload from
+    /// the context menu, as that would leave a blank page behind an open book. Not limited to the
+    /// newest load: cancelling a replaced one here can stop the load that replaced it.
+    fileprivate func allowsMainFrameNavigation(to url: URL) -> Bool {
+        pendingLoad != nil && Self.allowsNavigation(to: url, inMainFrame: true)
     }
 
     // MARK: Moving
@@ -216,6 +265,20 @@ final class BookWebView: NSView {
         }
     }
 
+    /// foliate caps columns by the width it's given, and in a hidden window nothing else tells
+    /// the page it was resized, so the bridge lays out again and holds the reader's place.
+    private func scheduleRelayout() {
+        relayoutTask?.cancel()
+        relayoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled, let self, self.isOpen else { return }
+            _ = try? await self.call(
+                "readmeBridge.resized(width)",
+                arguments: ["width": Double(self.bounds.width)],
+                as: Bool.self)
+        }
+    }
+
     // MARK: JavaScript
 
     /// Runs `body` as an async function and decodes what it returns. A hung call throws
@@ -227,11 +290,13 @@ final class BookWebView: NSView {
         _ body: String,
         arguments: [String: Any] = [:],
         as type: Value.Type,
-        timeout: Duration = BookWebView.commandTimeout
+        timeout: Duration = BookWebView.commandTimeout,
+        isOpenCall: Bool = false
     ) async throws -> Value? {
         let wrapped = "return JSON.stringify({ value: (await (async () => { \(body) })()) ?? null })"
         let json = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, any Error>) in
             let reply = Reply(continuation)
+            if isOpenCall { openReply = reply }
             let timer = Task {
                 try? await Task.sleep(for: timeout)
                 if !Task.isCancelled { reply.finish(.failure(BookWebViewError.timedOut)) }
@@ -271,7 +336,7 @@ final class BookWebView: NSView {
         }
         switch (event.type, event.location) {
         case ("ready", _):
-            finishLoad(.success(()))
+            readerIsReady(load: event.load)
         case ("relocate", let location?):
             currentLocation = location
             onRelocate?(location)
@@ -288,13 +353,14 @@ final class BookWebView: NSView {
 
     /// Only the reader page may fill the main frame, and a book's frames can't leave the app.
     nonisolated static func allowsNavigation(to url: URL, inMainFrame: Bool) -> Bool {
-        if inMainFrame { return url == BookScheme.readerURL }
-        return ["blob", "about", BookScheme.scheme].contains(url.scheme?.lowercased())
+        if inMainFrame { return BookScheme.isReader(url) }
+        return ["blob", "about"].contains(url.scheme?.lowercased())
     }
 
     private struct BridgeEvent: Decodable {
         var type: String
         var location: ReaderLocation?
+        var load: String?
     }
 }
 
@@ -331,18 +397,22 @@ private final class BookWebViewDelegate: NSObject, WKNavigationDelegate, WKScrip
         decidePolicyFor action: WKNavigationAction,
         decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
     ) {
-        let allowed = action.request.url.map {
-            BookWebView.allowsNavigation(to: $0, inMainFrame: action.targetFrame?.isMainFrame ?? true)
-        } ?? false
+        guard let url = action.request.url, let frame = action.targetFrame else {
+            decisionHandler(.cancel)
+            return
+        }
+        let allowed = frame.isMainFrame
+            ? owner?.allowsMainFrameNavigation(to: url) ?? false
+            : BookWebView.allowsNavigation(to: url, inMainFrame: false)
         decisionHandler(allowed ? .allow : .cancel)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
-        owner?.finishLoad(.failure(BookWebViewError.openFailed(error.localizedDescription)))
+        owner?.navigationFailed(navigation, error: error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
-        owner?.finishLoad(.failure(BookWebViewError.openFailed(error.localizedDescription)))
+        owner?.navigationFailed(navigation, error: error)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

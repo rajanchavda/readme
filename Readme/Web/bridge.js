@@ -6,6 +6,7 @@ import { SectionProgress } from './foliate/progress.js'
 const COMMAND_MS = 15000
 const SECTION_MS = 10000
 const SETTLE_MS = 100
+const RELAYOUT_MS = 150
 const DEFAULT_INLINE_SIZE = 720
 // foliate's #container is the view less a 3.5% gutter on each side.
 const CONTAINER_SHARE = 0.93
@@ -17,6 +18,9 @@ let latest = null // the last `relocate` detail from foliate
 let relocations = 0
 let busy = false // true during a command, so its in-between stops aren't reported
 let lastPostedCFI = null
+let columnCount = 2
+let laidOutSize = null
+let relayoutTimer = null
 let queue = Promise.resolve()
 
 const withTimeout = (promise, ms, label) => {
@@ -131,6 +135,29 @@ const guardSection = section => {
     }
 }
 
+// Hints that could open a connection without passing the app's content rule list. They're
+// removed rather than relied on to be blocked. This sees every document foliate loads for a
+// section, including ones nested inside it.
+const CONNECTION_HINTS = ['preconnect', 'dns-prefetch', 'prefetch', 'preload', 'modulepreload', 'prerender']
+
+const withoutConnectionHints = (data, type) => {
+    const doc = new DOMParser().parseFromString(data, type)
+    const hints = [...doc.querySelectorAll('link[rel]')].filter(link => link.getAttribute('rel')
+        .toLowerCase().split(/\s+/).some(rel => CONNECTION_HINTS.includes(rel)))
+    if (!hints.length) return data
+    for (const hint of hints) hint.remove()
+    return new XMLSerializer().serializeToString(doc)
+}
+
+const removeConnectionHints = book => {
+    book.transformTarget?.addEventListener('data', ({ detail }) => {
+        if (!PARSEABLE.includes(detail.type)) return
+        const { type } = detail
+        detail.data = Promise.resolve(detail.data).then(data =>
+            typeof data === 'string' ? withoutConnectionHints(data, type) : data)
+    })
+}
+
 const prepareSections = book => {
     if (!book.sections?.length) throw new Error('The book has no chapters')
     // A file missing from the zip has nothing to show, so turning pages goes past it.
@@ -145,18 +172,49 @@ const prepareSections = book => {
         for (const section of hasContent) section.linear = 'yes'
 }
 
-const setLayout = (css, columns) => {
+const sizeOf = element => {
+    const { width, height } = element.getBoundingClientRect()
+    return `${width}x${height}`
+}
+
+// foliate caps columns by how many fit at this size, which would overrule us in a narrow view.
+// Setting the size is also what makes it lay out again, as it would not for a new column count
+// alone, or in a hidden page, where its resize observer doesn't run.
+const fitColumns = () => {
     const { renderer } = view
-    const count = Math.max(1, Math.trunc(finite(columns, 2)))
-    renderer.setAttribute('max-column-count', String(count))
-    // foliate also caps columns by how many fit at this size, which would overrule us in a
-    // narrow view. Setting the size is also what makes it lay out again, as it would not for
-    // a new column count alone.
+    laidOutSize = sizeOf(renderer)
+    renderer.setAttribute('max-column-count', String(columnCount))
     const { width } = renderer.getBoundingClientRect()
-    const fits = Math.ceil(width * CONTAINER_SHARE / DEFAULT_INLINE_SIZE) >= count
+    const fits = Math.ceil(width * CONTAINER_SHARE / DEFAULT_INLINE_SIZE) >= columnCount
     renderer.setAttribute('max-inline-size',
-        width > 0 && !fits ? `${Math.floor(width / count)}px` : `${DEFAULT_INLINE_SIZE}px`)
-    renderer.setStyles?.(css ?? '')
+        width > 0 && !fits ? `${Math.floor(width / columnCount)}px` : `${DEFAULT_INLINE_SIZE}px`)
+}
+
+const setLayout = (css, columns) => {
+    columnCount = Math.max(1, Math.trunc(finite(columns, 2)))
+    fitColumns()
+    view.renderer.setStyles?.(css ?? '')
+}
+
+// Makes a layout change, then goes back to the last place reported, which foliate's own
+// re-rendering hasn't moved.
+const holdingPlace = async change => {
+    const cfi = lastPostedCFI ?? view.lastLocation?.cfi
+    change()
+    await settle()
+    if (cfi) await view.goTo(cfi)
+    await settle()
+    post()
+}
+
+const relayout = () => enqueue(async () => {
+    if (sizeOf(view.renderer) === laidOutSize) post()
+    else await holdingPlace(fitColumns)
+})
+
+const scheduleRelayout = () => {
+    clearTimeout(relayoutTimer)
+    relayoutTimer = setTimeout(() => relayout().catch(error => console.warn(error)), RELAYOUT_MS)
 }
 
 const firstSectionIndex = () => book.sections.findIndex(section => section.linear !== 'no')
@@ -171,6 +229,7 @@ const open = async (url, cfi, css, columns) => {
         throw new Error('The file is not an EPUB')
     book = await makeBook(new File([blob], 'book.epub', { type: 'application/epub+zip' }))
     prepareSections(book)
+    removeConnectionHints(book)
     progress = new SectionProgress(book.sections, 1500, 1600)
 
     busy = true
@@ -178,7 +237,10 @@ const open = async (url, cfi, css, columns) => {
     view.addEventListener('relocate', ({ detail }) => {
         latest = detail
         relocations++
-        if (!busy) post()
+        if (busy) return
+        // foliate re-rendering, usually mid-resize, so wait to see where it ends up.
+        if (detail.reason === 'anchor') scheduleRelayout()
+        else post()
     })
     view.addEventListener('external-link', event => event.preventDefault())
     document.body.append(view)
@@ -208,6 +270,7 @@ const open = async (url, cfi, css, columns) => {
     await settle()
     busy = false
     post()
+    new ResizeObserver(scheduleRelayout).observe(view.renderer)
     return location()
 }
 
@@ -266,14 +329,13 @@ globalThis.readmeBridge = {
     goToCFI: cfi => navigate(() => view.goTo(cfi)),
     goToFraction: fraction => navigate(() => view.goToFraction(fraction)),
     toc: tocEntries,
-    applyStyles: (css, columns) => enqueue(async () => {
-        const cfi = view.lastLocation?.cfi
-        setLayout(css, columns)
-        await settle()
-        if (cfi) await view.goTo(cfi)
-        await settle()
-        post()
-    }),
+    applyStyles: (css, columns) => enqueue(() => holdingPlace(() => setLayout(css, columns))),
+    // Called when Swift resizes the view. The page learns its new size a little later.
+    resized: async width => {
+        for (let i = 0; i < 20 && Math.abs(innerWidth - width) >= 1; i++)
+            await new Promise(resolve => setTimeout(resolve, 25))
+        scheduleRelayout()
+    },
 }
 
-globalThis.webkit?.messageHandlers?.readme?.postMessage(JSON.stringify({ type: 'ready' }))
+globalThis.webkit?.messageHandlers?.readme?.postMessage(JSON.stringify({ type: 'ready', load: new URLSearchParams(globalThis.location.search).get('load') }))
