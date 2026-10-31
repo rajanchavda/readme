@@ -327,11 +327,8 @@ private func fixture(_ name: String) throws -> URL {
         #expect(report.chapter == ["stylesheet"])
         #expect(report.inner == [])
         #expect(report.innerText == "Inner.")
-        // The brief's `style-src *` doesn't match the `blob:` URLs foliate gives a book's stylesheets,
-        // so they don't apply. Adding `blob:` to it makes this pass. Awaiting a decision on the CSP.
-        withKnownIssue("The CSP blocks a book's own stylesheets") {
-            #expect(report.color == "rgb(1, 2, 3)")
-        }
+        // The book's own stylesheet still applies, so the CSP allows it and stripping left it intact.
+        #expect(report.color == "rgb(1, 2, 3)")
     }
 
     @Test func openThrowsIfTheRemoteBlockFailsToCompile() async throws {
@@ -584,7 +581,7 @@ private func fixture(_ name: String) throws -> URL {
     }
 
     @Test func contentSecurityPolicyIsExact() {
-        #expect(BookScheme.contentSecurityPolicy == "default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * 'unsafe-inline'; font-src * blob: data: readme-book:")
+        #expect(BookScheme.contentSecurityPolicy == "default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * blob: 'unsafe-inline'; font-src * blob: data: readme-book:")
     }
 
     @Test func schemeStaysInsideItsRoot() {

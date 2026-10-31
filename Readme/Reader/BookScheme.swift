@@ -9,7 +9,9 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
     nonisolated static let readerURL = URL(string: "readme-book://app/reader.html")!
     /// foliate's README requires scripts to be blocked by CSP: WebKit needs `allow-scripts` on its
     /// iframes, and they inherit this policy through their `blob:` URLs.
-    nonisolated static let contentSecurityPolicy = "default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * 'unsafe-inline'; font-src * blob: data: readme-book:"
+    /// `style-src` names `blob:` because `*` doesn't cover it, and foliate serves a book's stylesheets
+    /// from `blob:` URLs.
+    nonisolated static let contentSecurityPolicy = "default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * blob: 'unsafe-inline'; font-src * blob: data: readme-book:"
 
     private nonisolated static let host = "app"
     private static let bookFolder = "/book/"

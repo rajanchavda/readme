@@ -104,7 +104,7 @@ shade = |sin(angle)| * 0.16;  cast = sin(pi*t)
   - `brokenChapterStillOpens`: open `broken-chapter.epub`, walk every section with `next()`, expect no thrown error.
   - `missingTOCIsEmpty`: `no-toc.epub` gives `toc() == []`.
 - [ ] **Step 2:** Run `scripts/test.sh BookWebViewTests`. Expected: FAIL.
-- [ ] **Step 3:** Implement. Serve everything through a `WKURLSchemeHandler` on `readme-book://`. Send the header `Content-Security-Policy: default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * 'unsafe-inline'; font-src * blob: data: readme-book:` on `reader.html` (foliate's README requires script blocking by CSP, because WebKit needs `allow-scripts` on its iframes). `bridge.js` drives `<foliate-view>`: `flow="paginated"`, `max-column-count=2`. Take `chapterMinutesLeft` from the `time.section` value of foliate's `relocate` event.
+- [ ] **Step 3:** Implement. Serve everything through a `WKURLSchemeHandler` on `readme-book://`. Send the header `Content-Security-Policy: default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * blob: 'unsafe-inline'; font-src * blob: data: readme-book:` on `reader.html` (foliate's README requires script blocking by CSP, because WebKit needs `allow-scripts` on its iframes). `bridge.js` drives `<foliate-view>`: `flow="paginated"`, `max-column-count=2`. Take `chapterMinutesLeft` from the `time.section` value of foliate's `relocate` event.
 - [ ] **Step 4:** Run `scripts/test.sh BookWebViewTests`. Expected: PASS.
 - [ ] **Step 5:** Commit: `feat: render EPUBs with foliate-js`.
 
