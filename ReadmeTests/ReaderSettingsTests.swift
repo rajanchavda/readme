@@ -115,6 +115,18 @@ private func defaults() -> UserDefaults {
         #expect(SpreadLayout.columns(windowWidth: 1000, fontSize: 32, lineWidth: .regular) == 1)
     }
 
+    @Test func lineWidthSetsCharactersPerColumn() {
+        #expect(LineWidth.narrow.characters == 45)
+        #expect(LineWidth.regular.characters == 52)
+        #expect(LineWidth.wide.characters == 60)
+        let narrow = SpreadLayout.columnWidth(fontSize: 18, font: .literata, lineWidth: .narrow)
+        let regular = SpreadLayout.columnWidth(fontSize: 18, font: .literata, lineWidth: .regular)
+        let wide = SpreadLayout.columnWidth(fontSize: 18, font: .literata, lineWidth: .wide)
+        #expect(narrow < regular && regular < wide)
+        // Literata is wider than EB Garamond, so the same characters need more room.
+        #expect(regular > SpreadLayout.columnWidth(fontSize: 18, font: .ebGaramond, lineWidth: .regular))
+    }
+
     @Test func portraitAreaIsOnePageHoweverWide() {
         #expect(SpreadLayout.columns(windowWidth: 1200, fontSize: 18, lineWidth: .regular, windowHeight: 1300) == 1)
         #expect(SpreadLayout.columns(windowWidth: 1200, fontSize: 18, lineWidth: .regular, windowHeight: 800) == 2)
@@ -164,6 +176,10 @@ private final class FixtureToken {}
         #expect(try await loadedFaces(.literata).count == 1)
     }
 
+    @Test func literataItalicRenders() async throws {
+        #expect(try await loadedFaces(.literata, italic: true).count == 1)
+    }
+
     @Test func readingColoursBeatTheBooksOwn() async throws {
         let root = try #require(Bundle(for: FixtureToken.self).url(forResource: "Fixtures", withExtension: nil))
         _ = try await view.open(root.appendingPathComponent("long.epub"), at: nil)
@@ -172,5 +188,69 @@ private final class FixtureToken {}
             "const doc = readmeBridge.currentDocument(); return doc.defaultView.getComputedStyle(doc.querySelector('p') ?? doc.body).color",
             as: String.self)
         #expect(colour == "rgb(189, 185, 175)")
+    }
+}
+
+/// Line width has to show up in the rendered lines, for each font.
+@MainActor
+@Suite(.serialized, .timeLimit(.minutes(3))) struct LineLengthTests {
+    let window: NSWindow
+    let view: BookWebView
+
+    init() {
+        let frame = NSRect(x: 0, y: 0, width: 1600, height: 900)
+        window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        view = BookWebView(frame: frame)
+        window.contentView = view
+    }
+
+    /// Characters per line, averaged over the paragraphs of the open chapter that run to several lines.
+    private func charactersPerLine(_ font: BookFont, _ lineWidth: LineWidth) async throws -> Double {
+        var settings = ReaderSettings()
+        settings.font = font
+        settings.lineWidth = lineWidth
+        let columns = SpreadLayout.columns(
+            windowWidth: 1600, fontSize: settings.fontSize, lineWidth: lineWidth, windowHeight: 900, font: font)
+        await view.applyStyles(
+            css: ReadingCSS.css(settings, theme: .paper, fullscreen: false), columns: columns,
+            columnWidth: SpreadLayout.columnWidth(fontSize: settings.fontSize, font: font, lineWidth: lineWidth))
+        let result = try await view.call(
+            """
+            const doc = readmeBridge.currentDocument()
+            await doc.fonts.load('18px "EB Garamond"'); await doc.fonts.load('18px "Literata"')
+            let characters = 0, lines = 0
+            for (const p of doc.querySelectorAll('p')) {
+                const range = doc.createRange()
+                range.selectNodeContents(p)
+                const count = range.getClientRects().length
+                if (count < 4) continue
+                // The last line is short, so leave it out of both counts.
+                characters += p.textContent.length * (count - 1) / count
+                lines += count - 1
+            }
+            return lines === 0 ? 0 : characters / lines
+            """, as: Double.self) ?? 0
+        return result
+    }
+
+    private func open() async throws {
+        let root = try #require(Bundle(for: FixtureToken.self).url(forResource: "Fixtures", withExtension: nil))
+        _ = try await view.open(root.appendingPathComponent("long.epub"), at: nil)
+    }
+
+    @Test(arguments: BookFont.allCases) func regularIsAboutFiftyTwoCharactersALine(font: BookFont) async throws {
+        try await open()
+        let characters = try await charactersPerLine(font, .regular)
+        #expect((50...55).contains(characters), "\(font): \(characters)")
+    }
+
+    @Test(arguments: BookFont.allCases) func narrowIsShorterAndWideIsLonger(font: BookFont) async throws {
+        try await open()
+        let narrow = try await charactersPerLine(font, .narrow)
+        let regular = try await charactersPerLine(font, .regular)
+        let wide = try await charactersPerLine(font, .wide)
+        #expect(narrow > 0 && narrow + 3 < regular, "\(font): \(narrow) \(regular)")
+        #expect(regular + 3 < wide, "\(font): \(regular) \(wide)")
     }
 }

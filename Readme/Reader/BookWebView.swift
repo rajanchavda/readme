@@ -31,6 +31,8 @@ final class BookWebView: NSView {
     private(set) var bookURL: URL?
     private(set) var css = ""
     private(set) var columns = 2
+    /// The width, in points, columns should have, or nil to let foliate pick. See `SpreadLayout`.
+    private(set) var columnWidth: Double?
     var isBookOpen: Bool { isOpen }
     let webView: WKWebView
     /// Messages the page sent that weren't the bridge's. Nothing in a book should be able to send any.
@@ -126,12 +128,13 @@ final class BookWebView: NSView {
         let location: ReaderLocation?
         do {
             location = try await call(
-                "return await readmeBridge.open(url, cfi, css, columns)",
+                "return await readmeBridge.open(url, cfi, css, columns, columnWidth)",
                 arguments: [
                     "url": bookURL.absoluteString,
                     "cfi": cfi ?? NSNull(),
                     "css": css,
                     "columns": columns,
+                    "columnWidth": columnWidth ?? NSNull(),
                 ],
                 as: ReaderLocation.self,
                 timeout: Self.openTimeout,
@@ -293,15 +296,19 @@ final class BookWebView: NSView {
     ///
     /// `columns` is the most foliate will use. Accepted limit: foliate forces one column when the view
     /// is taller than wide, whatever is asked for here, and offers no way to override it.
-    func applyStyles(css: String, columns: Int) async {
+    ///
+    /// `columnWidth` is how wide each column should be, so that line width shows in the text. The page
+    /// works out what to give foliate from its own size, and does so again when the view is resized.
+    func applyStyles(css: String, columns: Int, columnWidth: Double? = nil) async {
         self.css = css
         self.columns = max(1, columns)
+        self.columnWidth = columnWidth
         guard isOpen else { return }
         let heard = relocationsHeard
         do {
             _ = try await call(
-                "await readmeBridge.applyStyles(css, columns)",
-                arguments: ["css": css, "columns": self.columns],
+                "await readmeBridge.applyStyles(css, columns, columnWidth)",
+                arguments: ["css": css, "columns": self.columns, "columnWidth": columnWidth ?? NSNull()],
                 as: Bool.self)
             let location = try await call(
                 "return readmeBridge.location()", as: ReaderLocation.self)

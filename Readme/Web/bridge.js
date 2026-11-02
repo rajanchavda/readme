@@ -21,6 +21,8 @@ let relocations = 0
 let busy = false // true during a command, so its in-between stops aren't reported
 let lastPostedCFI = null
 let columnCount = 2
+// How wide each column should be, in points, or null to let foliate pick.
+let columnWidth = null
 let laidOutSize = null
 let relayoutTimer = null
 let queue = Promise.resolve()
@@ -196,13 +198,27 @@ const fitColumns = () => {
     laidOutSize = sizeOf(renderer)
     renderer.setAttribute('max-column-count', String(columnCount))
     const { width } = renderer.getBoundingClientRect()
-    const fits = Math.ceil(width * CONTAINER_SHARE / DEFAULT_INLINE_SIZE) >= columnCount
-    renderer.setAttribute('max-inline-size',
-        width > 0 && !fits ? `${Math.floor(width / columnCount)}px` : `${DEFAULT_INLINE_SIZE}px`)
+    renderer.setAttribute('max-inline-size', `${inlineSize(width)}px`)
 }
 
-const setLayout = (css, columns) => {
+// foliate's container is CONTAINER_SHARE of the view, and its column gap GAP_SHARE of the view
+// (SpreadLayout has the same numbers). The container can't be wider than
+// `max-inline-size * columns - gap`, so for columns of `columnWidth` that is what to ask for.
+const GAP_SHARE = 0.07
+const inlineSize = width => {
+    if (!(width > 0)) return DEFAULT_INLINE_SIZE
+    if (columnWidth > 0) {
+        const container = columnWidth / (1 / columnCount - GAP_SHARE / CONTAINER_SHARE)
+        // Wider than the view allows: ask for exactly the columns that fill it.
+        return Math.floor(Math.min((container + GAP_SHARE * width) / columnCount, width / columnCount))
+    }
+    const fits = Math.ceil(width * CONTAINER_SHARE / DEFAULT_INLINE_SIZE) >= columnCount
+    return fits ? DEFAULT_INLINE_SIZE : Math.floor(width / columnCount)
+}
+
+const setLayout = (css, columns, width) => {
     columnCount = Math.max(1, Math.trunc(finite(columns, 2)))
+    columnWidth = Number.isFinite(width) && width > 0 ? width : null
     fitColumns()
     view.renderer.setStyles?.(css ?? '')
 }
@@ -253,7 +269,7 @@ const settled = async () => {
 
 const firstSectionIndex = () => book.sections.findIndex(section => section.linear !== 'no')
 
-const open = async (url, cfi, css, columns) => {
+const open = async (url, cfi, css, columns, width) => {
     const response = await fetch(url)
     if (!response.ok) throw new Error(`Could not read the book (${response.status})`)
     const blob = await response.blob()
@@ -296,7 +312,7 @@ const open = async (url, cfi, css, columns) => {
         }
     }
     view.renderer.setAttribute('flow', 'paginated')
-    setLayout(css, columns)
+    setLayout(css, columns, width)
     try {
         await view.init({ lastLocation: cfi ?? null })
     } catch (error) {
@@ -369,7 +385,7 @@ globalThis.readmeBridge = {
     goToCFI: cfi => navigate(() => view.goTo(cfi)),
     goToFraction: fraction => navigate(() => view.goToFraction(fraction)),
     toc: tocEntries,
-    applyStyles: (css, columns) => enqueue(() => holdingPlace(() => setLayout(css, columns))),
+    applyStyles: (css, columns, width) => enqueue(() => holdingPlace(() => setLayout(css, columns, width))),
     // Called when Swift resizes the view. The page learns its new size a little later.
     resized: async width => {
         for (let i = 0; i < 20 && Math.abs(innerWidth - width) >= 1; i++)

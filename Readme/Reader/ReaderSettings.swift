@@ -6,8 +6,18 @@ enum Theme { case paper, sepia, night }
 
 enum BookFont: String, Codable, CaseIterable { case ebGaramond, literata, newYork }
 
-/// How many characters a column must hold, at least, before two pages are worth showing.
-enum LineWidth: String, Codable, CaseIterable { case narrow, regular, wide }
+/// How many characters a line holds, on average.
+enum LineWidth: String, Codable, CaseIterable {
+    case narrow, regular, wide
+
+    var characters: Double {
+        switch self {
+        case .narrow: 45
+        case .regular: 52
+        case .wide: 60
+        }
+    }
+}
 
 struct ReaderSettings: Codable, Equatable {
     var theme: ThemeChoice = .auto

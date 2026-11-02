@@ -43,6 +43,7 @@ final class SpreadCache {
         var appearance: NSAppearance.Name
         var css: String
         var columns: Int
+        var columnWidth: Double?
     }
 
     /// How many spreads are kept in each direction.
@@ -253,7 +254,8 @@ final class SpreadCache {
             scale: visible.window?.backingScaleFactor ?? window.backingScaleFactor,
             appearance: visible.effectiveAppearance.name,
             css: visible.css,
-            columns: visible.columns)
+            columns: visible.columns,
+            columnWidth: visible.columnWidth)
     }
 
     // MARK: Rendering
@@ -343,8 +345,9 @@ final class SpreadCache {
         // Same place, so the same screen and so the same scale, though it's never ordered in.
         let origin = visible.window?.frame.origin ?? window.frame.origin
         window.setFrame(NSRect(origin: origin, size: layout.size), display: false)
-        if offscreen.css != layout.css || offscreen.columns != layout.columns {
-            await offscreen.applyStyles(css: layout.css, columns: layout.columns)
+        if offscreen.css != layout.css || offscreen.columns != layout.columns
+            || offscreen.columnWidth != layout.columnWidth {
+            await offscreen.applyStyles(css: layout.css, columns: layout.columns, columnWidth: layout.columnWidth)
             guard !Task.isCancelled else { return false }
         }
         if offscreen.bookURL != book || !offscreen.isBookOpen {
