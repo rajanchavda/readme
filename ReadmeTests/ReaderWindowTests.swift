@@ -65,6 +65,26 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(action("-", [.command], isRepeat: true) == .command(.smallerText))
     }
 
+    /// The open contents take the plain keys, so arrows move through the list and never turn pages.
+    @Test func theOpenContentsTakeThePlainKeys() {
+        func inContents(_ key: String, keyCode: UInt16 = 0, _ modifiers: NSEvent.ModifierFlags = [], isRepeat: Bool = false) -> KeyAction? {
+            KeyAction.of(
+                key: key, keyCode: keyCode, modifiers: modifiers, isRepeat: isRepeat, isFullscreen: true,
+                isTyping: false, isInContents: true)
+        }
+        #expect(inContents(key(NSRightArrowFunctionKey), [.function, .numericPad]) == nil)
+        #expect(inContents(key(NSDownArrowFunctionKey), [.function, .numericPad]) == nil)
+        #expect(inContents(" ") == nil)
+        #expect(inContents("f") == nil)
+        #expect(inContents(key(NSEndFunctionKey), [.function]) == nil)
+        #expect(inContents("\r", keyCode: 36) == nil)
+        // Esc closes them, even in fullscreen, before it leaves fullscreen.
+        #expect(inContents("\u{1B}", keyCode: 53) == .closeContents)
+        #expect(inContents("\u{1B}", keyCode: 53, isRepeat: true) == .ignore)
+        #expect(inContents("t", [.command]) == .command(.toggleTOC))
+        #expect(inContents(key(NSDownArrowFunctionKey), [.command, .function, .numericPad]) == .command(.goToEnd))
+    }
+
     @Test func escapeLeavesFullscreenOnly() {
         #expect(action("\u{1B}", keyCode: 53, isFullscreen: true) == .leaveFullscreen)
         #expect(action("\u{1B}", keyCode: 53, isFullscreen: false) == nil)

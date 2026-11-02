@@ -10,6 +10,9 @@ const HIDDEN_SETTLE_MS = 40
 const RELAYOUT_MS = 150
 const RESOURCES_MS = 5000
 const DEFAULT_INLINE_SIZE = 720
+// The bytes of text in one of foliate's locations, which are the reader's pages. foliate's view
+// uses the same for its own `location`.
+const LOCATION_SIZE = 1500
 // foliate's #container is the view less a 3.5% gutter on each side.
 const CONTAINER_SHARE = 0.93
 
@@ -77,6 +80,10 @@ const location = () => {
         chapterMinutesLeft: Math.max(0, finite(latest.time?.section)),
         isAtStart: !!renderer.atStart,
         isAtEnd: !!renderer.atEnd,
+        // foliate's locations: fixed runs of LOCATION_SIZE bytes of text, the same whatever the
+        // font or window, which the reader sees as pages. `current` is the one the spread starts in.
+        page: Math.max(1, Math.trunc(finite(latest.location?.current)) + 1),
+        pageCount: Math.max(1, Math.trunc(finite(latest.location?.total))),
     }
 }
 
@@ -268,6 +275,20 @@ const settled = async () => {
 }
 
 const firstSectionIndex = () => book.sections.findIndex(section => section.linear !== 'no')
+const lastSectionIndex = () => book.sections.findLastIndex(section => section.linear !== 'no')
+
+// How many pages an end of the book can be from where foliate first lands, at most.
+const END_STEPS = 50
+
+// The first or last spread. foliate lands near an end by fraction, and can stop a spread short of
+// it, so this turns the rest of the way.
+const goToEdge = async atEnd => {
+    const { renderer } = view
+    const index = atEnd ? lastSectionIndex() : firstSectionIndex()
+    await renderer.goTo({ index, anchor: atEnd ? 1 : 0 })
+    for (let i = 0; i < END_STEPS && !(atEnd ? renderer.atEnd : renderer.atStart); i++)
+        await (atEnd ? view.next() : view.prev())
+}
 
 const open = async (url, cfi, css, columns, width) => {
     const response = await fetch(url)
@@ -280,7 +301,7 @@ const open = async (url, cfi, css, columns, width) => {
     book = await makeBook(new File([blob], 'book.epub', { type: 'application/epub+zip' }))
     prepareSections(book)
     removeConnectionHints(book)
-    progress = new SectionProgress(book.sections, 1500, 1600)
+    progress = new SectionProgress(book.sections, LOCATION_SIZE, 1600)
 
     busy = true
     view = document.createElement('foliate-view')
@@ -384,6 +405,9 @@ globalThis.readmeBridge = {
     previous: () => navigate(() => view.prev()),
     goToCFI: cfi => navigate(() => view.goTo(cfi)),
     goToFraction: fraction => navigate(() => view.goToFraction(fraction)),
+    goToHref: href => navigate(() => view.goTo(href)),
+    goToStart: () => navigate(() => goToEdge(false)),
+    goToEnd: () => navigate(() => goToEdge(true)),
     toc: tocEntries,
     applyStyles: (css, columns, width) => enqueue(() => holdingPlace(() => setLayout(css, columns, width))),
     // Called when Swift resizes the view. The page learns its new size a little later.

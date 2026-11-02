@@ -1,15 +1,27 @@
 import AppKit
 
 /// What the reading window does with a scroll event. Under a sheet it's swallowed, as handing it back
-/// would let normal dispatch bring it to the desk anyway.
+/// would let normal dispatch bring it to the desk anyway. The open contents scroll their own list, and
+/// pages don't turn beside them.
 enum ScrollRoute: Equatable {
     case passOn, swallow, desk
 
-    init(isOurWindow: Bool, hasSheet: Bool) {
+    /// Where the contents sidebar is, if it's open, relative to the pointer.
+    enum Contents {
+        case closed, under, beside
+    }
+
+    init(isOurWindow: Bool, hasSheet: Bool, contents: Contents = .closed) {
         if !isOurWindow {
             self = .passOn
+        } else if hasSheet {
+            self = .swallow
         } else {
-            self = hasSheet ? .swallow : .desk
+            switch contents {
+            case .closed: self = .desk
+            case .under: self = .passOn
+            case .beside: self = .swallow
+            }
         }
     }
 }

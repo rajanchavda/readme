@@ -105,6 +105,11 @@ final class TurnCoordinator {
     private var curlNumber = 0
     private var swipe: Swipe?
     private var swipeWait: Task<Void, Never>?
+    /// The moves and jumps that haven't finished, by number. A jump waits for them.
+    private var underWay: [Int: Task<Void, Never>] = [:]
+    private var moveNumber = 0
+    /// The latest jump, which moves asked for after it wait for.
+    private var jumping: Task<Void, Never>?
 
     /// The paper's colour, which the back of a single turning page shows.
     var pageColor = CGColor(gray: 1, alpha: 1)
@@ -332,14 +337,55 @@ final class TurnCoordinator {
         CATransaction.flush()
     }
 
-    /// The web view's move. They reach the book in the order they're made.
+    /// The web view's move. They reach the book in the order they're made, and after any jump made
+    /// before them.
     private func move(_ direction: TurnDirection) -> Task<Void, Never> {
         moves += 1
         unlanded += 1
-        return Task { [weak self, cache] in
+        let jump = jumping
+        let number = nextMoveNumber()
+        let task = Task { [weak self, cache] in
+            await jump?.value
             await cache.commit(direction, onLanded: { self?.unlanded -= 1 })
             self?.moves -= 1
+            self?.underWay[number] = nil
         }
+        underWay[number] = task
+        return task
+    }
+
+    private func nextMoveNumber() -> Int {
+        moveNumber += 1
+        return moveNumber
+    }
+
+    /// Takes the book somewhere turning doesn't, such as a chapter or a page number, with no curl.
+    /// `go` makes the move and returns where it landed, or nil if it went nowhere.
+    ///
+    /// What's under way ends first, as for a press: a held page is let go and a curl is snapped to its
+    /// end. The jump then waits for every turn before it to land and settle, so the cache takes it for
+    /// a move it didn't make, renders the new place, and takes the curl off. Otherwise the curl would
+    /// play out over the jump's place. Turns asked for meanwhile wait for the jump and turn from where
+    /// it lands, with no curl until that place's images are ready.
+    func jump(_ go: @escaping () async -> ReaderLocation?) async -> ReaderLocation? {
+        guard book.currentLocation != nil else { return nil }
+        finishEarlierTurns()
+        let earlier = Array(underWay.values)
+        moves += 1
+        unlanded += 1
+        let number = nextMoveNumber()
+        let jump = Task { [weak self] () -> ReaderLocation? in
+            for move in earlier { await move.value }
+            let landed = await go()
+            self?.unlanded -= 1
+            self?.moves -= 1
+            self?.underWay[number] = nil
+            return landed
+        }
+        let done = Task { _ = await jump.value }
+        underWay[number] = done
+        jumping = done
+        return await jump.value
     }
 
     /// Waits for the web view to have the landed page on screen, then uncovers it.

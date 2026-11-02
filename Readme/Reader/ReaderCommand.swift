@@ -90,18 +90,25 @@ enum KeyAction: Equatable {
     case command(ReaderCommand)
     case turn(TurnDirection, isRepeat: Bool)
     case leaveFullscreen
+    case closeContents
     /// A held key's repeat that does nothing, as only text size changes while a key is held.
     case ignore
 
     private static let escapeKeyCode: UInt16 = 53
 
-    /// Nil leaves the key to the rest of the app. Keys typed into a field are the field's.
+    /// Nil leaves the key to the rest of the app. Keys typed into a field are the field's. While the
+    /// contents are open, the plain keys are theirs, so arrows and Return move through the list, and
+    /// Esc closes them.
     static func of(
         key: String, keyCode: UInt16, modifiers: NSEvent.ModifierFlags, isRepeat: Bool, isFullscreen: Bool,
-        isTyping: Bool
+        isTyping: Bool, isInContents: Bool = false
     ) -> KeyAction? {
         guard !isTyping else { return nil }
         let modifiers = modifiers.intersection(KeyShortcut.relevantModifiers)
+        if isInContents && modifiers.intersection([.command, .control, .option]).isEmpty {
+            guard keyCode == escapeKeyCode, modifiers.isEmpty else { return nil }
+            return isRepeat ? .ignore : .closeContents
+        }
         if let command = ReaderCommand(key: key, modifiers: modifiers) {
             let repeats = command == .biggerText || command == .smallerText
             return isRepeat && !repeats ? .ignore : .command(command)

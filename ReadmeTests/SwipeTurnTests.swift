@@ -586,6 +586,14 @@ private func fixture(_ name: String) throws -> URL {
         #expect(ScrollRoute(isOurWindow: false, hasSheet: true) == .passOn)
     }
 
+    /// The open contents scroll their own list, and pages don't turn beside them.
+    @Test func theOpenContentsKeepScrollingFromTheDesk() {
+        #expect(ScrollRoute(isOurWindow: true, hasSheet: false, contents: .under) == .passOn)
+        #expect(ScrollRoute(isOurWindow: true, hasSheet: false, contents: .beside) == .swallow)
+        #expect(ScrollRoute(isOurWindow: true, hasSheet: false, contents: .closed) == .desk)
+        #expect(ScrollRoute(isOurWindow: true, hasSheet: true, contents: .under) == .swallow)
+    }
+
     @Test func aSyntheticEventCarriesWhatTheDeskReads() throws {
         let event = try scrollEvent(x: -12, y: 3, phase: Self.changed)
         #expect(event.phase == .changed)

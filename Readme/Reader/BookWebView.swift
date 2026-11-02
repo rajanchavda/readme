@@ -242,6 +242,21 @@ final class BookWebView: NSView {
         return await navigate("return await readmeBridge.goToFraction(fraction)", arguments: ["fraction": clamped])
     }
 
+    /// Goes to a place in the contents, by its href.
+    func go(toHref href: String) async -> ReaderLocation? {
+        await navigate("return await readmeBridge.goToHref(href)", arguments: ["href": href])
+    }
+
+    /// The first spread, which `isAtStart` is true on.
+    func goToStart() async -> ReaderLocation? {
+        await navigate("return await readmeBridge.goToStart()")
+    }
+
+    /// The last spread, which `isAtEnd` is true on. `go(toFraction: 1)` can stop a spread short of it.
+    func goToEnd() async -> ReaderLocation? {
+        await navigate("return await readmeBridge.goToEnd()")
+    }
+
     private func navigate(_ body: String, arguments: [String: Any] = [:]) async -> ReaderLocation? {
         guard isOpen else { return nil }
         let heard = relocationsHeard

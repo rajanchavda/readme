@@ -39,6 +39,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private let hint: NSTextField
     private let toolbarModel: ReaderToolbarModel
     private let toolbar: ReaderToolbarHost
+    private let contents = TOCSidebar(frame: NSRect(x: 0, y: 0, width: TOCSidebar.width, height: 600))
+    private let contentsScrim = ContentsScrim()
+    private let pageField = GoToPageField(frame: NSRect(origin: .zero, size: GoToPageField.size))
 
     private var settings: ReaderSettings
     private var session: Session?
@@ -58,6 +61,13 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var resizeSettling: Task<Void, Never>?
     /// Pages don't turn while the old look covers the book.
     private var isCovered = false
+
+    /// The open book's contents, read the first time they're asked for. Empty if it has none.
+    private var tableOfContents: [TOCEntry]?
+    private var contentsLoading: Task<Void, Never>?
+    private var isContentsShown = false
+    private var isPageFieldShown = false
+    private var jumping: Task<Void, Never>?
 
     private var idle = IdleTimer()
     private var idleCheck: Task<Void, Never>?
@@ -102,6 +112,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             toolbar.centerXAnchor.constraint(equalTo: desk.centerXAnchor),
             toolbar.topAnchor.constraint(equalTo: desk.topAnchor, constant: 12),
         ])
+        for view in [pageField, contentsScrim, contents] as [NSView] {
+            view.isHidden = true
+            desk.addSubview(view)
+        }
 
         window.delegate = self
         window.setFrameAutosaveName("ReaderWindow")
@@ -126,7 +140,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             if case .start = signal { self.places.turned() }
             session.turns.follow(signal)
         }
-        desk.chrome = [toolbar]
+        // The open contents and the scrim beside them take every click, so one beside them closes them.
+        desk.chrome = [contents, contentsScrim, pageField, toolbar]
+        contents.onChoose = { [weak self] entry in self?.choose(entry) }
+        contentsScrim.onClick = { [weak self] in self?.closeContents() }
+        pageField.onGo = { [weak self] typed in self?.goToPage(typed: typed) ?? false }
+        pageField.onClose = { [weak self] in self?.closePageField() }
         // The desk hears the mouse in an inactive window too, for the traffic lights. The toolbar
         // only wakes in the window being read.
         desk.onMouseMoved = { [weak self] point in
@@ -160,7 +179,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         // the book's in pages.
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, let window = self.window else { return event }
-            let route = ScrollRoute(isOurWindow: event.window === window, hasSheet: window.attachedSheet != nil)
+            let route = ScrollRoute(
+                isOurWindow: event.window === window, hasSheet: window.attachedSheet != nil,
+                contents: self.contentsPlace(of: event))
             switch route {
             case .passOn:
                 return event
@@ -199,6 +220,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         session?.book.removeFromSuperview()
         session?.curl.removeFromSuperview()
         cover.removeFromSuperview()
+        closeContents()
+        closePageField()
+        contentsLoading?.cancel()
+        tableOfContents = nil
 
         layout = BookFrame(in: desk.bounds.size, settings: settings, fullscreen: isFullscreen)
         let book = BookWebView(frame: layout.frame)
@@ -271,9 +296,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             window?.toggleFullScreen(nil)
         case .showLibrary:
             onShowLibrary?()
-        case .toggleTOC, .goToStart, .goToEnd, .goToPage:
-            // The table of contents and the jumps arrive with Task 10.
-            break
+        case .toggleTOC:
+            toggleContents()
+        case .goToStart:
+            jump { await $0.goToStart() }
+        case .goToEnd:
+            jump { await $0.goToEnd() }
+        case .goToPage:
+            showPageField()
         }
     }
 
@@ -281,7 +311,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         guard let window, event.window === window, window.attachedSheet == nil,
               let action = KeyAction.of(
                 key: event.charactersIgnoringModifiers ?? "", keyCode: event.keyCode, modifiers: event.modifierFlags,
-                isRepeat: event.isARepeat, isFullscreen: isFullscreen, isTyping: window.firstResponder is NSText)
+                isRepeat: event.isARepeat, isFullscreen: isFullscreen, isTyping: window.firstResponder is NSText,
+                isInContents: isContentsShown)
         else { return false }
         switch action {
         case let .command(command):
@@ -291,6 +322,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             turn(direction, isRepeat: isRepeat)
         case .leaveFullscreen:
             window.toggleFullScreen(nil)
+        case .closeContents:
+            closeContents()
         case .ignore:
             break
         }
@@ -301,6 +334,165 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         guard !isCovered, let session else { return }
         places.turned()
         session.turns.turn(direction, isRepeat: isRepeat)
+    }
+
+    // MARK: Jumps
+
+    /// Takes the book somewhere new with no curl, once the turns before it have landed. A jump is a
+    /// new place, so it counts as a turn when it's asked for and again when it lands: a restyle won't
+    /// take the reader back to a place captured before it landed.
+    private func jump(_ go: @escaping (BookWebView) async -> ReaderLocation?) {
+        guard let session else { return }
+        closeContents()
+        closePageField()
+        places.turned()
+        jumping = Task { [weak self] in
+            _ = await session.turns.jump { await go(session.book) }
+            self?.places.turned()
+        }
+    }
+
+    /// Goes to the page typed into the field and closes it. False, leaving it open, if what was typed
+    /// isn't a page number.
+    @discardableResult
+    func goToPage(typed: String) -> Bool {
+        guard let here = session?.book.currentLocation,
+              let fraction = GoToPage.fraction(forTyped: typed, pageCount: here.pageCount)
+        else { return false }
+        jump { await $0.go(toFraction: fraction) }
+        return true
+    }
+
+    /// Closes the contents and goes to the chapter. One whose link leads nowhere is found by how far
+    /// through the book it is.
+    func choose(_ entry: TOCEntry) {
+        jump { book in
+            if let landed = await book.go(toHref: entry.href) { return landed }
+            return await book.go(toFraction: entry.fraction)
+        }
+    }
+
+    private func showPageField() {
+        guard let here = session?.book.currentLocation, here.pageCount > 0 else { return }
+        closeContents()
+        placeViews()
+        pageField.setTheme(theme)
+        if !isPageFieldShown { pageField.alphaValue = 0 }
+        isPageFieldShown = true
+        pageField.isHidden = false
+        pageField.begin(page: here.page, pageCount: here.pageCount)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            pageField.animator().alphaValue = 1
+        }
+    }
+
+    /// Closes the field without moving. Called again as the field gives up the keyboard, which does
+    /// nothing then.
+    func closePageField() {
+        guard isPageFieldShown else { return }
+        isPageFieldShown = false
+        if let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor,
+           (editor.delegate as? NSView)?.isDescendant(of: pageField) == true {
+            window?.makeFirstResponder(nil)
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            pageField.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.isPageFieldShown else { return }
+                self.pageField.isHidden = true
+            }
+        })
+    }
+
+    // MARK: Contents
+
+    /// A book with no contents has nothing to show, so this does nothing for it.
+    private func toggleContents() {
+        if isContentsShown {
+            closeContents()
+            return
+        }
+        guard let session, session.book.isBookOpen else { return }
+        contentsLoading?.cancel()
+        contentsLoading = Task { [weak self] in
+            guard let self else { return }
+            let entries: [TOCEntry]
+            if let known = self.tableOfContents {
+                entries = known
+            } else {
+                entries = await session.book.toc()
+                guard !Task.isCancelled, self.session?.book === session.book else { return }
+                self.tableOfContents = entries
+            }
+            guard !Task.isCancelled, !entries.isEmpty else { return }
+            self.openContents(entries, at: session.book.currentLocation?.fraction ?? 0)
+        }
+    }
+
+    /// Slides the contents in over the left of the book, with the keyboard theirs.
+    private func openContents(_ entries: [TOCEntry], at fraction: Double) {
+        closePageField()
+        isContentsShown = true
+        contents.setTheme(theme)
+        contents.show(entries, at: fraction)
+        contents.frame = contentsFrame(shown: false)
+        contents.isHidden = false
+        contentsScrim.frame = desk.bounds
+        contentsScrim.isHidden = false
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            contents.animator().frame = contentsFrame(shown: true)
+        }
+        contents.focus()
+    }
+
+    private func closeContents() {
+        contentsLoading?.cancel()
+        guard isContentsShown else { return }
+        isContentsShown = false
+        contentsScrim.isHidden = true
+        if contents.hasFocus { window?.makeFirstResponder(nil) }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            contents.animator().frame = contentsFrame(shown: false)
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.isContentsShown else { return }
+                self.contents.isHidden = true
+            }
+        })
+    }
+
+    private func contentsFrame(shown: Bool) -> NSRect {
+        NSRect(x: shown ? 0 : -TOCSidebar.width, y: 0, width: TOCSidebar.width, height: desk.bounds.height)
+    }
+
+    private func contentsPlace(of event: NSEvent) -> ScrollRoute.Contents {
+        guard isContentsShown else { return .closed }
+        let point = desk.convert(event.locationInWindow, from: nil)
+        return contents.frame.contains(point) ? .under : .beside
+    }
+
+    // MARK: For tests
+
+    var location: ReaderLocation? { session?.book.currentLocation }
+    var isShowingContents: Bool { isContentsShown }
+    var isShowingPageField: Bool { isPageFieldShown }
+    var contentsEntries: [TOCEntry] { contents.entries }
+
+    /// Returns once the contents have been read and the restyles and jumps under way are done.
+    func settled() async {
+        await contentsLoading?.value
+        await restyling?.value
+        await jumping?.value
+        await restyling?.value
     }
 
     // MARK: Settings and layout
@@ -441,6 +633,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         }
         spine.frame = layout.frame
         spine.isHidden = layout.columns != 2 || session == nil
+        if isContentsShown {
+            contents.frame = contentsFrame(shown: true)
+            contentsScrim.frame = desk.bounds
+        }
+        // Below the toolbar, where it would be if it were awake.
+        pageField.frame = NSRect(
+            x: ((desk.bounds.width - GoToPageField.size.width) / 2).rounded(),
+            y: desk.bounds.height - 52 - GoToPageField.size.height,
+            width: GoToPageField.size.width, height: GoToPageField.size.height)
         hint.sizeToFit()
         hint.frame.origin = NSPoint(
             x: ((desk.bounds.width - hint.frame.width) / 2).rounded(),
@@ -474,6 +675,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let theme = theme
         let colors = ReadingCSS.colors(theme)
         toolbarModel.theme = theme
+        contents.setTheme(theme)
+        pageField.setTheme(theme)
         session?.turns.pageColor = colors.page.cgColor
         session?.curl.spineColor = layout.columns == 2 ? colors.spine.cgColor : nil
         CATransaction.begin()
@@ -648,6 +851,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             buttons.animator().alphaValue = visible ? 1 : 0
         }
+    }
+}
+
+/// Lies over the desk while the contents are open, so a click beside them closes them and turns no page.
+private final class ContentsScrim: NSView {
+    var onClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
     }
 }
 

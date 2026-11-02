@@ -11,6 +11,11 @@ struct ReaderLocation: Codable, Sendable, Equatable {
     var chapterMinutesLeft: Double
     var isAtStart: Bool
     var isAtEnd: Bool
+    /// The page the spread starts on, from 1, and how many the book has. A page is a fixed run of
+    /// text, foliate's location, so it stays the same when the font or window changes. It isn't the
+    /// page printed in a paper edition.
+    var page: Int
+    var pageCount: Int
 }
 
 /// One line of a book's table of contents. `level` is 0 at the top.
