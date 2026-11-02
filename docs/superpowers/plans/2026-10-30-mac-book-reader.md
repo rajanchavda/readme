@@ -228,33 +228,41 @@ shade = |sin(angle)| * 0.16;  cast = sin(pi*t)
 - Consumes: `ReaderSettings`, `ReadingCSS`, `SpreadLayout`, `TurnCoordinator`, `ReaderLocation`.
 - Produces: `struct IdleTimer { var delay = 1.6; mutating func activity(at: TimeInterval); func isAwake(at: TimeInterval) -> Bool }`
 - Produces: `@MainActor final class ReaderWindowController: NSWindowController { func open(_ book: Book, at: String?) async; var onShowLibrary: (() -> Void)? }`. `Book` is defined in Task 12, so until then this takes a URL.
-- Produces: `enum ReaderCommand: CaseIterable { case biggerText, smallerText, toggleTOC, toggleFullscreen, showLibrary }`, each with its key equivalent.
+- Produces: `enum ReaderCommand: CaseIterable { case biggerText, smallerText, toggleTOC, toggleFullscreen, showLibrary, goToStart, goToEnd, goToPage }`, each with its key equivalent. Task 10 implements what the last three do.
 
 - [ ] **Step 1:** Write tests:
   - `IdleTimerTests`: awake straight after activity, asleep 1.6 s later, and activity wakes it again.
-  - `ReaderCommandsTests.shortcuts`: `biggerText` is ⌘+, `smallerText` is ⌘−, `toggleTOC` is ⌘T, `toggleFullscreen` is ⌃⌘F, `showLibrary` is ⌘L.
+  - `ReaderCommandsTests.shortcuts`: `biggerText` is ⌘+, `smallerText` is ⌘−, `toggleTOC` is ⌘T, `toggleFullscreen` is ⌃⌘F, `showLibrary` is ⌘L, `goToStart` is ⌘↑, `goToEnd` is ⌘↓, `goToPage` is ⌘G.
+  - `ReaderCommandsTests.homeAndEnd`: Home with no modifiers maps to `goToStart`, End to `goToEnd`.
   - `ReaderCommandsTests.plainFTogglesFullscreen`: an `f` key with no modifiers maps to `toggleFullscreen`.
   - `ReaderCommandsTests.fontSizeLimits`: size stays within 12 to 40.
 - [ ] **Step 2:** Run both suites. Expected: FAIL.
-- [ ] **Step 3:** Implement to match `docs/mockups/open-book-v2.html`: desk surface, spine shadow overlay, toolbar with blur (themes including Auto, fonts, size, line width, time left, table of contents, library, fullscreen), and the hairline progress bar. Toolbar eases in and out over 200 ms. Hide the title bar, showing traffic lights only on hover. In fullscreen, hide the cursor while idle. Save the window frame with `setFrameAutosaveName`. Themes animate over 200 ms, with no flash. Clicks on the outer page edges turn pages; text in the middle stays selectable.
+- [ ] **Step 3:** Implement to match `docs/mockups/open-book-v2.html`: desk surface, spine shadow overlay, toolbar with blur (themes including Auto, fonts, size, line width, time left, table of contents, library, fullscreen), and the hairline progress bar. Toolbar eases in and out over 200 ms. Hide the title bar, showing traffic lights only on hover. In fullscreen, hide the cursor while idle. Save the window frame with `setFrameAutosaveName`. Themes animate over 200 ms, with no flash. Clicks on the outer page edges turn pages; text in the middle stays selectable. Pass the key event's `isARepeat` through to `TurnCoordinator.turn`, as the trial window does.
 - [ ] **Step 4:** Run both suites. Expected: PASS.
 - [ ] **Step 5:** Commit: `feat: reading window and quiet toolbar`.
 
-### Task 10: Table of contents
+### Task 10: Table of contents and getting around
 
 **Files:**
-- Create: `Readme/Reader/TOCSidebar.swift`, `Readme/Reader/TOCProgress.swift`
-- Test: `ReadmeTests/TOCProgressTests.swift`
+- Create: `Readme/Reader/TOCSidebar.swift`, `Readme/Reader/TOCProgress.swift`, `Readme/Reader/GoToPageField.swift`
+- Modify: `Readme/Reader/ReaderLocation.swift`, `Readme/Web/bridge.js`, `Readme/Reader/ReaderWindowController.swift`
+- Test: `ReadmeTests/TOCProgressTests.swift`, `ReadmeTests/GoToPageTests.swift`
 
 **Interfaces:**
-- Consumes: `TOCEntry`, `BookWebView.toc()`, `BookWebView.go(toFraction:)`.
+- Consumes: `TOCEntry`, `BookWebView.toc()`, `BookWebView.go(toFraction:)`, `ReaderCommand.goToStart`, `.goToEnd`, `.goToPage`.
 - Produces: `enum TOCState { case read, current, unread }`, `enum TOCProgress { static func states(entries: [TOCEntry], fraction: Double) -> [TOCState] }`
+- Produces: `ReaderLocation.page: Int` and `pageCount: Int`, from foliate's `location.current` (plus one) and `location.total`. `enum GoToPage { static func fraction(forTyped: String, pageCount: Int) -> Double? }`
 
 - [ ] **Step 1:** Write `TOCProgressTests`: entries at 0, 0.5 and 0.8 with fraction 0.6 give `[.read, .current, .unread]`; fraction 0 gives the first as `.current`; an empty list gives an empty result.
-- [ ] **Step 2:** Run `scripts/test.sh TOCProgressTests`. Expected: FAIL.
-- [ ] **Step 3:** Implement a slide-in sidebar with `NSVisualEffectView`, toggled by ⌘T, easing over 200 ms. Read chapters are dimmed and the current one is marked quietly. Clicking a chapter closes the sidebar and goes there without a curl. For a book with no table of contents, the toggle does nothing.
-- [ ] **Step 4:** Run `scripts/test.sh TOCProgressTests`. Expected: PASS.
-- [ ] **Step 5:** Commit: `feat: table of contents sidebar`.
+- [ ] **Step 2:** Write `GoToPageTests`:
+  - `fraction(forTyped: "1", pageCount: 100)` is 0, and `"51"` is 0.5.
+  - Text that isn't a whole number gives nil, as does an empty string.
+  - A number past the end, or below 1, goes to the nearest real page.
+  - Against `long.epub`: going to the end lands with `isAtEnd`, going to the start lands with `isAtStart`, the page number survives a font-size change, and the next turn after each jump curls to the right page.
+- [ ] **Step 3:** Run both suites. Expected: FAIL.
+- [ ] **Step 4:** Implement a slide-in sidebar with `NSVisualEffectView`, toggled by ⌘T, easing over 200 ms. Read chapters are dimmed and the current one is marked quietly. Clicking a chapter closes the sidebar and goes there without a curl. For a book with no table of contents, the toggle does nothing. ⌘↑ and Home go to the start, ⌘↓ and End to the last spread. ⌘G shows a small quiet field with "214 of 1,240" as its placeholder: Return goes there and closes it, and Esc closes it without moving. Keys typed in the field must not turn pages. None of these jumps plays a curl.
+- [ ] **Step 5:** Run both suites. Expected: PASS.
+- [ ] **Step 6:** Commit: `feat: table of contents and page shortcuts`.
 
 ### Task 11: Exact position memory
 
