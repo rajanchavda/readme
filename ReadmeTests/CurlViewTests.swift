@@ -180,7 +180,7 @@ private func relativeRotation(of layer: CALayer) -> Double {
     }
 
     @Test func facesDrawAtTheBitmapsScale() throws {
-                // 1000 by 1400 pixels on a 500 by 700 point page.
+        // 1000 by 1400 pixels on a 500 by 700 point page.
         let half = try spread(width: 1000, height: 1400, left: red, right: red)
         curl.begin(.forward, front: half, back: half, beneathLeft: half, beneathRight: half)
         for faces in curl.stripFaces {

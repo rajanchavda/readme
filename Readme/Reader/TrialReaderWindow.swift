@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// A plain window for trying the curl on real books: fixed size, landscape and two pages, because
 /// foliate forces one column in a portrait view. The real reading window replaces it.
 @MainActor
-final class TrialReaderWindow: NSObject {
+final class TrialReaderWindow: NSObject, NSWindowDelegate {
     /// One open book and everything turning its pages. Each book gets a new one.
     private struct Session {
         let book: BookWebView
@@ -27,6 +27,7 @@ final class TrialReaderWindow: NSObject {
     private let hint: NSTextField
     private var session: Session?
     private var keyMonitor: Any?
+    private var scrollMonitor: Any?
     private var opening: Task<Void, Never>?
 
     override init() {
@@ -52,6 +53,21 @@ final class TrialReaderWindow: NSObject {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handle(event) == true ? nil : event
         }
+        desk.onSwipe = { [weak self] signal in self?.session?.turns.follow(signal) }
+        window.delegate = self
+        // A monitor, because the web view takes scrolling over the book. Nothing in it scrolls, as
+        // the book's in pages.
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, event.window === self.window, self.window.attachedSheet == nil else { return event }
+            self.desk.scrollWheel(with: event)
+            return nil
+        }
+    }
+
+    /// The end of a gesture may never reach a window that's lost the keyboard, and no page should stay
+    /// held up for that.
+    func windowDidResignKey(_ notification: Notification) {
+        desk.abandonSwipe()
     }
 
     func show() {
@@ -131,12 +147,14 @@ final class TrialReaderWindow: NSObject {
 
 /// The surface the book lies on. It takes clicks on the outer parts of the book, which turn pages,
 /// and leaves the rest of the book to the web view, so text can still be selected. Clicks on the bare
-/// desk do nothing.
+/// desk do nothing. It also reads swipes from scrolling, wherever over the window that happens.
 final class TrialDeskView: NSView {
     private static let edgeShare: CGFloat = 0.2
 
     var onEdgeClick: ((TurnDirection) -> Void)?
+    var onSwipe: ((SwipeSignal) -> Void)?
     private let bookFrame: NSRect
+    private var gesture = SwipeGesture()
 
     init(frame: NSRect, bookFrame: NSRect) {
         self.bookFrame = bookFrame
@@ -168,5 +186,31 @@ final class TrialDeskView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard let direction = turn(at: convert(event.locationInWindow, from: nil)) else { return }
         onEdgeClick?(direction)
+    }
+
+    /// Only a trackpad-style gesture has a phase, so a mouse wheel does nothing, and momentum has none
+    /// of its own: it comes after the fingers have gone, with the page no longer theirs.
+    override func scrollWheel(with event: NSEvent) {
+        guard event.momentumPhase.isEmpty, let phase = Self.gesturePhase(of: event) else { return }
+        send(gesture.handle(
+            phase, deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY, at: event.timestamp))
+    }
+
+    func abandonSwipe() {
+        send(gesture.abandon())
+    }
+
+    private func send(_ signals: [SwipeSignal]) {
+        signals.forEach { onSwipe?($0) }
+    }
+
+    private static func gesturePhase(of event: NSEvent) -> SwipeGesture.Phase? {
+        switch event.phase {
+        case .began: .began
+        case .changed, .stationary: .changed
+        case .ended: .ended
+        case .cancelled: .cancelled
+        default: nil
+        }
     }
 }
