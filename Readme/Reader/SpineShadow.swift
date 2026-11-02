@@ -34,6 +34,26 @@ enum SpineShadow {
     static func colors(_ color: CGColor) -> [CGColor] {
         falloff.map { color.copy(alpha: color.alpha * $0.share) ?? color }
     }
+
+    /// The shadow's share of its colour `distance` points from the spine.
+    static func share(atDistance distance: CGFloat) -> CGFloat {
+        let location = 1 - Double(max(0, distance) / reach)
+        guard location > 0 else { return 0 }
+        for (lower, upper) in zip(falloff, falloff.dropFirst()) where location <= upper.location {
+            let f = (location - lower.location) / (upper.location - lower.location)
+            return lower.share + (upper.share - lower.share) * CGFloat(f)
+        }
+        return falloff[falloff.count - 1].share
+    }
+
+    /// The shadow over a stretch of page from `near` to `far` points from the spine, as stops along
+    /// it from the near end, or nil if it doesn't reach that far. A turning page's strips use these,
+    /// so a flat page shows just what the book does.
+    static func stops(from near: CGFloat, to far: CGFloat) -> [(location: Double, share: CGFloat)]? {
+        guard near < reach, far > near else { return nil }
+        let inside = falloff.map { reach * CGFloat(1 - $0.location) }.filter { $0 > near && $0 < far }.sorted()
+        return ([near] + inside + [far]).map { (Double(($0 - near) / (far - near)), share(atDistance: $0)) }
+    }
 }
 
 /// The spine's shadow on the book.

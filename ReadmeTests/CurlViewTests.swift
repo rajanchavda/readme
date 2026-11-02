@@ -346,6 +346,72 @@ private func relativeRotation(of layer: CALayer) -> Double {
         #expect(shadows.map(\.frame.minX).contains(500))
     }
 
+    /// A gradient layer's alpha at `u` (0...1 across its width), reading its colours and stops.
+    private func alpha(of gradient: CAGradientLayer, at u: Double) throws -> Double {
+        let colors = try #require(gradient.colors as? [CGColor]).map { Double($0.alpha) }
+        let locations = (gradient.locations?.map(\.doubleValue))
+            ?? colors.indices.map { Double($0) / Double(max(1, colors.count - 1)) }
+        // Along the gradient's own direction, which runs left or right.
+        let t = gradient.startPoint.x <= gradient.endPoint.x ? u : 1 - u
+        if t <= locations[0] { return colors[0] }
+        for i in 1..<locations.count where t <= locations[i] {
+            let span = locations[i] - locations[i - 1]
+            let f = span > 0 ? (t - locations[i - 1]) / span : 1
+            return colors[i - 1] + (colors[i] - colors[i - 1]) * f
+        }
+        return colors[colors.count - 1]
+    }
+
+    /// The spine's shadow on the book, `distance` points from the spine, as the window draws it.
+    private func bookSpineAlpha(atDistance distance: Double, color: CGColor) throws -> Double {
+        let (_, right) = SpineShadow.makeLayers()
+        right.colors = SpineShadow.colors(color)
+        guard distance < Double(SpineShadow.reach) else { return 0 }
+        return try alpha(of: right, at: distance / Double(SpineShadow.reach))
+    }
+
+    /// A flat leaf must look just like the page it covers, or the spine's shadow pops as a turn starts
+    /// and ends. Its faces carry the same shadow on their spine side.
+    @Test func aFlatLeafCarriesTheSpinesShadow() throws {
+        let color = CGColor(srgbRed: 70 / 255, green: 50 / 255, blue: 25 / 255, alpha: 0.32)
+        curl.spineColor = color
+        _ = try preparedCurl()
+        let stripWidth = 500.0 / 28
+        var checked = 0
+        for (index, faces) in curl.stripFaces.enumerated() {
+            for u in stride(from: 0.0, through: 1.0, by: 0.25) {
+                // The front runs out from the spine along the chain, and the back runs back towards it.
+                let frontDistance = (Double(index) + u) * stripWidth
+                let backDistance = (Double(index) + 1 - u) * stripWidth
+                let front = try bookSpineAlpha(atDistance: frontDistance, color: color)
+                let back = try bookSpineAlpha(atDistance: backDistance, color: color)
+                let frontSpine = faces.front.sublayers?.compactMap { $0 as? CAGradientLayer }.dropFirst().first
+                let backSpine = faces.back.sublayers?.compactMap { $0 as? CAGradientLayer }.dropFirst().first
+                if front > 0 || back > 0 { checked += 1 }
+                #expect(abs((try frontSpine.map { try alpha(of: $0, at: u) } ?? 0) - front) < 0.002)
+                #expect(abs((try backSpine.map { try alpha(of: $0, at: u) } ?? 0) - back) < 0.002)
+            }
+        }
+        #expect(checked > 0)
+        // Flat at both ends, so the leaf adds no shade of its own there.
+        for t in [0.0, 1.0] {
+            curl.setProgress(t)
+            for (front, _) in curl.stripFaces {
+                #expect(try shadeEnds(front).spine < 0.0001)
+            }
+        }
+    }
+
+    /// Without a spine colour, as with one page, the faces have only their shade.
+    @Test func aLeafWithoutASpineHasOnlyItsShade() throws {
+        curl.spineColor = nil
+        _ = try preparedCurl()
+        for (front, back) in curl.stripFaces {
+            #expect(front.sublayers?.count == 1)
+            #expect(back.sublayers?.count == 1)
+        }
+    }
+
     @Test func aSinglePageHasNoSpine() throws {
         curl.spineColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.3)
         let page = try spread(width: 2000, left: red, right: red)

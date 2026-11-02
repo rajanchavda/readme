@@ -259,10 +259,18 @@ final class CurlView: NSView {
             backFace.transform = CATransform3DMakeRotation(.pi, 0, 1, 0)
             chain.addSublayer(backFace)
 
-            return Strip(
+            let strip = Strip(
                 layer: chain, front: frontFace, back: backFace,
                 frontShade: addShade(to: frontFace, spineOnLeft: true),
                 backShade: addShade(to: backFace, spineOnLeft: false))
+            // A spread's pages carry the spine's shadow, as in the mockup, so a flat leaf looks just
+            // like the page it covers. Both faces are hinged at the spine.
+            if hinge > 0, let spineColor {
+                let near = CGFloat(index) * stripWidth
+                addSpine(to: frontFace, from: near, to: near + stripWidth, color: spineColor, spineOnLeft: true)
+                addSpine(to: backFace, from: near, to: near + stripWidth, color: spineColor, spineOnLeft: false)
+            }
+            return strip
         }
     }
 
@@ -297,6 +305,21 @@ final class CurlView: NSView {
         shade.edgeAntialiasingMask = face.edgeAntialiasingMask
         face.addSublayer(shade)
         return shade
+    }
+
+    /// The part of the spine's shadow that falls on one strip's face, over its shade.
+    private func addSpine(to face: CALayer, from near: CGFloat, to far: CGFloat, color: CGColor, spineOnLeft: Bool) {
+        guard let stops = SpineShadow.stops(from: near, to: far) else { return }
+        let shadow = CAGradientLayer()
+        shadow.frame = face.bounds
+        shadow.startPoint = CGPoint(x: spineOnLeft ? 0 : 1, y: 0.5)
+        shadow.endPoint = CGPoint(x: spineOnLeft ? 1 : 0, y: 0.5)
+        shadow.locations = stops.map { NSNumber(value: $0.location) }
+        shadow.colors = stops.map { color.copy(alpha: color.alpha * $0.share) ?? color }
+        shadow.isDoubleSided = false
+        shadow.allowsEdgeAntialiasing = true
+        shadow.edgeAntialiasingMask = face.edgeAntialiasingMask
+        face.addSublayer(shadow)
     }
 
     /// Pixels per point of a bitmap drawn at `width` points, so it's shown at its full resolution.

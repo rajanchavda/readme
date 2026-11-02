@@ -38,8 +38,9 @@ final class DeskView: NSView {
         wantsLayer = true
         layer?.backgroundColor = CGColor(srgbRed: 0x3A / 255, green: 0x33 / 255, blue: 0x2C / 255, alpha: 1)
         // Over the web view too, which is why it's a tracking area and not the view's own events.
+        // Always active, so the title bar's buttons show over a window that isn't the key one.
         addTrackingArea(NSTrackingArea(
-            rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self))
     }
 

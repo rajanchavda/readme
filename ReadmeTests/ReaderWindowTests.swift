@@ -124,6 +124,17 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(!ReaderWindowController.showsTrafficLights(at: NSPoint(x: 500, y: 630), in: bounds, titleBarHeight: 28))
     }
 
+    /// In fullscreen the system's reveal bar owns them, and it needs them visible wherever the pointer is.
+    @Test func fullscreenLeavesTrafficLightsToTheSystem() {
+        let bounds = NSRect(x: 0, y: 0, width: 1512, height: 949)
+        #expect(ReaderWindowController.showsTrafficLights(
+            at: NSPoint(x: 500, y: 300), in: bounds, titleBarHeight: 0, isFullscreen: true))
+        #expect(ReaderWindowController.showsTrafficLights(
+            at: NSPoint(x: 500, y: 945), in: bounds, titleBarHeight: 0, isFullscreen: true))
+        #expect(!ReaderWindowController.showsTrafficLights(
+            at: NSPoint(x: 500, y: 945), in: bounds, titleBarHeight: 0, isFullscreen: false))
+    }
+
     /// The toolbar can overlap the page's outer band, and a click on it mustn't turn the page.
     @Test func chromeOverAnEdgeTakesTheClick() {
         let frame = NSRect(x: 0, y: 0, width: 1048, height: 620)

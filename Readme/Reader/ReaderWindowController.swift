@@ -127,13 +127,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             session.turns.follow(signal)
         }
         desk.chrome = [toolbar]
+        // The desk hears the mouse in an inactive window too, for the traffic lights. The toolbar
+        // only wakes in the window being read.
         desk.onMouseMoved = { [weak self] point in
-            self?.wake()
-            self?.followPointer(to: point)
+            guard let self else { return }
+            if self.window?.isKeyWindow == true { self.wake() }
+            self.followPointer(to: point)
         }
         desk.onMouseExited = { [weak self] in
-            self?.sleep()
-            self?.showTrafficLights(false, animated: true)
+            guard let self else { return }
+            self.sleep()
+            if !self.isFullscreen { self.showTrafficLights(false, animated: true) }
         }
         desk.onAppearanceChange = { [weak self] in self?.restyle(animated: true) }
 
@@ -537,6 +541,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         places.beginLayoutChange(at: session?.book.currentLocation?.cfi)
         isFullscreen = true
         toolbarModel.isFullscreen = true
+        showTrafficLights(true, animated: false)
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
@@ -552,6 +557,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidExitFullScreen(_ notification: Notification) {
         endLayoutChange()
+        showTrafficLights(false, animated: true)
     }
 
     /// A transition that doesn't happen leaves the window as it was, and its text size with it.
@@ -559,6 +565,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         isFullscreen = false
         toolbarModel.isFullscreen = false
         endLayoutChange()
+        showTrafficLights(false, animated: true)
     }
 
     func windowDidFailToExitFullScreen(_ window: NSWindow) {
@@ -614,14 +621,20 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// True if a pointer at `point` on the desk is over the title bar's strip along its top.
-    static func showsTrafficLights(at point: NSPoint, in bounds: NSRect, titleBarHeight: CGFloat) -> Bool {
-        titleBarHeight > 0 && bounds.contains(point) && point.y >= bounds.maxY - titleBarHeight
+    /// In fullscreen they're the system's, shown in its reveal bar, so they're always left visible.
+    static func showsTrafficLights(
+        at point: NSPoint, in bounds: NSRect, titleBarHeight: CGFloat, isFullscreen: Bool = false
+    ) -> Bool {
+        if isFullscreen { return true }
+        return titleBarHeight > 0 && bounds.contains(point) && point.y >= bounds.maxY - titleBarHeight
     }
 
     private func followPointer(to point: NSPoint) {
         guard let window else { return }
         let titleBar = desk.bounds.height - window.contentLayoutRect.height
-        showTrafficLights(Self.showsTrafficLights(at: point, in: desk.bounds, titleBarHeight: titleBar), animated: true)
+        let visible = Self.showsTrafficLights(
+            at: point, in: desk.bounds, titleBarHeight: titleBar, isFullscreen: isFullscreen)
+        showTrafficLights(visible, animated: true)
     }
 
     /// The close, minimise and zoom buttons show only while the pointer's in the title bar's strip.
