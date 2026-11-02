@@ -9,7 +9,7 @@ Trial of the page curl on real books, on 2026-11-02. This is the measurement rec
 - **That doesn't prove the screen got every frame.** The monitor can't see the render server. Instruments can, and it reports about 15 to 20% of the frames in a normal key turn arriving one refresh late. The same tool reports 2.3% for one small moving layer, so it can't confirm 1% for anything. The bar is met as written, and not shown at the screen.
 - **The simpler curl was tried and didn't help.** Dropping shading updates and going to 14 strips left the Instruments number where it was, so nothing was simplified. The curl is unchanged.
 - **Normal reading works.** Every press curled at 1 s and 0.4 s, at the start, middle and near the end of the book.
-- **A held key is the weak spot.** Pages keep turning for 1 to 8 seconds after release, and almost none of them curl.
+- **A held key stops when it's let go.** The last page lands within 60 to 175 ms of release, at about 5 pages a second while held, but almost none of those pages curl.
 
 ## What was tested
 
@@ -106,18 +106,20 @@ A curl was counted when a press produced new strips.
 
 ## Held key
 
-Key repeat is simulated at macOS's default settings (375 ms, then every 90 ms) and at the fastest setting (225 ms, then every 30 ms). This Mac uses the defaults.
+Key repeat is simulated at macOS's default settings (375 ms, then every 90 ms) and at the fastest setting (225 ms, then every 30 ms). This Mac uses the defaults. The repeats are real key events marked as repeats, through the window's key monitor.
+
+The owner chose that pages stop when the key is released. A repeat is now dropped while the turn before it is still waiting for images or landing, and is never kept for later. Separate presses all count, as before. Measured again on 2026-11-02 in a driver build of that code, in Moby-Dick from 30%:
 
 | Held for | Repeat | Presses | Pages turned | Curls | Page still turning after release |
 |---|---|---|---|---|---|
-| 3 s | 90 ms | 31 | 31 | 2 | 1.0 s |
-| 10 s | 90 ms | 108 | 108 | 2 | 3.2 s |
-| 3 s | 30 ms | 94 | 94 | 2 | 8.3 s |
+| 3 s | 90 ms | 31 | 16 | 3 | 0.10 s |
+| 10 s | 90 ms | 108 | 53 | 3 | 0.13 s |
+| 3 s | 30 ms | 94 | 16 | 2 | 0.21 s |
 
-- **Every press counts,** as the earlier ruling asked, but pages move at about one per 115 ms, so a faster repeat builds a queue that keeps going after the key is up.
-- **Almost none of them curl.** After the first turn or two, the page just changes.
+- **Pages stop with the key.** The last page landed 60, 93 and 173 ms after release, in the table's order. The last column runs on until the turn has finished, a little after landing. Before this change it was 1.0 s, 3.2 s and 8.3 s, with every press turning a page.
+- **A held key turns about 5 pages a second** at either rate. At 30 ms, a page lands, the next repeat comes, and then it waits its 50 ms for images that aren't there before the page changes. That's what puts the fastest rate's stop past 150 ms.
+- **Almost none of them curl, still.** The read-ahead waits for a quiet period longer than the gap between held turns, so after the first two the buffer is empty and the page just changes. Nothing was changed there.
 - **After a hold:** 5 of 5 presses at 1 s curled again.
-- **Decision for the owner:** whether to drop queued presses. Nothing was changed here.
 
 ## Landing mismatches and pops
 
@@ -163,5 +165,5 @@ Only a person can judge these, on the real machine:
 6. **A second display at 1x,** for blur and seams between strips.
 7. **The faint title-bar smudge** at mid-turn, which hasn't been investigated.
 8. **Gradient shading versus the prototype's flat shading.** The gradient, with no overlap between strips, is a departure from the mockup, made to avoid bands and lines.
-9. **Holding an arrow key.** Is the run-on after release acceptable, and is it acceptable that held turns don't curl?
+9. **Holding an arrow key.** Pages now stop on release. Is about 5 pages a second while held the right speed, and is it acceptable that held turns don't curl?
 10. **Illustrated pages.** Do you see any flash or change as a page lands? Huckleberry Finn is a good book for this.
