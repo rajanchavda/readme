@@ -325,6 +325,34 @@ private func relativeRotation(of layer: CALayer) -> Double {
         #expect(!curl.isPlaying)
     }
 
+    // MARK: Spine
+
+    /// While a turn covers the book, the spine's shadow lies on the pages beneath, under the leaf.
+    @Test func theSpineShadowLiesBetweenThePagesBeneathAndTheLeaf() throws {
+        curl.spineColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.3)
+        _ = try preparedCurl()
+        let layers = try #require(curl.layer?.sublayers)
+        let shadows = curl.spineLayers
+        #expect(shadows.count == 2)
+        let stage = try #require(curl.stageLayer.flatMap { layers.firstIndex(of: $0) })
+        let right = try #require(curl.beneathLayers.right.flatMap { layers.firstIndex(of: $0) })
+        for shadow in shadows {
+            let index = try #require(layers.firstIndex(of: shadow))
+            #expect(index > right)
+            #expect(index < stage)
+        }
+        // Meeting at the spine.
+        #expect(shadows.map(\.frame.maxX).contains(500))
+        #expect(shadows.map(\.frame.minX).contains(500))
+    }
+
+    @Test func aSinglePageHasNoSpine() throws {
+        curl.spineColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.3)
+        let page = try spread(width: 2000, left: red, right: red)
+        curl.beginPage(.forward, front: page, beneath: page, blank: blue)
+        #expect(curl.spineLayers.isEmpty)
+    }
+
     // MARK: One page across
 
     @Test func aSinglePageIsHingedAtItsLeftEdge() throws {

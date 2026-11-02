@@ -52,6 +52,12 @@ final class CurlView: NSView {
     /// Holds the strips. A single page fades out by fading this.
     private var stage: CALayer?
     private(set) var isSinglePage = false
+    /// The spine's shadow on the pages beneath a spread's turning page, which passes over it.
+    private var spine: [CALayer] = []
+
+    /// The colour of the spine's shadow, or nil for none, as with one page across. Set it before a
+    /// turn begins. `beginPage` never draws one.
+    var spineColor: CGColor?
 
     private var animation: Animation?
     private var link: CADisplayLink?
@@ -73,6 +79,7 @@ final class CurlView: NSView {
     var beneathLayers: (left: CALayer?, right: CALayer?) { (pageLeft, pageRight) }
     var castLayer: CALayer? { cast }
     var stageLayer: CALayer? { stage }
+    var spineLayers: [CALayer] { spine }
 
     // MARK: Setting up
 
@@ -105,6 +112,7 @@ final class CurlView: NSView {
             let page = CGRect(x: 0, y: 0, width: pageWidth, height: bounds.height)
             pageLeft = addImageLayer(beneathLeft, frame: page)
             pageRight = addImageLayer(beneathRight, frame: page.offsetBy(dx: pageWidth, dy: 0))
+            addSpine()
             cast = addCast()
             buildStrips(front: front, back: .image(back), pageWidth: pageWidth, hinge: pageWidth)
             isHidden = false
@@ -145,6 +153,7 @@ final class CurlView: NSView {
         withoutActions {
             pageLeft = addImageLayer(to, frame: bounds)
             crossfadeTop = addImageLayer(from, frame: bounds)
+            addSpine()
             isHidden = false
         }
         run(
@@ -168,6 +177,20 @@ final class CurlView: NSView {
         picture.contentsScale = Self.scale(of: image, width: frame.width)
         layer?.addSublayer(picture)
         return picture
+    }
+
+    /// The web view's spine shadow is under the curl, so the pages beneath carry their own.
+    private func addSpine() {
+        guard let spineColor else { return }
+        let shadows = SpineShadow.makeLayers()
+        let frames = SpineShadow.frames(in: bounds)
+        shadows.left.frame = frames.left
+        shadows.right.frame = frames.right
+        for shadow in [shadows.left, shadows.right] {
+            shadow.colors = SpineShadow.colors(spineColor)
+            layer?.addSublayer(shadow)
+        }
+        spine = [shadows.left, shadows.right]
     }
 
     /// The soft shadow the turning page throws across the spread beneath it.
@@ -374,6 +397,7 @@ final class CurlView: NSView {
         cast = nil
         crossfadeTop = nil
         stage = nil
+        spine = []
         isSinglePage = false
         frontImage = nil
         backImage = nil

@@ -52,8 +52,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var restyling: Task<Void, Never>?
     private var restyleWanted = false
     private var restyleAnimated = false
-    /// Where to go back to once the layout's changed, captured before the change began.
-    private var restyleCFI: String?
+    /// Where the queued restyle goes back to, captured before the change it's for began.
+    private var restyleCapture: PlaceKeeper.Capture?
+    private var places = PlaceKeeper()
     private var resizeSettling: Task<Void, Never>?
     /// Pages don't turn while the old look covers the book.
     private var isCovered = false
@@ -61,6 +62,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var idle = IdleTimer()
     private var idleCheck: Task<Void, Never>?
     private var isOverToolbar = false
+    private var areTrafficLightsShown = true
 
     init() {
         settings = ReaderSettings.load()
@@ -106,6 +108,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         if !window.setFrameUsingName("ReaderWindow") { window.center() }
         showTrafficLights(false, animated: false)
         wire()
+        installMonitors()
         placeViews()
         applyColors(animated: false)
     }
@@ -118,11 +121,20 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private func wire() {
         desk.onEdgeClick = { [weak self] direction in self?.turn(direction) }
         desk.onSwipe = { [weak self] signal in
-            guard let self, !self.isCovered else { return }
-            self.session?.turns.follow(signal)
+            guard let self, !self.isCovered, let session = self.session else { return }
+            // A swipe may turn the page, which is then where the reader wants to stay.
+            if case .start = signal { self.places.turned() }
+            session.turns.follow(signal)
         }
-        desk.onMouseMoved = { [weak self] in self?.wake() }
-        desk.onMouseExited = { [weak self] in self?.sleep() }
+        desk.chrome = [toolbar]
+        desk.onMouseMoved = { [weak self] point in
+            self?.wake()
+            self?.followPointer(to: point)
+        }
+        desk.onMouseExited = { [weak self] in
+            self?.sleep()
+            self?.showTrafficLights(false, animated: true)
+        }
         desk.onAppearanceChange = { [weak self] in self?.restyle(animated: true) }
 
         toolbarModel.onSettingsChange = { [weak self] settings in self?.change(settings) }
@@ -131,7 +143,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             self?.isOverToolbar = hovering
             if !hovering { self?.wake() }
         }
+    }
 
+    /// Removed when the window closes, and put back when it shows again.
+    private func installMonitors() {
+        guard keyMonitor == nil else { return }
         // A monitor, because the web view takes keys once it's been clicked.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handle(event) == true ? nil : event
@@ -156,6 +172,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Showing and opening
 
     func show() {
+        installMonitors()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -184,9 +201,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let curl = CurlView(frame: layout.frame)
         // Shown once it has the book, so an empty white page never flashes up.
         book.alphaValue = 0
+        // The spine's shadow belongs to the pages, so it lies on the book and the cover, and the
+        // turning page passes over it. The curl draws its own on the pages beneath.
         desk.addSubview(book, positioned: .below, relativeTo: spine)
         desk.addSubview(cover, positioned: .above, relativeTo: book)
-        desk.addSubview(curl, positioned: .above, relativeTo: cover)
+        desk.addSubview(curl, positioned: .above, relativeTo: spine)
         let cache = SpreadCache(visible: book)
         let turns = TurnCoordinator(book: book, cache: cache, curl: curl)
         session = Session(book: book, curl: curl, cache: cache, turns: turns)
@@ -200,7 +219,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                 guard let self else { return }
                 await book.applyStyles(css: self.css(), columns: self.layout.columns, columnWidth: self.layout.columnWidth)
                 let location = try await book.open(url, at: cfi)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.session?.book === book else { return }
                 self.window?.title = url.deletingPathExtension().lastPathComponent
                 self.show(location)
                 await book.settle()
@@ -256,38 +275,28 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     private func handle(_ event: NSEvent) -> Bool {
         guard let window, event.window === window, window.attachedSheet == nil,
-              // Keys typed into a field are the field's.
-              !(window.firstResponder is NSText)
+              let action = KeyAction.of(
+                key: event.charactersIgnoringModifiers ?? "", keyCode: event.keyCode, modifiers: event.modifierFlags,
+                isRepeat: event.isARepeat, isFullscreen: isFullscreen, isTyping: window.firstResponder is NSText)
         else { return false }
-        let modifiers = event.modifierFlags.intersection(KeyShortcut.relevantModifiers)
-        let key = event.charactersIgnoringModifiers ?? ""
-        if let command = ReaderCommand(key: key, modifiers: event.modifierFlags) {
+        switch action {
+        case let .command(command):
             perform(command)
-            return true
-        }
-        // As in the mockup, Esc also leaves fullscreen.
-        if event.keyCode == 53, modifiers.isEmpty, isFullscreen {
+        case let .turn(direction, isRepeat):
+            guard session != nil else { return false }
+            turn(direction, isRepeat: isRepeat)
+        case .leaveFullscreen:
             window.toggleFullScreen(nil)
-            return true
+        case .ignore:
+            break
         }
-        guard modifiers.intersection([.command, .control, .option]).isEmpty, session != nil else { return false }
-        switch event.specialKey {
-        case .rightArrow:
-            turn(.forward, isRepeat: event.isARepeat)
-            return true
-        case .leftArrow:
-            turn(.backward, isRepeat: event.isARepeat)
-            return true
-        default:
-            guard key == " " else { return false }
-            turn(.forward, isRepeat: event.isARepeat)
-            return true
-        }
+        return true
     }
 
     private func turn(_ direction: TurnDirection, isRepeat: Bool = false) {
-        guard !isCovered else { return }
-        session?.turns.turn(direction, isRepeat: isRepeat)
+        guard !isCovered, let session else { return }
+        places.turned()
+        session.turns.turn(direction, isRepeat: isRepeat)
     }
 
     // MARK: Settings and layout
@@ -311,25 +320,27 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     /// Lays the book out for the settings, theme and window as they are now, then refreshes the
     /// curl's images. `animated` crossfades from the old look over 200 ms.
-    private func restyle(animated: Bool, returningTo cfi: String? = nil) {
+    /// `returningTo` is a place captured earlier, as a resize or fullscreen does when it starts.
+    /// Otherwise it's where the book is now.
+    private func restyle(animated: Bool, returningTo capture: PlaceKeeper.Capture? = nil) {
         restyleWanted = true
         restyleAnimated = restyleAnimated || animated
-        restyleCFI = restyleCFI ?? cfi ?? session?.book.currentLocation?.cfi
+        restyleCapture = restyleCapture ?? capture ?? places.capture(session?.book.currentLocation?.cfi)
         guard restyling == nil else { return }
         restyling = Task { [weak self] in
             while let self, self.restyleWanted {
                 self.restyleWanted = false
                 let animated = self.restyleAnimated
-                let cfi = self.restyleCFI
+                let capture = self.restyleCapture
                 self.restyleAnimated = false
-                self.restyleCFI = nil
-                await self.applyLayout(animated: animated, returningTo: cfi)
+                self.restyleCapture = nil
+                await self.applyLayout(animated: animated, returningTo: capture)
             }
             self?.restyling = nil
         }
     }
 
-    private func applyLayout(animated: Bool, returningTo cfi: String?) async {
+    private func applyLayout(animated: Bool, returningTo capture: PlaceKeeper.Capture?) async {
         layout = BookFrame(in: desk.bounds.size, settings: settings, fullscreen: isFullscreen)
         let css = css()
         guard let session, session.book.isBookOpen else {
@@ -344,7 +355,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         if restyles {
             await book.applyStyles(css: css, columns: layout.columns, columnWidth: layout.columnWidth)
         }
-        if let cfi, book.currentLocation?.cfi != cfi {
+        // Read after the restyle, so a page turned meanwhile is kept.
+        if let cfi = places.target(capture), book.currentLocation?.cfi != cfi {
             _ = await book.go(toCFI: cfi)
         }
         if restyles && animated {
@@ -353,7 +365,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         }
         applyColors(animated: animated)
         uncoverBook()
-        if let here = book.currentLocation {
+        // A book opened meanwhile has its own place to show.
+        if self.session?.book === book, let here = book.currentLocation {
             show(here)
             await session.cache.refresh(around: here)
         }
@@ -458,6 +471,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let colors = ReadingCSS.colors(theme)
         toolbarModel.theme = theme
         session?.turns.pageColor = colors.page.cgColor
+        session?.curl.spineColor = layout.columns == 2 ? colors.spine.cgColor : nil
         CATransaction.begin()
         CATransaction.setDisableActions(!animated)
         if animated {
@@ -489,8 +503,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let wanted = BookFrame(in: desk.bounds.size, settings: settings, fullscreen: isFullscreen)
         // A change in the number of pages can't wait for the window to stop, or two columns would
         // squeeze onto one page.
+        // Restyles during a live resize or fullscreen transition go back to where it began.
         if wanted.columns != layout.columns {
-            restyle(animated: false)
+            restyle(animated: false, returningTo: places.layoutChangeCapture)
         } else {
             layout = wanted
             placeViews()
@@ -498,47 +513,67 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         resizeSettling?.cancel()
         resizeSettling = Task { [weak self] in
             try? await Task.sleep(for: Self.resizeQuiet)
-            guard !Task.isCancelled else { return }
-            self?.restyle(animated: false)
+            guard !Task.isCancelled, let self else { return }
+            self.restyle(animated: false, returningTo: self.places.layoutChangeCapture)
         }
     }
 
     func windowWillStartLiveResize(_ notification: Notification) {
-        restyleCFI = restyleCFI ?? session?.book.currentLocation?.cfi
+        places.beginLayoutChange(at: session?.book.currentLocation?.cfi)
+    }
+
+    /// The change is over, whether or not the size changed, so its place is used now or never.
+    func windowDidEndLiveResize(_ notification: Notification) {
+        endLayoutChange()
+    }
+
+    private func endLayoutChange() {
+        guard places.isChangingLayout else { return }
+        resizeSettling?.cancel()
+        restyle(animated: false, returningTo: places.endLayoutChange())
     }
 
     func windowWillEnterFullScreen(_ notification: Notification) {
-        restyleCFI = restyleCFI ?? session?.book.currentLocation?.cfi
+        places.beginLayoutChange(at: session?.book.currentLocation?.cfi)
         isFullscreen = true
         toolbarModel.isFullscreen = true
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
-        restyle(animated: false)
+        endLayoutChange()
     }
 
     func windowWillExitFullScreen(_ notification: Notification) {
-        restyleCFI = restyleCFI ?? session?.book.currentLocation?.cfi
+        places.beginLayoutChange(at: session?.book.currentLocation?.cfi)
         isFullscreen = false
         toolbarModel.isFullscreen = false
         NSCursor.setHiddenUntilMouseMoves(false)
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
-        restyle(animated: false)
+        endLayoutChange()
     }
 
     /// A transition that doesn't happen leaves the window as it was, and its text size with it.
     func windowDidFailToEnterFullScreen(_ window: NSWindow) {
         isFullscreen = false
         toolbarModel.isFullscreen = false
-        restyle(animated: false)
+        endLayoutChange()
     }
 
     func windowDidFailToExitFullScreen(_ window: NSWindow) {
         isFullscreen = true
         toolbarModel.isFullscreen = true
-        restyle(animated: false)
+        endLayoutChange()
+    }
+
+    /// Monitors would keep acting for a window that's gone. `show` puts them back.
+    func windowWillClose(_ notification: Notification) {
+        for monitor in [keyMonitor, scrollMonitor].compactMap({ $0 }) {
+            NSEvent.removeMonitor(monitor)
+        }
+        keyMonitor = nil
+        scrollMonitor = nil
     }
 
     /// The end of a gesture may never reach a window that's lost the keyboard, and no page should stay
@@ -575,13 +610,26 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private func setAwake(_ awake: Bool) {
         guard toolbarModel.isAwake != awake else { return }
         toolbarModel.isAwake = awake
-        showTrafficLights(awake, animated: true)
         if !awake && isFullscreen { NSCursor.setHiddenUntilMouseMoves(true) }
     }
 
-    /// The close, minimise and zoom buttons show with the toolbar and fade with it.
+    /// True if a pointer at `point` on the desk is over the title bar's strip along its top.
+    static func showsTrafficLights(at point: NSPoint, in bounds: NSRect, titleBarHeight: CGFloat) -> Bool {
+        titleBarHeight > 0 && bounds.contains(point) && point.y >= bounds.maxY - titleBarHeight
+    }
+
+    private func followPointer(to point: NSPoint) {
+        guard let window else { return }
+        let titleBar = desk.bounds.height - window.contentLayoutRect.height
+        showTrafficLights(Self.showsTrafficLights(at: point, in: desk.bounds, titleBarHeight: titleBar), animated: true)
+    }
+
+    /// The close, minimise and zoom buttons show only while the pointer's in the title bar's strip.
     private func showTrafficLights(_ visible: Bool, animated: Bool) {
-        guard let buttons = window?.standardWindowButton(.closeButton)?.superview else { return }
+        guard visible != areTrafficLightsShown,
+              let buttons = window?.standardWindowButton(.closeButton)?.superview
+        else { return }
+        areTrafficLightsShown = visible
         NSAnimationContext.runAnimationGroup { context in
             context.duration = animated ? Self.motion : 0
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -593,70 +641,4 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 /// A plain layer-backed view that never takes the mouse.
 final class PassThroughView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-/// The soft shadow where the two pages meet, laid over the book.
-final class SpineView: NSView {
-    /// How far the shadow reaches into each page. The mockup's `inset 26px 0 26px -20px` shadow is
-    /// a hard edge 6 points in, blurred over 26.
-    private static let reach: CGFloat = 32
-    /// Its darkness, as a share of the colour's, 32, 20, 12, 6 and 0 points from the spine.
-    private static let falloff: [(location: Double, share: CGFloat)] = [
-        (0, 0), (0.375, 0.14), (0.625, 0.32), (0.8125, 0.5), (1, 0.68),
-    ]
-    private let left = CAGradientLayer()
-    private let right = CAGradientLayer()
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        for (shadow, towardsSpine) in [(left, true), (right, false)] {
-            shadow.startPoint = CGPoint(x: towardsSpine ? 0 : 1, y: 0.5)
-            shadow.endPoint = CGPoint(x: towardsSpine ? 1 : 0, y: 0.5)
-            shadow.locations = Self.falloff.map { NSNumber(value: $0.location) }
-            layer?.addSublayer(shadow)
-        }
-    }
-
-    convenience init() {
-        self.init(frame: .zero)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("SpineView is created in code")
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let middle = (bounds.width / 2).rounded()
-        left.frame = CGRect(x: middle - Self.reach, y: 0, width: Self.reach, height: bounds.height)
-        right.frame = CGRect(x: middle, y: 0, width: Self.reach, height: bounds.height)
-        CATransaction.commit()
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        needsLayout = true
-    }
-
-    /// Strongest at the spine and fading out into the page.
-    func setColor(_ color: CGColor, animated: Bool) {
-        let colors = Self.falloff.map { color.copy(alpha: color.alpha * $0.share) ?? color }
-        for shadow in [left, right] {
-            if animated {
-                let animation = CABasicAnimation(keyPath: "colors")
-                animation.fromValue = shadow.presentation()?.colors ?? shadow.colors
-                animation.toValue = colors
-                animation.duration = 0.2
-                animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                shadow.add(animation, forKey: "colors")
-            }
-            shadow.colors = colors
-        }
-    }
 }

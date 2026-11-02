@@ -84,3 +84,37 @@ enum ReaderCommand: CaseIterable {
         return min(fontSizes.upperBound, max(fontSizes.lowerBound, changed))
     }
 }
+
+/// What a key press in the reading window does.
+enum KeyAction: Equatable {
+    case command(ReaderCommand)
+    case turn(TurnDirection, isRepeat: Bool)
+    case leaveFullscreen
+    /// A held key's repeat that does nothing, as only text size changes while a key is held.
+    case ignore
+
+    private static let escapeKeyCode: UInt16 = 53
+
+    /// Nil leaves the key to the rest of the app. Keys typed into a field are the field's.
+    static func of(
+        key: String, keyCode: UInt16, modifiers: NSEvent.ModifierFlags, isRepeat: Bool, isFullscreen: Bool,
+        isTyping: Bool
+    ) -> KeyAction? {
+        guard !isTyping else { return nil }
+        let modifiers = modifiers.intersection(KeyShortcut.relevantModifiers)
+        if let command = ReaderCommand(key: key, modifiers: modifiers) {
+            let repeats = command == .biggerText || command == .smallerText
+            return isRepeat && !repeats ? .ignore : .command(command)
+        }
+        // As in the mockup, Esc also leaves fullscreen.
+        if keyCode == escapeKeyCode, modifiers.isEmpty, isFullscreen {
+            return isRepeat ? .ignore : .leaveFullscreen
+        }
+        guard modifiers.intersection([.command, .control, .option]).isEmpty else { return nil }
+        switch key {
+        case KeyShortcut.character(NSRightArrowFunctionKey), " ": return .turn(.forward, isRepeat: isRepeat)
+        case KeyShortcut.character(NSLeftArrowFunctionKey): return .turn(.backward, isRepeat: isRepeat)
+        default: return nil
+        }
+    }
+}

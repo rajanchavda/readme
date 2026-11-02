@@ -23,10 +23,13 @@ final class DeskView: NSView {
 
     var onEdgeClick: ((TurnDirection) -> Void)?
     var onSwipe: ((SwipeSignal) -> Void)?
-    var onMouseMoved: (() -> Void)?
+    /// Where the mouse is, in the desk's coordinates.
+    var onMouseMoved: ((NSPoint) -> Void)?
     var onMouseExited: (() -> Void)?
     var onAppearanceChange: (() -> Void)?
     var bookFrame: NSRect
+    /// Controls laid over the book, such as the toolbar, which take a click before the page's edge does.
+    var chrome: [NSView] = []
     private var gesture = SwipeGesture()
 
     init(frame: NSRect, bookFrame: NSRect) {
@@ -57,6 +60,9 @@ final class DeskView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
+        for view in chrome where !view.isHidden {
+            if let hit = view.hitTest(local) { return hit }
+        }
         return turn(at: local) != nil ? self : super.hitTest(point)
     }
 
@@ -66,11 +72,11 @@ final class DeskView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        onMouseMoved?()
+        onMouseMoved?(convert(event.locationInWindow, from: nil))
     }
 
     override func mouseEntered(with event: NSEvent) {
-        onMouseMoved?()
+        onMouseMoved?(convert(event.locationInWindow, from: nil))
     }
 
     override func mouseExited(with event: NSEvent) {
