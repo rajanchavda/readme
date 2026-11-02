@@ -18,9 +18,12 @@ enum BookWebViewError: Error, Equatable {
 /// `next()`, `previous()` and the `go` methods return the new location, or nil if nothing moved.
 /// They run in the order they're called, so turns fired quickly are all honoured.
 /// `onRelocate` hears each settled location once, whatever caused it, and not the stops on the way.
+/// Parts of the reader that have to follow the book, whoever moves it, add a relocation listener,
+/// which hears the same and leaves `onRelocate` to the window.
 @MainActor
 final class BookWebView: NSView {
     var onRelocate: ((ReaderLocation) -> Void)?
+    private var relocationListeners: [(ReaderLocation) -> Void] = []
     private(set) var currentLocation: ReaderLocation?
     /// The book that's open, its styles and its column limit, so a second view can be made to match.
     private(set) var bookURL: URL?
@@ -84,6 +87,12 @@ final class BookWebView: NSView {
         let changed = newSize != frame.size
         super.setFrameSize(newSize)
         if changed && isOpen { scheduleRelayout() }
+    }
+
+    /// Listeners hear a location before `onRelocate` does, so they're up to date by the time the
+    /// window acts on it.
+    func addRelocationListener(_ listener: @escaping (ReaderLocation) -> Void) {
+        relocationListeners.append(listener)
     }
 
     // MARK: Opening
@@ -357,6 +366,7 @@ final class BookWebView: NSView {
             readerIsReady(load: event.load)
         case ("relocate", let location?):
             currentLocation = location
+            relocationListeners.forEach { $0(location) }
             onRelocate?(location)
         default:
             rejectedMessageCount += 1

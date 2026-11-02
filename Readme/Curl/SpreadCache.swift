@@ -21,10 +21,15 @@ enum TurnDirection {
 /// a preview is what the reader lands on.
 ///
 /// A slot is nil until its image is ready, and always nil past the ends of the book. Every image
-/// belongs to the place last refreshed or committed to, and to that layout. Call `refresh` after
-/// anything else moves or restyles the visible view.
+/// belongs to the place last refreshed or committed to, and to that layout. The cache hears the
+/// visible view move anywhere else, such as through a link in the book or a `go` call, and renders
+/// the slots again around where it went. Call `refresh` after restyling it.
 @MainActor
 final class SpreadCache {
+    /// Called once the cache has heard the visible view go somewhere it didn't take it, and emptied
+    /// the slots for the new place.
+    var onUnforeseenMove: (() -> Void)?
+
     private struct Spread {
         var image: CGImage
         var location: ReaderLocation
@@ -76,6 +81,7 @@ final class SpreadCache {
         window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = offscreen
+        visible.addRelocationListener { [weak self] location in self?.visibleMoved(to: location) }
     }
 
     func image(for slot: SpreadSlot) -> CGImage? {
@@ -86,6 +92,12 @@ final class SpreadCache {
         case .afterNext: ahead.dropFirst().first?.image
         case .beforePrevious: behind.dropFirst().first?.image
         }
+    }
+
+    /// True if `current` shows `location` as the visible view lays it out now, so it and its
+    /// neighbours can be shown as the spreads around it.
+    func imagesBelong(to location: ReaderLocation) -> Bool {
+        current?.location.cfi == location.cfi && visibleLayout() == layout
     }
 
     /// The memory the images hold, in bytes.
@@ -164,6 +176,16 @@ final class SpreadCache {
         ahead = direction == .forward ? inFront : behindIt
         behind = direction == .forward ? behindIt : inFront
         return true
+    }
+
+    /// Every move of the visible view arrives here, including its own turns, which `commit` looks
+    /// after, and the same place reported again, which needs nothing. Until it's been given a place,
+    /// the cache has nothing to follow.
+    private func visibleMoved(to location: ReaderLocation) {
+        guard turnsInFlight == 0, visible.isBookOpen, let anchor, location.cfi != anchor.cfi else { return }
+        adopt(location)
+        startRendering(after: nil)
+        onUnforeseenMove?()
     }
 
     private func empty() {

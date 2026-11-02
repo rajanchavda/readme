@@ -105,6 +105,7 @@ final class TurnCoordinator {
             guard let webView = book?.webView else { return finished() }
             webView.takeSnapshot(with: configuration) { _, _ in finished() }
         }
+        cache.onUnforeseenMove = { [weak self] in self?.bookMovedElsewhere() }
     }
 
     func turn(_ direction: TurnDirection) {
@@ -170,8 +171,8 @@ final class TurnCoordinator {
             return true
         }
         if reduceMotion() { return true }
-        guard let target = image(for: held.direction), let current = cache.image(for: .current),
-              let pieces = TurnImages(held.direction, current: current, target: target)
+        guard let spreads = images(for: held.direction),
+              let pieces = TurnImages(held.direction, current: spreads.current, target: spreads.target)
         else { return false }
         // An earlier curl still waiting to come off must leave this one be.
         curlNumber += 1
@@ -217,8 +218,29 @@ final class TurnCoordinator {
         return direction == .forward ? here.isAtEnd : here.isAtStart
     }
 
-    private func image(for direction: TurnDirection) -> CGImage? {
-        cache.image(for: direction == .forward ? .next : .previous)
+    /// The spreads a turn goes from and to. Every curl and crossfade gets its images here, and only
+    /// gets them if they belong to where the book is now: a link or a jump can move it without a turn.
+    private func images(for direction: TurnDirection) -> (current: CGImage, target: CGImage)? {
+        guard let here = book.currentLocation, cache.imagesBelong(to: here),
+              let current = cache.image(for: .current),
+              let target = cache.image(for: direction == .forward ? .next : .previous)
+        else { return nil }
+        return (current, target)
+    }
+
+    /// The book went somewhere no turn took it, so a curl on screen shows where it was. It comes off,
+    /// and fingers holding a page have to start again. A swipe still waiting for its images can carry
+    /// on, as it'll get the new place's.
+    private func bookMovedElsewhere() {
+        if swipe?.isCurling == true {
+            swipe = nil
+            swipeWait?.cancel()
+            swipeWait = nil
+        }
+        guard curl.isShowing else { return }
+        // So the landing of the curl that's going doesn't uncover anything.
+        curlNumber += 1
+        curl.end()
     }
 
     /// Waits for a move still landing, as its images will be good then, and briefly for images that
@@ -229,7 +251,7 @@ final class TurnCoordinator {
         while true {
             let isWaitingUsefully = unlanded > 0
                 ? ContinuousClock.now < pressed + Self.landingPatience
-                : image(for: direction) == nil && !isPastTheEnd(direction) && ContinuousClock.now < pressed + patience
+                : images(for: direction) == nil && !isPastTheEnd(direction) && ContinuousClock.now < pressed + patience
             guard isWaitingUsefully else { break }
             try? await Task.sleep(for: .milliseconds(10))
             if Task.isCancelled { return }
@@ -243,8 +265,8 @@ final class TurnCoordinator {
     /// call this with nothing left to land, when the location and images can be trusted.
     private func startOrDecline(_ direction: TurnDirection) -> Bool {
         if isPastTheEnd(direction) { return true }
-        guard let target = image(for: direction), let current = cache.image(for: .current) else { return false }
-        start(direction, current: current, target: target)
+        guard let spreads = images(for: direction) else { return false }
+        start(direction, current: spreads.current, target: spreads.target)
         return true
     }
 
