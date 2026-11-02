@@ -256,7 +256,7 @@ private func relativeRotation(of layer: CALayer) -> Double {
     }
 
     @Test func clicksOnlyTurnPagesOnTheBooksEdges() {
-        let desk = TrialDeskView(
+        let desk = DeskView(
             frame: NSRect(x: 0, y: 0, width: 1048, height: 620),
             bookFrame: NSRect(x: 34, y: 34, width: 980, height: 552))
         #expect(desk.turn(at: NSPoint(x: 40, y: 300)) == .backward)
@@ -323,6 +323,97 @@ private func relativeRotation(of layer: CALayer) -> Double {
             curl.play(from: 0, to: 1) { continuation.resume() }
         }
         #expect(!curl.isPlaying)
+    }
+
+    // MARK: One page across
+
+    @Test func aSinglePageIsHingedAtItsLeftEdge() throws {
+        let page = try spread(width: 2000, left: red, right: red)
+        curl.beginPage(.forward, front: page, beneath: page, blank: blue)
+        #expect(curl.isSinglePage)
+        #expect(curl.stripLayers.count == 28)
+        let width = 1000.0 / 28
+        for (index, strip) in curl.stripLayers.enumerated() {
+            #expect(abs(strip.position.x - (index == 0 ? 0 : width)) < 0.001)
+            #expect(abs(strip.bounds.width - width) < 0.001)
+        }
+        // The whole page, at the bitmap's scale, with nothing beside it.
+        #expect(curl.beneathLayers.left?.frame == curl.bounds)
+        #expect(curl.beneathLayers.right == nil)
+        #expect(curl.stripFaces.allSatisfy { $0.front.contentsScale == 2 })
+    }
+
+    @Test func aSinglePagesBackIsBlank() throws {
+        let page = try spread(width: 2000, left: red, right: red)
+        curl.beginPage(.forward, front: page, beneath: page, blank: blue)
+        for (front, back) in curl.stripFaces {
+            #expect((front.contents as! CGImage) === page)
+            #expect(back.contents == nil)
+            #expect(back.backgroundColor == blue)
+        }
+    }
+
+    @Test func aSinglePageFadesOverTheLastThirtyPercentAndCastsNothing() throws {
+        #expect(CurlView.pageOpacity(t: 0) == 1)
+        #expect(CurlView.pageOpacity(t: 0.7) == 1)
+        #expect(abs(CurlView.pageOpacity(t: 0.85) - 0.5) < 0.0001)
+        #expect(CurlView.pageOpacity(t: 1) == 0)
+
+        let page = try spread(width: 2000, left: red, right: red)
+        curl.beginPage(.forward, front: page, beneath: page, blank: blue)
+        curl.setProgress(0.5)
+        #expect(try #require(curl.stageLayer).opacity == 1)
+        #expect(try #require(curl.castLayer).opacity == 0)
+        curl.setProgress(0.85)
+        #expect(abs(Double(try #require(curl.stageLayer).opacity) - 0.5) < 0.0001)
+        // The curl keeps the angles of a spread's page.
+        let angles = CurlView.drawnAngles(t: 0.85)
+        #expect(abs(relativeRotation(of: try #require(curl.stripLayers.first)) - angles[0]) < 0.01)
+    }
+
+    /// A spread after a single page has the spread's curl, shadow and all.
+    @Test func aSpreadAfterASinglePageIsUnchanged() throws {
+        let page = try spread(width: 2000, left: red, right: red)
+        curl.beginPage(.forward, front: page, beneath: page, blank: blue)
+        _ = try preparedCurl()
+        #expect(!curl.isSinglePage)
+        #expect(abs(try #require(curl.stripLayers.first).position.x - 500) < 0.001)
+        curl.setProgress(0.5)
+        #expect(abs(Double(try #require(curl.castLayer).opacity) - 1) < 0.001)
+        #expect(try #require(curl.stageLayer).opacity == 1)
+    }
+
+    @Test func aSinglePageLandsOnTheRightPage() throws {
+        let leaving = try spread(width: 2000, left: red, right: red)
+        let next = try spread(width: 2000, left: green, right: green)
+        curl.beginPage(.forward, front: leaving, beneath: next, blank: blue)
+        curl.play(from: 0, to: 1) {}
+        curl.snapToEnd()
+        #expect(curl.stripLayers.isEmpty)
+        #expect((curl.beneathLayers.left?.contents as! CGImage) === next)
+
+        // Going back, the page coming back turns over the one being left, and lies on it.
+        let previous = try spread(width: 2000, left: yellow, right: yellow)
+        curl.beginPage(.backward, front: previous, beneath: next, blank: blue)
+        #expect(try #require(curl.stageLayer).opacity == 0)
+        curl.play(from: 1, to: 0) {}
+        curl.snapToEnd()
+        #expect((curl.beneathLayers.left?.contents as! CGImage) === previous)
+    }
+
+    @Test func singlePagePiecesTakeWholeImages() throws {
+        let current = try spread(left: red, right: red)
+        let target = try spread(left: green, right: green)
+        guard case let .page(front, beneath) = try #require(
+            CurlPieces(.forward, current: current, target: target, isSinglePage: true))
+        else { Issue.record("Expected a single page"); return }
+        #expect(front === current && beneath === target)
+        guard case let .page(backFront, backBeneath) = try #require(
+            CurlPieces(.backward, current: current, target: target, isSinglePage: true))
+        else { Issue.record("Expected a single page"); return }
+        #expect(backFront === target && backBeneath === current)
+        guard case .spread = try #require(CurlPieces(.forward, current: current, target: target, isSinglePage: false))
+        else { Issue.record("Expected a spread"); return }
     }
 
     // MARK: Cropping
@@ -398,6 +489,21 @@ private func relativeRotation(of layer: CALayer) -> Double {
         #expect(turns.isTurning)
         #expect(curl.isPlaying)
         #expect(curl.stripLayers.count == CurlPose.strips)
+        try await waitUntilDone(turns)
+        #expect(view.currentLocation?.cfi != start.cfi)
+        #expect(!curl.isShowing)
+    }
+
+    @Test func aBookOnePageAcrossTurnsOnePage() async throws {
+        await view.applyStyles(css: "", columns: 1)
+        let start = try await view.open(fixture("long.epub"), at: nil)
+        await cache.refresh(around: start)
+        let promised = try #require(cache.image(for: .next))
+        let turns = coordinator()
+        turns.turn(.forward)
+        #expect(curl.isPlaying)
+        #expect(curl.isSinglePage)
+        #expect((curl.beneathLayers.left?.contents as! CGImage) === promised)
         try await waitUntilDone(turns)
         #expect(view.currentLocation?.cfi != start.cfi)
         #expect(!curl.isShowing)

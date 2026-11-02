@@ -10,7 +10,7 @@ private func fixture(_ name: String) throws -> URL {
     return root.appendingPathComponent(name)
 }
 
-/// Swipes driven through `TurnCoordinator.follow`, as `TrialDeskView` drives them. The page is 500
+/// Swipes driven through `TurnCoordinator.follow`, as `DeskView` drives them. The page is 500
 /// points wide, so a move of 300 is progress 0.6.
 @MainActor
 @Suite(.serialized, .timeLimit(.minutes(5))) struct SwipeTurnTests {
@@ -543,9 +543,9 @@ private func fixture(_ name: String) throws -> URL {
     private static let cancelled: Int64 = 8
     private static let mayBegin: Int64 = 128
 
-    private func desk() -> (TrialDeskView, () -> [SwipeSignal]) {
+    private func desk() -> (DeskView, () -> [SwipeSignal]) {
         let frame = NSRect(x: 0, y: 0, width: 1048, height: 620)
-        let desk = TrialDeskView(frame: frame, bookFrame: frame.insetBy(dx: 34, dy: 34))
+        let desk = DeskView(frame: frame, bookFrame: frame.insetBy(dx: 34, dy: 34))
         final class Box { var signals: [SwipeSignal] = [] }
         let box = Box()
         desk.onSwipe = { box.signals.append($0) }

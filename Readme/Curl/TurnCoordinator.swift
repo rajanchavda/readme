@@ -36,6 +36,25 @@ struct TurnImages {
     }
 }
 
+/// What a curl shows: four pages cut from two spreads, or, with one page across, the page that turns
+/// and the one beneath it.
+enum CurlPieces {
+    case spread(TurnImages)
+    case page(front: CGImage, beneath: CGImage)
+
+    init?(_ direction: TurnDirection, current: CGImage, target: CGImage, isSinglePage: Bool) {
+        if isSinglePage {
+            // Going back is the forward turn played in reverse, so the page coming back is the one
+            // that turns.
+            self = direction == .forward
+                ? .page(front: current, beneath: target) : .page(front: target, beneath: current)
+        } else {
+            guard let images = TurnImages(direction, current: current, target: target) else { return nil }
+            self = .spread(images)
+        }
+    }
+}
+
 /// Turns the pages of a book: it plays the curl over the web view and moves the web view beneath it.
 ///
 /// The curl only ever uses images known to belong to where the book is. A press that outruns them
@@ -86,6 +105,9 @@ final class TurnCoordinator {
     private var curlNumber = 0
     private var swipe: Swipe?
     private var swipeWait: Task<Void, Never>?
+
+    /// The paper's colour, which the back of a single turning page shows.
+    var pageColor = CGColor(gray: 1, alpha: 1)
 
     /// True from a turn being accepted until the web view shows where it landed.
     var isTurning: Bool { swipe != nil || waitingTurn != nil || moves > 0 || curl.isShowing }
@@ -153,7 +175,7 @@ final class TurnCoordinator {
     private func startSwipe(_ direction: TurnDirection) {
         guard book.currentLocation != nil else { return }
         finishEarlierTurns()
-        var tracker = SwipeTracker(pageWidth: curl.bounds.width / 2)
+        var tracker = SwipeTracker(pageWidth: isSinglePage ? curl.bounds.width : curl.bounds.width / 2)
         tracker.began()
         swipe = Swipe(direction: direction, tracker: tracker)
         if pickUpSwipe() { return }
@@ -176,13 +198,12 @@ final class TurnCoordinator {
         }
         if reduceMotion() { return true }
         guard let spreads = images(for: held.direction),
-              let pieces = TurnImages(held.direction, current: spreads.current, target: spreads.target)
+              let pieces = CurlPieces(
+                held.direction, current: spreads.current, target: spreads.target, isSinglePage: isSinglePage)
         else { return false }
         // An earlier curl still waiting to come off must leave this one be.
         curlNumber += 1
-        curl.begin(
-            held.direction, front: pieces.front, back: pieces.back,
-            beneathLeft: pieces.beneathLeft, beneathRight: pieces.beneathRight)
+        begin(held.direction, pieces)
         curl.setProgress(held.curlProgress)
         swipe?.isCurling = true
         return true
@@ -214,6 +235,21 @@ final class TurnCoordinator {
             turn(direction)
         } else if unlanded > 0 || !isPastTheEnd(direction) {
             _ = move(direction)
+        }
+    }
+
+    /// The book's laid out one page across. Its images then hold one page each, as they're made in
+    /// the same layout.
+    private var isSinglePage: Bool { book.columns == 1 }
+
+    private func begin(_ direction: TurnDirection, _ pieces: CurlPieces) {
+        switch pieces {
+        case let .spread(images):
+            curl.begin(
+                direction, front: images.front, back: images.back,
+                beneathLeft: images.beneathLeft, beneathRight: images.beneathRight)
+        case let .page(front, beneath):
+            curl.beginPage(direction, front: front, beneath: beneath, blank: pageColor)
         }
     }
 
@@ -276,7 +312,7 @@ final class TurnCoordinator {
 
     private func start(_ direction: TurnDirection, current: CGImage, target: CGImage) {
         let fades = reduceMotion()
-        let pieces = TurnImages(direction, current: current, target: target)
+        let pieces = CurlPieces(direction, current: current, target: target, isSinglePage: isSinglePage)
         // The move starts after this function, by which time the curl is on its way to the screen.
         let landing = move(direction)
         guard fades || pieces != nil else { return }
@@ -287,9 +323,7 @@ final class TurnCoordinator {
         if fades {
             curl.crossfade(from: current, to: target, completion: played)
         } else if let pieces {
-            curl.begin(
-                direction, front: pieces.front, back: pieces.back,
-                beneathLeft: pieces.beneathLeft, beneathRight: pieces.beneathRight)
+            begin(direction, pieces)
             curl.play(
                 from: direction == .forward ? 0 : 1, to: direction == .forward ? 1 : 0, completion: played)
         }
@@ -338,7 +372,7 @@ final class TurnCoordinator {
 
 /// Finishes a wait once, whichever of its endings comes first.
 @MainActor
-private final class OneShot {
+final class OneShot {
     private var continuation: CheckedContinuation<Void, Never>?
 
     init(_ continuation: CheckedContinuation<Void, Never>) {

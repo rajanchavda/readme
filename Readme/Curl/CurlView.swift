@@ -9,6 +9,10 @@ import QuartzCore
 ///
 /// A finished `play` leaves the turned page lying flat, which keeps showing the landed spread with no
 /// strips until `end` removes it, so the host can wait for the page underneath to be ready.
+///
+/// With one page across, `beginPage` turns the whole page about its left edge instead. Its back is
+/// blank, it throws no shadow, and it fades out over the last `pageFadeShare` of the turn, as in the
+/// mockup's one-page mode.
 @MainActor
 final class CurlView: NSView {
     private struct Strip {
@@ -31,6 +35,7 @@ final class CurlView: NSView {
     private static let perspective: CGFloat = 2400
     private static let crossfadeDuration = 0.2
     private static let flatteningShare = 0.05
+    static let pageFadeShare = 0.3
     /// Display links don't tick for a window that's hidden or covered, but a turn must still end.
     private static let safetyMargin: Duration = .milliseconds(250)
 
@@ -44,6 +49,9 @@ final class CurlView: NSView {
     private var frontImage: CGImage?
     private var backImage: CGImage?
     private var crossfadeTop: CALayer?
+    /// Holds the strips. A single page fades out by fading this.
+    private var stage: CALayer?
+    private(set) var isSinglePage = false
 
     private var animation: Animation?
     private var link: CADisplayLink?
@@ -64,6 +72,7 @@ final class CurlView: NSView {
     var stripFaces: [(front: CALayer, back: CALayer)] { strips.map { ($0.front, $0.back) } }
     var beneathLayers: (left: CALayer?, right: CALayer?) { (pageLeft, pageRight) }
     var castLayer: CALayer? { cast }
+    var stageLayer: CALayer? { stage }
 
     // MARK: Setting up
 
@@ -97,11 +106,37 @@ final class CurlView: NSView {
             pageLeft = addImageLayer(beneathLeft, frame: page)
             pageRight = addImageLayer(beneathRight, frame: page.offsetBy(dx: pageWidth, dy: 0))
             cast = addCast()
-            buildStrips(front: front, back: back, pageWidth: pageWidth)
+            buildStrips(front: front, back: .image(back), pageWidth: pageWidth, hinge: pageWidth)
             isHidden = false
         }
         setProgress(d == .forward ? 0 : 1)
         frameMonitor.start(on: self, direction: d, setUpTime: setUpTime)
+    }
+
+    /// Shows a one-page turn at its start, as `begin` does. `front` is the page that turns, the one
+    /// being left going forward and the one coming back going backward, and `beneath` the one under
+    /// it. Its back is plain `blank`, the colour of the paper.
+    func beginPage(_ d: TurnDirection, front: CGImage, beneath: CGImage, blank: CGColor) {
+        let setUpTime = CACurrentMediaTime()
+        clear()
+        direction = d
+        isSinglePage = true
+        frontImage = front
+        withoutActions {
+            pageLeft = addImageLayer(beneath, frame: bounds)
+            // Never shown, as a page turning alone over itself casts nothing worth seeing.
+            cast = addCast()
+            buildStrips(front: front, back: .blank(blank), pageWidth: bounds.width, hinge: 0)
+            isHidden = false
+        }
+        setProgress(d == .forward ? 0 : 1)
+        frameMonitor.start(on: self, direction: d, setUpTime: setUpTime)
+    }
+
+    /// How opaque a single turning page is at progress `t`: whole, then fading to nothing over the
+    /// last `pageFadeShare` of the turn.
+    static func pageOpacity(t: Double) -> Double {
+        t > 1 - pageFadeShare ? max(0, (1 - t) / pageFadeShare) : 1
     }
 
     /// Fades one whole spread into another, for readers who've asked for less motion.
@@ -150,7 +185,13 @@ final class CurlView: NSView {
         return shadow
     }
 
-    private func buildStrips(front: CGImage, back: CGImage, pageWidth: CGFloat) {
+    private enum Back {
+        case image(CGImage)
+        case blank(CGColor)
+    }
+
+    /// `hinge` is where the page is fixed: the spine for a spread, the left edge for one page.
+    private func buildStrips(front: CGImage, back: Back, pageWidth: CGFloat, hinge: CGFloat) {
         // Applied about its centre, the spine, like the mockup's perspective on the book.
         let stage = CALayer()
         stage.frame = bounds
@@ -158,6 +199,7 @@ final class CurlView: NSView {
         perspective.m34 = -1 / Self.perspective
         stage.sublayerTransform = perspective
         layer?.addSublayer(stage)
+        self.stage = stage
 
         let count = CurlPose.strips
         let stripWidth = pageWidth / CGFloat(count)
@@ -167,7 +209,7 @@ final class CurlView: NSView {
             let chain = CATransformLayer()
             chain.bounds = CGRect(x: 0, y: 0, width: stripWidth, height: height)
             chain.anchorPoint = CGPoint(x: 0, y: 0.5)
-            chain.position = CGPoint(x: index == 0 ? pageWidth : stripWidth, y: height / 2)
+            chain.position = CGPoint(x: index == 0 ? hinge : stripWidth, y: height / 2)
             parent.addSublayer(chain)
             parent = chain
 
@@ -175,14 +217,23 @@ final class CurlView: NSView {
             let faceFrame = chain.bounds
             let slice = stripWidth / pageWidth
 
-            let frontFace = makeFace(front, frame: faceFrame, outerEdge: isLast ? .layerRightEdge : [])
+            let frontFace = makeFace(
+                front, frame: faceFrame, pageWidth: pageWidth, outerEdge: isLast ? .layerRightEdge : [])
             frontFace.contentsRect = CGRect(x: CGFloat(index) * slice, y: 0, width: slice, height: 1)
             chain.addSublayer(frontFace)
 
             // Facing the other way, so its slice runs from the spine outward along the chain.
-            let backFace = makeFace(back, frame: faceFrame, outerEdge: isLast ? .layerLeftEdge : [])
+            let backFace: CALayer
+            switch back {
+            case let .image(image):
+                backFace = makeFace(
+                    image, frame: faceFrame, pageWidth: pageWidth, outerEdge: isLast ? .layerLeftEdge : [])
+                backFace.contentsRect = CGRect(x: 1 - CGFloat(index + 1) * slice, y: 0, width: slice, height: 1)
+            case let .blank(color):
+                backFace = makeFace(nil, frame: faceFrame, pageWidth: pageWidth, outerEdge: isLast ? .layerLeftEdge : [])
+                backFace.backgroundColor = color
+            }
             backFace.transform = CATransform3DMakeRotation(.pi, 0, 1, 0)
-            backFace.contentsRect = CGRect(x: 1 - CGFloat(index + 1) * slice, y: 0, width: slice, height: 1)
             chain.addSublayer(backFace)
 
             return Strip(
@@ -196,11 +247,15 @@ final class CurlView: NSView {
     /// A smoothed hinge leaves a line: both neighbours partly cover the pixels there, letting a little
     /// of what's behind them through. Overlapping the strips instead, as the mockup does, shades those
     /// pixels twice or not at all, because Core Animation depth-sorts each face and shade separately.
-    private func makeFace(_ image: CGImage, frame: CGRect, outerEdge: CAEdgeAntialiasingMask) -> CALayer {
+    private func makeFace(
+        _ image: CGImage?, frame: CGRect, pageWidth: CGFloat, outerEdge: CAEdgeAntialiasingMask
+    ) -> CALayer {
         let face = CALayer()
         face.frame = frame
-        face.contents = image
-        face.contentsScale = Self.scale(of: image, width: bounds.width / 2)
+        if let image {
+            face.contents = image
+            face.contentsScale = Self.scale(of: image, width: pageWidth)
+        }
         face.isDoubleSided = false
         face.allowsEdgeAntialiasing = true
         face.edgeAntialiasingMask = outerEdge.union([.layerTopEdge, .layerBottomEdge])
@@ -249,7 +304,11 @@ final class CurlView: NSView {
                 strip.backShade.colors = colors
                 previous = angle
             }
-            cast.opacity = Float(CurlPose.cast(t: t))
+            if isSinglePage {
+                stage?.opacity = Float(Self.pageOpacity(t: t))
+            } else {
+                cast.opacity = Float(CurlPose.cast(t: t))
+            }
         }
         frameMonitor.posed(started: started, target: poseTarget)
     }
@@ -277,9 +336,17 @@ final class CurlView: NSView {
     private func layFlat(at t: Double) {
         frameMonitor.stop()
         withoutActions {
-            if t >= 1 { pageLeft?.contents = backImage } else { pageRight?.contents = frontImage }
+            if isSinglePage {
+                // Gone over, it's faded away and what was beneath is the page.
+                if t < 1 { pageLeft?.contents = frontImage }
+            } else if t >= 1 {
+                pageLeft?.contents = backImage
+            } else {
+                pageRight?.contents = frontImage
+            }
             cast?.opacity = 0
-            strips.first?.layer.superlayer?.removeFromSuperlayer()
+            stage?.removeFromSuperlayer()
+            stage = nil
             strips = []
         }
     }
@@ -306,6 +373,8 @@ final class CurlView: NSView {
         pageRight = nil
         cast = nil
         crossfadeTop = nil
+        stage = nil
+        isSinglePage = false
         frontImage = nil
         backImage = nil
     }
