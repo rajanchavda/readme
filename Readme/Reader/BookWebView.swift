@@ -24,6 +24,8 @@ enum BookWebViewError: Error, Equatable {
 final class BookWebView: NSView {
     var onRelocate: ((ReaderLocation) -> Void)?
     private var relocationListeners: [(ReaderLocation) -> Void] = []
+    /// Counts relocations heard, so a reply can tell whether one came in while it was on its way.
+    private var relocationsHeard = 0
     private(set) var currentLocation: ReaderLocation?
     /// The book that's open, its styles and its column limit, so a second view can be made to match.
     private(set) var bookURL: URL?
@@ -50,6 +52,10 @@ final class BookWebView: NSView {
     private var isBlockingRemoteLoads = false
     /// Replaceable so tests can make the compile fail.
     var remoteBlockRules = BookWebView.defaultRemoteBlockRules
+    /// Runs when a reply carrying a location has arrived, before the location is used. Tests use it
+    /// to have a relocation overtake the reply, as one can when it's queued ahead of the reply's
+    /// continuation.
+    var replyArrived: (() async -> Void)?
     private var openGeneration = 0
     private var pendingLoad: CheckedContinuation<Void, any Error>?
     /// The navigation `pendingLoad` waits on, and the tag its `ready` message will carry. WebKit
@@ -235,9 +241,11 @@ final class BookWebView: NSView {
 
     private func navigate(_ body: String, arguments: [String: Any] = [:]) async -> ReaderLocation? {
         guard isOpen else { return nil }
+        let heard = relocationsHeard
         do {
             let location = try await call(body, arguments: arguments, as: ReaderLocation.self)
-            if let location { currentLocation = location }
+            await replyArrived?()
+            take(location, ifNothingHeardSince: heard)
             return location
         } catch {
             Self.log.error("Navigation failed: \(String(describing: error), privacy: .public)")
@@ -245,14 +253,24 @@ final class BookWebView: NSView {
         }
     }
 
+    /// A relocation heard while a call ran is at least as new as the call's reply, which can be
+    /// handled after it, so the reply's location only counts if none was. The call's own move is
+    /// reported the same way, so nothing is lost.
+    private func take(_ location: ReaderLocation?, ifNothingHeardSince heard: Int) {
+        guard let location, relocationsHeard == heard else { return }
+        currentLocation = location
+    }
+
     /// Returns once the page has stopped changing, which a move doesn't wait for: any relayout has
     /// run, fonts and images are in, and foliate has paginated around them. Take snapshots after this.
     func settle() async {
         guard isOpen else { return }
         await relayoutTask?.value
+        let heard = relocationsHeard
         do {
             let location = try await call("return await readmeBridge.settled()", as: ReaderLocation.self)
-            if let location { currentLocation = location }
+            await replyArrived?()
+            take(location, ifNothingHeardSince: heard)
         } catch {
             Self.log.error("Settling failed: \(String(describing: error), privacy: .public)")
         }
@@ -279,6 +297,7 @@ final class BookWebView: NSView {
         self.css = css
         self.columns = max(1, columns)
         guard isOpen else { return }
+        let heard = relocationsHeard
         do {
             _ = try await call(
                 "await readmeBridge.applyStyles(css, columns)",
@@ -286,7 +305,8 @@ final class BookWebView: NSView {
                 as: Bool.self)
             let location = try await call(
                 "return readmeBridge.location()", as: ReaderLocation.self)
-            if let location { currentLocation = location }
+            await replyArrived?()
+            take(location, ifNothingHeardSince: heard)
         } catch {
             Self.log.error("Applying styles failed: \(String(describing: error), privacy: .public)")
         }
@@ -365,6 +385,7 @@ final class BookWebView: NSView {
         case ("ready", _):
             readerIsReady(load: event.load)
         case ("relocate", let location?):
+            relocationsHeard += 1
             currentLocation = location
             relocationListeners.forEach { $0(location) }
             onRelocate?(location)

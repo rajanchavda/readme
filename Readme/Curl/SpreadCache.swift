@@ -72,6 +72,9 @@ final class SpreadCache {
     private var isRendering = false
     private var renderNumber = 0
     private var turnsInFlight = 0
+    /// Settles after a turn. What they report is still the turn's doing, even when the page has
+    /// paginated a little differently, and `commit` adopts it.
+    private var turnsSettling = 0
     private var turnsStarted = 0
 
     init(visible: BookWebView) {
@@ -141,12 +144,18 @@ final class SpreadCache {
         if foreseen && !isRendering { startRendering(after: nil) }
 
         let turn = turnsStarted
+        turnsSettling += 1
         await visible.settle()
+        turnsSettling -= 1
+        // The view only takes a reply's location if no relocation overtook it, so this is the latest.
         guard turn == turnsStarted, let settled = visible.currentLocation else { return }
         let changed = adopt(settled)
         if current == nil {
             let image = await snapshot(of: visible)
-            guard turn == turnsStarted else { return }
+            // A jump while it was taken has adopted its own place, and the image could show either.
+            guard turn == turnsStarted, anchor?.cfi == settled.cfi,
+                  visible.currentLocation?.cfi == settled.cfi
+            else { return }
             if let image { current = Spread(image: image, location: settled) }
         }
         if changed || !isRendering { startRendering(after: foreseen ? nil : Self.quietPeriod) }
@@ -178,11 +187,11 @@ final class SpreadCache {
         return true
     }
 
-    /// Every move of the visible view arrives here, including its own turns, which `commit` looks
-    /// after, and the same place reported again, which needs nothing. Until it's been given a place,
-    /// the cache has nothing to follow.
+    /// Every move of the visible view arrives here, including its own turns and their settling,
+    /// which `commit` looks after, and the same place reported again, which needs nothing. Until
+    /// it's been given a place, the cache has nothing to follow.
     private func visibleMoved(to location: ReaderLocation) {
-        guard turnsInFlight == 0, visible.isBookOpen, let anchor, location.cfi != anchor.cfi else { return }
+        guard turnsInFlight == 0, turnsSettling == 0, visible.isBookOpen, let anchor, location.cfi != anchor.cfi else { return }
         adopt(location)
         startRendering(after: nil)
         onUnforeseenMove?()

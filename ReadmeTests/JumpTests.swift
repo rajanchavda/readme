@@ -10,6 +10,11 @@ private func fixture(_ name: String) throws -> URL {
     return root.appendingPathComponent(name)
 }
 
+/// The calls whose replies carry a location.
+enum OvertakenCall: CaseIterable, Sendable {
+    case settle, go, applyStyles
+}
+
 /// The images a curl or crossfade started with.
 private struct Started {
     var front: CGImage?
@@ -178,19 +183,106 @@ private struct Started {
 
     // MARK: What isn't a jump
 
-    @Test func aLinkToWhereTheBookAlreadyIsRendersNothing() async throws {
+    /// bridge.js doesn't report the same place twice, so the report is sent straight from the page,
+    /// as a repeat from anywhere would reach Swift. It's sent under a held page, which a jump would
+    /// end, so it shows the report isn't taken for one.
+    @Test func theSamePlaceReportedAgainChangesNothing() async throws {
         defer { window.orderOut(nil) }
-        _ = try await openWithFullBuffer()
-        try await clickLink(to: "ch5.xhtml")
-        await cache.neighboursReady()
+        let turns = try await openWithFullBuffer(at: 0.3)
         let slots: [SpreadSlot] = [.current, .next, .previous, .afterNext, .beforePrevious]
         let before = slots.map { cache.image(for: $0) }
-        _ = try await view.call(clickScript, arguments: ["href": "ch5.xhtml"], as: Bool.self)
-        try await Task.sleep(for: .milliseconds(500))
+        turns.follow(.start(.forward))
+        turns.follow(.move(250))
+        try #require(curl.isShowing)
+        var heard = 0
+        view.onRelocate = { _ in heard += 1 }
+        _ = try await view.call(
+            """
+            webkit.messageHandlers.readme.postMessage(
+                JSON.stringify({ type: 'relocate', location: readmeBridge.location() }))
+            """,
+            as: Bool.self)
+        try await waitWhile { heard == 0 }
+        #expect(heard == 1)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(curl.isShowing, "The held page was let go")
         await cache.neighboursReady()
         for (slot, image) in zip(slots, before) {
             #expect(cache.image(for: slot) === image, "\(slot) was rendered again")
         }
+        turns.follow(.abandon)
+        try await waitUntilDone(turns)
+    }
+
+    /// The turn's own settle can find the book a little further on, as when it paginates around
+    /// content that came in late. That's still the turn's doing, so its curl plays out.
+    @Test func aMoveReportedByATurnsSettleDoesNotCutItsCurl() async throws {
+        defer { window.orderOut(nil) }
+        let turns = try await openWithFullBuffer(at: 0.3)
+        // Only the turn's settle calls this, and it moves the page as the bridge would report drift.
+        _ = try await view.call(
+            """
+            const settled = readmeBridge.settled
+            readmeBridge.settled = async () => {
+                readmeBridge.settled = settled
+                await document.querySelector('foliate-view').next()
+                return settled()
+            }
+            """,
+            as: Bool.self)
+        turns.turn(.forward)
+        let began = ContinuousClock.now
+        #expect(curl.isPlaying)
+        try await waitWhile { curl.isPlaying }
+        let played = began.duration(to: .now)
+        #expect(played >= .milliseconds(450), "The curl was cut off after \(played)")
+        try await waitUntilDone(turns)
+        await cache.neighboursReady()
+        try await expectCurrentSlotMatchesTheBook()
+        try await expectCurlsMatchTheBook(turns, [.forward, .backward])
+    }
+
+    // MARK: A relocation overtaking a reply
+
+    /// A link's relocation can be handled before the continuation of a reply that left the page
+    /// before it, and the reply's older location mustn't replace it.
+    @Test(arguments: OvertakenCall.allCases)
+    func aRelocationOvertakingAReplyIsKept(_ overtaken: OvertakenCall) async throws {
+        defer { window.orderOut(nil) }
+        _ = try await openWithFullBuffer(at: 0.3)
+        view.replyArrived = { [self] in
+            view.replyArrived = nil
+            try? await clickLink(to: "ch20.xhtml")
+        }
+        switch overtaken {
+        case .settle: await view.settle()
+        case .go: _ = await view.go(toFraction: 0.35)
+        case .applyStyles: await view.applyStyles(css: view.css, columns: view.columns)
+        }
+        #expect(view.currentLocation?.chapterTitle == "Chapter 20")
+        let shown = try await view.call("return readmeBridge.location()", as: ReaderLocation.self)
+        #expect(view.currentLocation?.cfi == shown?.cfi)
+    }
+
+    /// The same, overtaking the settle at the end of a turn, which is what labels a snapshot.
+    @Test func aLinkOvertakingATurnsSettleLeavesTheRightImages() async throws {
+        defer { window.orderOut(nil) }
+        let turns = try await openWithFullBuffer(at: 0.3)
+        var replies = 0
+        view.replyArrived = { [self] in
+            replies += 1
+            // The first is the turn's move, the second its settle.
+            guard replies == 2 else { return }
+            view.replyArrived = nil
+            try? await clickLink(to: "ch20.xhtml")
+        }
+        turns.turn(.forward)
+        try await waitUntilDone(turns)
+        #expect(replies == 2)
+        await cache.neighboursReady()
+        #expect(view.currentLocation?.chapterTitle == "Chapter 20")
+        try await expectCurrentSlotMatchesTheBook()
+        try await expectCurlsMatchTheBook(turns, [.forward, .backward])
     }
 
     @Test func theWindowStillHearsEveryMove() async throws {
