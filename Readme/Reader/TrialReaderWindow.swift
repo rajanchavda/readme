@@ -141,14 +141,14 @@ final class TrialReaderWindow: NSObject, NSWindowDelegate {
         else { return false }
         switch event.specialKey {
         case .rightArrow:
-            session.turns.turn(.forward)
+            session.turns.turn(.forward, isRepeat: event.isARepeat)
             return true
         case .leftArrow:
-            session.turns.turn(.backward)
+            session.turns.turn(.backward, isRepeat: event.isARepeat)
             return true
         default:
             guard event.charactersIgnoringModifiers == " " else { return false }
-            session.turns.turn(.forward)
+            session.turns.turn(.forward, isRepeat: event.isARepeat)
             return true
         }
     }

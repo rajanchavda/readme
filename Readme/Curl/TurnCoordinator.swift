@@ -108,8 +108,12 @@ final class TurnCoordinator {
         cache.onUnforeseenMove = { [weak self] in self?.bookMovedElsewhere() }
     }
 
-    func turn(_ direction: TurnDirection) {
+    /// `isRepeat` is a held key's repeat. Pages stop when the key is let go, so a repeat is dropped,
+    /// never kept for later, while a turn before it is waiting for its images or its move to land,
+    /// which also covers a curl that's just started. Every other press counts.
+    func turn(_ direction: TurnDirection, isRepeat: Bool = false) {
         guard book.currentLocation != nil else { return }
+        if isRepeat && (unlanded > 0 || waitingTurn != nil) { return }
         finishEarlierTurns()
         if unlanded == 0, startOrDecline(direction) { return }
         waitingTurn = direction
