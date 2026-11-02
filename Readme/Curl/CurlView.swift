@@ -48,6 +48,11 @@ final class CurlView: NSView {
     private var animation: Animation?
     private var link: CADisplayLink?
     private var safetyTimer: Task<Void, Never>?
+    /// The frame the pose being made is for, when the display link is making it.
+    private var poseTarget: Double?
+
+    /// Measures each turn from `begin` until the page lies flat or the curl comes off.
+    let frameMonitor = CurlFrameMonitor()
 
     var isPlaying: Bool { animation != nil }
     var isCrossfading: Bool { crossfadeTop != nil }
@@ -81,6 +86,7 @@ final class CurlView: NSView {
     func begin(
         _ d: TurnDirection, front: CGImage, back: CGImage, beneathLeft: CGImage, beneathRight: CGImage
     ) {
+        let setUpTime = CACurrentMediaTime()
         clear()
         direction = d
         frontImage = front
@@ -95,6 +101,7 @@ final class CurlView: NSView {
             isHidden = false
         }
         setProgress(d == .forward ? 0 : 1)
+        frameMonitor.start(on: self, direction: d, setUpTime: setUpTime)
     }
 
     /// Fades one whole spread into another, for readers who've asked for less motion.
@@ -223,6 +230,7 @@ final class CurlView: NSView {
 
     func setProgress(_ t: Double) {
         guard let cast else { return }
+        let started = CACurrentMediaTime()
         progress = t
         withoutActions {
             let angles = Self.drawnAngles(t: t)
@@ -243,6 +251,7 @@ final class CurlView: NSView {
             }
             cast.opacity = Float(CurlPose.cast(t: t))
         }
+        frameMonitor.posed(started: started, target: poseTarget)
     }
 
     /// `CurlPose.angles`, except that `CurlPose` stops 0.5 degrees short of flat, which would make the
@@ -266,6 +275,7 @@ final class CurlView: NSView {
     /// Replaces the strips with the page they became, flat like the web view's page, not 0.5 degrees
     /// off it, so there's no jump when the web view takes over.
     private func layFlat(at t: Double) {
+        frameMonitor.stop()
         withoutActions {
             if t >= 1 { pageLeft?.contents = backImage } else { pageRight?.contents = frontImage }
             cast?.opacity = 0
@@ -286,6 +296,7 @@ final class CurlView: NSView {
     }
 
     private func clear() {
+        frameMonitor.stop()
         stopAnimation()
         withoutActions {
             layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
@@ -327,6 +338,8 @@ final class CurlView: NSView {
     /// curl. Each frame is posed for the moment it reaches the screen.
     @objc private func tick(_ link: CADisplayLink) {
         guard let current = animation else { return }
+        poseTarget = link.targetTimestamp
+        defer { poseTarget = nil }
         guard let start = current.startTime else {
             animation?.startTime = link.targetTimestamp
             current.step(0)

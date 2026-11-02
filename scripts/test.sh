@@ -12,5 +12,5 @@ if [ -n "$1" ]; then
 fi
 
 xcodebuild test "${args[@]}" 2>&1 \
-  | grep -E '^(/.*: (error|warning):|✔|✘|Test Suite .* (passed|failed)|\*\* )'
+  | grep -E '^([^[:space:]]+: )?(fatal )?error:|^/.*: (fatal )?(error|warning):|^✔|^✘|^Test Suite .* (passed|failed)|^\*\* |^Testing failed:|^The test runner'
 exit "${PIPESTATUS[0]}"
