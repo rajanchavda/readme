@@ -58,9 +58,18 @@ final class TrialReaderWindow: NSObject, NSWindowDelegate {
         // A monitor, because the web view takes scrolling over the book. Nothing in it scrolls, as
         // the book's in pages.
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            guard let self, event.window === self.window, self.window.attachedSheet == nil else { return event }
-            self.desk.scrollWheel(with: event)
-            return nil
+            guard let self else { return event }
+            let route = ScrollRoute(
+                isOurWindow: event.window === self.window, hasSheet: self.window.attachedSheet != nil)
+            switch route {
+            case .passOn:
+                return event
+            case .swallow:
+                return nil
+            case .desk:
+                self.desk.scrollWheel(with: event)
+                return nil
+            }
         }
     }
 
@@ -145,6 +154,20 @@ final class TrialReaderWindow: NSObject, NSWindowDelegate {
     }
 }
 
+/// What the trial window does with a scroll event. Under a sheet it's swallowed, as handing it back
+/// would let normal dispatch bring it to the desk anyway.
+enum ScrollRoute: Equatable {
+    case passOn, swallow, desk
+
+    init(isOurWindow: Bool, hasSheet: Bool) {
+        if !isOurWindow {
+            self = .passOn
+        } else {
+            self = hasSheet ? .swallow : .desk
+        }
+    }
+}
+
 /// The surface the book lies on. It takes clicks on the outer parts of the book, which turn pages,
 /// and leaves the rest of the book to the web view, so text can still be selected. Clicks on the bare
 /// desk do nothing. It also reads swipes from scrolling, wherever over the window that happens.
@@ -192,8 +215,9 @@ final class TrialDeskView: NSView {
     /// of its own: it comes after the fingers have gone, with the page no longer theirs.
     override func scrollWheel(with event: NSEvent) {
         guard event.momentumPhase.isEmpty, let phase = Self.gesturePhase(of: event) else { return }
-        send(gesture.handle(
-            phase, deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY, at: event.timestamp))
+        let travel = SwipeGesture.fingerTravel(
+            scrollingDeltaX: event.scrollingDeltaX, isDirectionInverted: event.isDirectionInvertedFromDevice)
+        send(gesture.handle(phase, deltaX: travel, deltaY: event.scrollingDeltaY, at: event.timestamp))
     }
 
     func abandonSwipe() {

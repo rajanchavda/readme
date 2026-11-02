@@ -82,6 +82,18 @@ import Testing
         gesture.handle(phase, deltaX: x, deltaY: y, at: Double(step) / 60)
     }
 
+    /// With natural scrolling on, the deltas are inverted from the device and go the way the fingers do.
+    @Test func fingerTravelWithNaturalScrolling() {
+        #expect(SwipeGesture.fingerTravel(scrollingDeltaX: -12, isDirectionInverted: true) == -12)
+        #expect(SwipeGesture.fingerTravel(scrollingDeltaX: 12, isDirectionInverted: true) == 12)
+    }
+
+    /// With it off, the deltas go the way the view moves over the content, against the fingers.
+    @Test func fingerTravelWithoutNaturalScrolling() {
+        #expect(SwipeGesture.fingerTravel(scrollingDeltaX: 12, isDirectionInverted: false) == -12)
+        #expect(SwipeGesture.fingerTravel(scrollingDeltaX: -12, isDirectionInverted: false) == 12)
+    }
+
     @Test func fingersRightToLeftTurnForward() {
         var gesture = SwipeGesture()
         #expect(send(&gesture, .began, x: -3).isEmpty)

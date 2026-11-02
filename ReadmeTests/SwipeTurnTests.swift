@@ -524,13 +524,16 @@ private func fixture(_ name: String) throws -> URL {
     /// A scroll event as a trackpad would send it. These are synthetic: none of this has been near
     /// real fingers.
     private func scrollEvent(
-        x: Int32 = 0, y: Int32 = 0, phase: Int64 = 0, momentum: Int64 = 0, continuous: Bool = true
+        x: Int32 = 0, y: Int32 = 0, phase: Int64 = 0, momentum: Int64 = 0, continuous: Bool = true,
+        inverted: Bool = false
     ) throws -> NSEvent {
         let event = try #require(CGEvent(
             scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: y, wheel2: x, wheel3: 0))
         event.setIntegerValueField(.scrollWheelEventIsContinuous, value: continuous ? 1 : 0)
         event.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
         event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+        // The field behind `isDirectionInvertedFromDevice`, which has no public name.
+        event.setIntegerValueField(try #require(CGEventField(rawValue: 137)), value: inverted ? 1 : 0)
         return try #require(NSEvent(cgEvent: event))
     }
 
@@ -549,6 +552,40 @@ private func fixture(_ name: String) throws -> URL {
         return (desk, { box.signals })
     }
 
+    /// Natural scrolling is off in the synthetic events below unless they say otherwise, so fingers
+    /// going right to left show as positive deltas.
+    @Test func theDeskTurnsForwardForRightToLeftFingersUnderEitherSetting() throws {
+        let (natural, naturalSignals) = desk()
+        let inverted = try scrollEvent(x: -10, phase: Self.began, inverted: true)
+        #expect(inverted.isDirectionInvertedFromDevice)
+        natural.scrollWheel(with: inverted)
+        #expect(naturalSignals() == [.start(.forward), .move(10)])
+
+        let (traditional, traditionalSignals) = desk()
+        let notInverted = try scrollEvent(x: 10, phase: Self.began)
+        #expect(!notInverted.isDirectionInvertedFromDevice)
+        traditional.scrollWheel(with: notInverted)
+        #expect(traditionalSignals() == [.start(.forward), .move(10)])
+    }
+
+    @Test func theDeskTurnsBackForLeftToRightFingersUnderEitherSetting() throws {
+        let (natural, naturalSignals) = desk()
+        natural.scrollWheel(with: try scrollEvent(x: 10, phase: Self.began, inverted: true))
+        #expect(naturalSignals() == [.start(.backward), .move(10)])
+
+        let (traditional, traditionalSignals) = desk()
+        traditional.scrollWheel(with: try scrollEvent(x: -10, phase: Self.began))
+        #expect(traditionalSignals() == [.start(.backward), .move(10)])
+    }
+
+    @Test func scrollingGoesToTheDeskOnlyInItsOwnWindowWithNoSheet() {
+        #expect(ScrollRoute(isOurWindow: true, hasSheet: false) == .desk)
+        // Handed back, normal dispatch could still bring it to the desk.
+        #expect(ScrollRoute(isOurWindow: true, hasSheet: true) == .swallow)
+        #expect(ScrollRoute(isOurWindow: false, hasSheet: false) == .passOn)
+        #expect(ScrollRoute(isOurWindow: false, hasSheet: true) == .passOn)
+    }
+
     @Test func aSyntheticEventCarriesWhatTheDeskReads() throws {
         let event = try scrollEvent(x: -12, y: 3, phase: Self.changed)
         #expect(event.phase == .changed)
@@ -560,8 +597,8 @@ private func fixture(_ name: String) throws -> URL {
     @Test func theDeskReadsASwipeFromScrollEvents() throws {
         let (desk, signals) = desk()
         desk.scrollWheel(with: try scrollEvent(phase: Self.mayBegin))
-        desk.scrollWheel(with: try scrollEvent(x: -10, phase: Self.began))
-        desk.scrollWheel(with: try scrollEvent(x: -40, phase: Self.changed))
+        desk.scrollWheel(with: try scrollEvent(x: 10, phase: Self.began))
+        desk.scrollWheel(with: try scrollEvent(x: 40, phase: Self.changed))
         desk.scrollWheel(with: try scrollEvent(phase: Self.ended))
         #expect(signals().prefix(3) == [.start(.forward), .move(10), .move(40)])
         #expect(signals().count == 4)
@@ -570,12 +607,12 @@ private func fixture(_ name: String) throws -> URL {
 
     @Test func theDeskIgnoresMomentum() throws {
         let (desk, signals) = desk()
-        desk.scrollWheel(with: try scrollEvent(x: -10, phase: Self.began))
+        desk.scrollWheel(with: try scrollEvent(x: 10, phase: Self.began))
         desk.scrollWheel(with: try scrollEvent(phase: Self.ended))
         let afterRelease = signals().count
-        desk.scrollWheel(with: try scrollEvent(x: -30, momentum: 1))
-        desk.scrollWheel(with: try scrollEvent(x: -30, momentum: 2))
-        desk.scrollWheel(with: try scrollEvent(x: -30, momentum: 3))
+        desk.scrollWheel(with: try scrollEvent(x: 30, momentum: 1))
+        desk.scrollWheel(with: try scrollEvent(x: 30, momentum: 2))
+        desk.scrollWheel(with: try scrollEvent(x: 30, momentum: 3))
         #expect(signals().count == afterRelease)
     }
 
@@ -595,16 +632,16 @@ private func fixture(_ name: String) throws -> URL {
 
     @Test func theDeskPassesOnACancelledGesture() throws {
         let (desk, signals) = desk()
-        desk.scrollWheel(with: try scrollEvent(x: -10, phase: Self.began))
+        desk.scrollWheel(with: try scrollEvent(x: 10, phase: Self.began))
         desk.scrollWheel(with: try scrollEvent(phase: Self.cancelled))
         #expect(signals().last == .abandon)
     }
 
     @Test func theDeskCanAbandonASwipeWhoseEndWontReachIt() throws {
         let (desk, signals) = desk()
-        desk.scrollWheel(with: try scrollEvent(x: -10, phase: Self.began))
+        desk.scrollWheel(with: try scrollEvent(x: 10, phase: Self.began))
         desk.abandonSwipe()
-        desk.scrollWheel(with: try scrollEvent(x: -10, phase: Self.changed))
+        desk.scrollWheel(with: try scrollEvent(x: 10, phase: Self.changed))
         #expect(signals() == [.start(.forward), .move(10), .abandon])
     }
 }

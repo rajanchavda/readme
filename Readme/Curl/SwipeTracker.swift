@@ -50,9 +50,8 @@ enum SwipeSignal: Equatable {
 /// Reads one scroll gesture at a time, deciding early whether it's a swipe across the page and which
 /// way, and ignoring it from then on if it isn't.
 ///
-/// Fingers moving right to left make negative deltas under natural scrolling, and they turn forward.
-/// The deltas are used as given, so a reader with natural scrolling off turns the other way, the way
-/// their scrolling goes.
+/// It reads finger travel across the trackpad, positive to the right. Fingers going right to left turn
+/// forward whatever the reader's scrolling setting, because the page has to go the way they do.
 struct SwipeGesture {
     enum Phase {
         case began, changed, ended, cancelled
@@ -74,7 +73,15 @@ struct SwipeGesture {
     private var state = State.idle
     private var recent: [(time: Double, deltaX: Double)] = []
 
-    /// The events of a gesture, in order. Those with no beginning are ignored.
+    /// Which way the fingers went, from a scroll event's horizontal delta and whether it's inverted from
+    /// the device. Natural scrolling inverts it, and then the delta goes the way the fingers do, moving
+    /// the content with them. Otherwise it goes the way the view moves over the content, against them.
+    static func fingerTravel(scrollingDeltaX: Double, isDirectionInverted: Bool) -> Double {
+        isDirectionInverted ? scrollingDeltaX : -scrollingDeltaX
+    }
+
+    /// The events of a gesture, in order, with `deltaX` as finger travel. Those with no beginning are
+    /// ignored.
     mutating func handle(_ phase: Phase, deltaX: Double, deltaY: Double, at time: Double) -> [SwipeSignal] {
         switch phase {
         case .began:
