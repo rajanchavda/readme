@@ -280,6 +280,25 @@ const lastSectionIndex = () => book.sections.findLastIndex(section => section.li
 // How many pages an end of the book can be from where foliate first lands, at most.
 const END_STEPS = 50
 
+const pageNow = () => Math.trunc(finite(latest?.location?.current)) + 1
+
+// The spread that holds the start of `page`: the page is from the spread's own up to the next
+// spread's. foliate lands by fraction, which it measures by layout rather than text, so this turns
+// back or on from there until that's so.
+const goToPage = async page => {
+    const { renderer } = view
+    const total = finite(latest?.location?.total, 1)
+    await view.goToFraction(Math.min(1, Math.max(0, (page - 1) / total)))
+    for (let i = 0; i < END_STEPS && pageNow() > page && !renderer.atStart; i++) await view.prev()
+    for (let i = 0; i < END_STEPS && !renderer.atEnd; i++) {
+        await view.next()
+        if (pageNow() > page) {
+            await view.prev()
+            break
+        }
+    }
+}
+
 // The first or last spread. foliate lands near an end by fraction, and can stop a spread short of
 // it, so this turns the rest of the way.
 const goToEdge = async atEnd => {
@@ -367,6 +386,7 @@ const tocEntries = async () => {
         const total = doc.body.textContent.length
         return total ? range.toString().length / total : 0
     }
+    // Null for a link that leads nowhere in the book, which the contents then show as inert.
     const fractionOf = async href => {
         try {
             const { index, anchor } = book.resolveHref(href)
@@ -376,7 +396,7 @@ const tocEntries = async () => {
             return start + (end - start) * await shareBefore(index, anchor)
         } catch (error) {
             console.warn(error)
-            return 0
+            return null
         }
     }
     const entries = []
@@ -405,7 +425,14 @@ globalThis.readmeBridge = {
     previous: () => navigate(() => view.prev()),
     goToCFI: cfi => navigate(() => view.goTo(cfi)),
     goToFraction: fraction => navigate(() => view.goToFraction(fraction)),
-    goToHref: href => navigate(() => view.goTo(href)),
+    // Whether the link led anywhere in the book, and where the book went, or null if it was already
+    // there. foliate's goTo answers nothing for a link it can't follow.
+    goToHref: async href => {
+        let resolved = false
+        const location = await navigate(async () => { resolved = !!(await view.goTo(href)) })
+        return { resolved, location }
+    },
+    goToPage: page => navigate(() => goToPage(page)),
     goToStart: () => navigate(() => goToEdge(false)),
     goToEnd: () => navigate(() => goToEdge(true)),
     toc: tocEntries,

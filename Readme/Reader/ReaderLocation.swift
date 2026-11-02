@@ -24,6 +24,7 @@ struct TOCEntry: Decodable, Sendable, Equatable {
     var href: String
     var level: Int
     /// Roughly where this entry starts in the book, for `BookWebView.go(toFraction:)`. An entry with a
-    /// fragment is placed by the share of its section's text that comes before the fragment.
-    var fraction: Double
+    /// fragment is placed by the share of its section's text that comes before the fragment. Nil for a
+    /// link that leads nowhere in the book.
+    var fraction: Double?
 }

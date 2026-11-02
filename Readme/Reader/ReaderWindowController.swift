@@ -357,18 +357,21 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func goToPage(typed: String) -> Bool {
         guard let here = session?.book.currentLocation,
-              let fraction = GoToPage.fraction(forTyped: typed, pageCount: here.pageCount)
+              let page = GoToPage.page(forTyped: typed, pageCount: here.pageCount)
         else { return false }
-        jump { await $0.go(toFraction: fraction) }
+        jump { await $0.go(toPage: page) }
         return true
     }
 
-    /// Closes the contents and goes to the chapter. One whose link leads nowhere is found by how far
-    /// through the book it is.
+    /// Closes the contents and goes to the chapter. A link the book can't follow just now is found by
+    /// how far through the book it is, and one with no place in the book goes nowhere.
     func choose(_ entry: TOCEntry) {
+        guard let fraction = entry.fraction else { return }
         jump { book in
-            if let landed = await book.go(toHref: entry.href) { return landed }
-            return await book.go(toFraction: entry.fraction)
+            switch await book.go(toHref: entry.href) {
+            case let .went(landed): landed
+            case .unresolved: await book.go(toFraction: fraction)
+            }
         }
     }
 

@@ -34,6 +34,13 @@ private func fixture(_ name: String) throws -> URL {
         #expect(GoToPage.fraction(forTyped: "99999999999999999999999", pageCount: 100) == 0.99)
     }
 
+    @Test func theTypedPageIsInTheBook() {
+        #expect(GoToPage.page(forTyped: "51", pageCount: 100) == 51)
+        #expect(GoToPage.page(forTyped: "0", pageCount: 100) == 1)
+        #expect(GoToPage.page(forTyped: "500", pageCount: 100) == 100)
+        #expect(GoToPage.page(forTyped: "x", pageCount: 100) == nil)
+    }
+
     @Test func aBookWithNoPagesHasNowhereToGo() {
         #expect(GoToPage.fraction(forTyped: "1", pageCount: 0) == nil)
     }
@@ -105,22 +112,55 @@ private func fixture(_ name: String) throws -> URL {
         defer { window.orderOut(nil) }
         let start = try await open()
         let wanted = start.pageCount / 2
-        let fraction = try #require(GoToPage.fraction(forTyped: String(wanted), pageCount: start.pageCount))
-        let there = try #require(await turns.jump { await view.go(toFraction: fraction) })
-        // The spread that holds the start of the page, which can begin a page or so before it.
-        #expect(there.page <= wanted && there.page >= wanted - 2, "Went to \(there.page) for \(wanted)")
+        let page = try #require(GoToPage.page(forTyped: String(wanted), pageCount: start.pageCount))
+        let there = try #require(await turns.jump { await view.go(toPage: page) })
         #expect(!curl.isShowing, "The jump played a curl")
         await cache.neighboursReady()
-        try await expectCurlsMatchTheBook([.forward, .backward])
+        try await expectCurlsMatchTheBook([.forward])
+        // The spread it landed on holds the start of the page.
+        let next = try #require(view.currentLocation)
+        #expect(there.page <= wanted && wanted <= next.page, "Page \(wanted) isn't on \(there.page)...\(next.page)")
+        try await expectCurlsMatchTheBook([.backward])
+    }
+
+    /// Wherever the page begins, the spread that's shown holds it: the page is from the spread's own
+    /// up to the next spread's.
+    @Test func everyTypedPageIsOnTheSpreadShown() async throws {
+        defer { window.orderOut(nil) }
+        let start = try await open()
+        let count = start.pageCount
+        for wanted in [1, 2, 3, count / 7, count / 3, count / 2 + 1, count - 3, count - 1, count] {
+            let there = try #require(await view.go(toPage: wanted) ?? view.currentLocation)
+            let next = await view.next()
+            let end = next?.page ?? count
+            #expect(there.page <= wanted && wanted <= end, "Page \(wanted) isn't on \(there.page)...\(end)")
+            if next != nil { _ = await view.previous() }
+        }
+    }
+
+    /// A link that resolves but finds the book already there isn't a dead one.
+    @Test func aLinkToWhereTheBookIsMovesNothing() async throws {
+        defer { window.orderOut(nil) }
+        _ = try await open()
+        let href = try #require(await view.toc().first { $0.title == "Chapter 20" }?.href)
+        guard case let .went(there?) = await view.go(toHref: href) else {
+            Issue.record("The link went nowhere")
+            return
+        }
+        // foliate may report the same place again, or nothing, but it's a link that led somewhere.
+        let again = await view.go(toHref: href)
+        #expect(again == .went(nil) || again == .went(there), "\(again)")
+        #expect(view.currentLocation?.cfi == there.cfi)
+        #expect(await view.go(toHref: "missing.xhtml") == .unresolved)
+        #expect(view.currentLocation?.cfi == there.cfi)
     }
 
     @Test func aPageNumberSurvivesAFontSizeChange() async throws {
         defer { window.orderOut(nil) }
         var settings = ReaderSettings()
         await view.applyStyles(css: ReadingCSS.css(settings, theme: .paper, fullscreen: false), columns: 2)
-        let start = try await open()
-        let fraction = try #require(GoToPage.fraction(forTyped: "120", pageCount: start.pageCount))
-        let there = try #require(await turns.jump { await view.go(toFraction: fraction) })
+        _ = try await open()
+        let there = try #require(await turns.jump { await view.go(toPage: 120) })
         settings.fontSize += 6
         await view.applyStyles(css: ReadingCSS.css(settings, theme: .paper, fullscreen: false), columns: 2)
         let after = try #require(view.currentLocation)
@@ -317,6 +357,36 @@ private func fixture(_ name: String) throws -> URL {
         #expect(reader.location?.chapterTitle == "Chapter 20")
     }
 
+    /// Choosing the chapter the book is already at leaves it where it is.
+    @Test func choosingTheChapterTheBookIsAtStaysPut() async throws {
+        let reader = ReaderWindowController()
+        defer { reader.window?.close() }
+        await reader.open(try fixture("long.epub"), at: nil)
+        reader.perform(.toggleTOC)
+        await reader.settled()
+        let chapter = try #require(reader.contentsEntries.first { $0.title == "Chapter 20" })
+        reader.choose(chapter)
+        await reader.settled()
+        let there = try #require(reader.location)
+        // As if the link's fraction were a little off, which going by it would follow.
+        reader.choose(TOCEntry(title: chapter.title, href: chapter.href, level: 0, fraction: (chapter.fraction ?? 0) + 0.01))
+        await reader.settled()
+        #expect(reader.location?.cfi == there.cfi)
+    }
+
+    /// A dead link in the contents mustn't send the reader anywhere, least of all to the start.
+    @Test func aDeadLinkGoesNowhere() async throws {
+        let reader = ReaderWindowController()
+        defer { reader.window?.close() }
+        await reader.open(try fixture("long.epub"), at: nil)
+        reader.goToPage(typed: "100")
+        await reader.settled()
+        let there = try #require(reader.location)
+        reader.choose(TOCEntry(title: "Lost", href: "missing.xhtml", level: 0, fraction: nil))
+        await reader.settled()
+        #expect(reader.location?.cfi == there.cfi)
+    }
+
     @Test func theGoToPageFieldGoesToTheTypedPage() async throws {
         let reader = ReaderWindowController()
         defer { reader.window?.close() }
@@ -328,7 +398,7 @@ private func fixture(_ name: String) throws -> URL {
         await reader.settled()
         #expect(!reader.isShowingPageField)
         let page = try #require(reader.location?.page)
-        #expect(page <= count / 2 && page >= count / 2 - 2)
+        #expect(page <= count / 2 && page >= count / 2 - 2, "Went to \(page) for \(count / 2)")
     }
 
     @Test func somethingThatIsNotAPageLeavesTheFieldOpen() async throws {

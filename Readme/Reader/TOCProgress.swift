@@ -12,9 +12,13 @@ enum TOCProgress {
     private static let tolerance = 1e-9
 
     /// `fraction` is where the visible spread starts. The current entry is the last one, in the
-    /// contents' order, that starts there or before. Before the first entry nothing is current.
+    /// contents' order, that starts there or before. Before the first entry nothing is current. An
+    /// entry with no place in the book is never current.
     static func states(entries: [TOCEntry], fraction: Double) -> [TOCState] {
-        guard let current = entries.lastIndex(where: { $0.fraction <= fraction + tolerance }) else {
+        let current = entries.lastIndex { entry in
+            entry.fraction.map { $0 <= fraction + tolerance } ?? false
+        }
+        guard let current else {
             return entries.map { _ in .unread }
         }
         return entries.indices.map { index in

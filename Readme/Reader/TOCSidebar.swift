@@ -1,8 +1,11 @@
 import AppKit
 
 /// The table of contents: a quiet sidebar that slides in over the left of the book, with what's
-/// beneath it blurred. Chapters already read are dimmed, and the one being read has a small dot. A
-/// click, or Return on the selected chapter, chooses it. The window slides it in and out.
+/// beneath it blurred. Chapters already read are dimmed, and the one being read is in full ink with a
+/// small dot. A click, or Return on the selected chapter, chooses it. The window slides it in and out.
+///
+/// Every colour is the theme's ink at some strength, never the system's accent. The selection, which
+/// the arrows move, is a faint wash of it, and has nothing to do with which chapter is being read.
 final class TOCSidebar: NSVisualEffectView, NSTableViewDataSource, NSTableViewDelegate {
     static let width: CGFloat = 280
     /// Clears the title bar, where the traffic lights show.
@@ -13,6 +16,7 @@ final class TOCSidebar: NSVisualEffectView, NSTableViewDataSource, NSTableViewDe
     var onChoose: ((TOCEntry) -> Void)?
     private(set) var entries: [TOCEntry] = []
     private var states: [TOCState] = []
+    private var ink = ReadingCSS.colors(.paper).ink
 
     private let scroll = NSScrollView()
     private let table = ContentsTable()
@@ -27,11 +31,13 @@ final class TOCSidebar: NSVisualEffectView, NSTableViewDataSource, NSTableViewDe
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
         table.headerView = nil
-        table.style = .sourceList
+        table.style = .plain
         table.backgroundColor = .clear
         table.rowHeight = Self.rowHeight
+        table.intercellSpacing = NSSize(width: 0, height: 0)
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.allowsEmptySelection = true
+        table.focusRingType = .none
         table.dataSource = self
         table.delegate = self
         table.target = self
@@ -60,13 +66,15 @@ final class TOCSidebar: NSVisualEffectView, NSTableViewDataSource, NSTableViewDe
         fatalError("TOCSidebar is created in code")
     }
 
-    /// Light for Paper and Sepia, dark for Night.
+    /// Light for Paper and Sepia, dark for Night, with the theme's ink.
     func setTheme(_ theme: Theme) {
         appearance = NSAppearance(named: theme == .night ? .darkAqua : .aqua)
+        ink = ReadingCSS.colors(theme).ink
+        table.reloadData()
     }
 
     /// Fills the list, with `fraction` the start of the spread on screen, and selects the chapter
-    /// being read.
+    /// being read, so the arrows start from there.
     func show(_ entries: [TOCEntry], at fraction: Double) {
         self.entries = entries
         states = TOCProgress.states(entries: entries, fraction: fraction)
@@ -88,17 +96,50 @@ final class TOCSidebar: NSVisualEffectView, NSTableViewDataSource, NSTableViewDe
         return responder.isDescendant(of: self)
     }
 
+    /// Chooses the entry in `row`, unless it has no place in the book.
+    func choose(row: Int) {
+        guard entries.indices.contains(row), entries[row].fraction != nil else { return }
+        onChoose?(entries[row])
+    }
+
     @objc private func clicked() {
-        choose(table.clickedRow)
+        choose(row: table.clickedRow)
     }
 
     private func chooseSelected() {
-        choose(table.selectedRow)
+        choose(row: table.selectedRow)
     }
 
-    private func choose(_ row: Int) {
-        guard entries.indices.contains(row) else { return }
-        onChoose?(entries[row])
+    // MARK: Colours
+
+    /// The faint wash the selection is drawn with.
+    var selectionColor: NSColor { ink.withAlphaComponent(0.08) }
+
+    private func titleColor(_ entry: TOCEntry, _ state: TOCState) -> NSColor {
+        guard entry.fraction != nil else { return ink.withAlphaComponent(0.3) }
+        return switch state {
+        case .read: ink.withAlphaComponent(0.45)
+        case .current: ink
+        case .unread: ink.withAlphaComponent(0.75)
+        }
+    }
+
+    // MARK: What the list shows, for tests
+
+    func select(row: Int) {
+        table.selectRowIndexes([row], byExtendingSelection: false)
+    }
+
+    func isRowSelected(_ row: Int) -> Bool {
+        table.selectedRowIndexes.contains(row)
+    }
+
+    func isMarkedCurrent(row: Int) -> Bool {
+        (table.view(atColumn: 0, row: row, makeIfNecessary: true) as? ContentsRow)?.isMarkedCurrent ?? false
+    }
+
+    func titleColor(row: Int) -> NSColor? {
+        (table.view(atColumn: 0, row: row, makeIfNecessary: true) as? ContentsRow)?.titleColor
     }
 
     // MARK: The list
@@ -107,23 +148,53 @@ final class TOCSidebar: NSVisualEffectView, NSTableViewDataSource, NSTableViewDe
         entries.count
     }
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let identifier = NSUserInterfaceItemIdentifier("selection")
+        let rowView = tableView.makeView(withIdentifier: identifier, owner: nil) as? ContentsRowView ?? ContentsRowView()
+        rowView.identifier = identifier
+        rowView.wash = selectionColor
+        return rowView
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("entry")
         let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? ContentsRow ?? ContentsRow()
         cell.identifier = identifier
-        cell.show(entries[row], state: states.indices.contains(row) ? states[row] : .unread, step: Self.indent)
+        let entry = entries[row]
+        let state = states.indices.contains(row) ? states[row] : .unread
+        cell.show(entry, isCurrent: state == .current, color: titleColor(entry, state), ink: ink, step: Self.indent)
         return cell
     }
 }
 
-/// One chapter in the contents. Read ones are dimmed, and the one being read is in full ink with a
-/// small dot before it.
+/// Draws the selection as a faint rounded wash of the ink, whether or not the list has the keyboard,
+/// in place of the system's accent.
+private final class ContentsRowView: NSTableRowView {
+    var wash = NSColor.clear {
+        didSet { needsDisplay = true }
+    }
+
+    override var isEmphasized: Bool {
+        get { false }
+        set {}
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        wash.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 8, dy: 1), xRadius: 6, yRadius: 6).fill()
+    }
+}
+
+/// One chapter in the contents. Its colour is set outright, so a selection never changes it. The one
+/// being read has a small dot before it.
 private final class ContentsRow: NSTableCellView {
     private static let dotSize: CGFloat = 5
 
     private let title = NSTextField(labelWithString: "")
     private let dot = NSView()
     private var indent: CGFloat = 0
+    private(set) var isMarkedCurrent = false
+    var titleColor: NSColor? { title.textColor }
 
     init() {
         super.init(frame: .zero)
@@ -133,7 +204,7 @@ private final class ContentsRow: NSTableCellView {
         dot.layer?.cornerRadius = Self.dotSize / 2
         addSubview(title)
         addSubview(dot)
-        textField = title
+        // Not the cell's `textField`, which a table recolours for its selection.
     }
 
     @available(*, unavailable)
@@ -141,17 +212,15 @@ private final class ContentsRow: NSTableCellView {
         fatalError("ContentsRow is created in code")
     }
 
-    func show(_ entry: TOCEntry, state: TOCState, step: CGFloat) {
+    func show(_ entry: TOCEntry, isCurrent: Bool, color: NSColor, ink: NSColor, step: CGFloat) {
         title.stringValue = entry.title.isEmpty ? "Untitled" : entry.title
         toolTip = entry.title
         indent = 14 + CGFloat(entry.level) * step
-        title.textColor = switch state {
-        case .read: .tertiaryLabelColor
-        case .current: .labelColor
-        case .unread: .secondaryLabelColor
-        }
-        title.font = .systemFont(ofSize: 13, weight: state == .current ? .medium : .regular)
-        dot.isHidden = state != .current
+        title.textColor = color
+        title.font = .systemFont(ofSize: 13, weight: isCurrent ? .medium : .regular)
+        isMarkedCurrent = isCurrent
+        dot.isHidden = !isCurrent
+        dot.layer?.backgroundColor = ink.cgColor
         needsLayout = true
     }
 
@@ -163,18 +232,6 @@ private final class ContentsRow: NSTableCellView {
             width: max(0, bounds.width - indent - 10), height: height)
         dot.frame = NSRect(
             x: indent - 9, y: ((bounds.height - Self.dotSize) / 2).rounded(), width: Self.dotSize, height: Self.dotSize)
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            dot.layer?.backgroundColor = NSColor.secondaryLabelColor.cgColor
-        }
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        viewDidChangeEffectiveAppearance()
     }
 }
 

@@ -366,7 +366,7 @@ private func fixture(_ name: String) throws -> URL {
         _ = try await view.open(fixture("broken-chapter.epub"), at: nil)
         let toc = await view.toc()
         for entry in toc {
-            _ = await view.go(toFraction: entry.fraction)
+            _ = await view.go(toFraction: try #require(entry.fraction))
             #expect(view.currentLocation != nil)
         }
         #expect(try #require(await view.go(toFraction: 0)).isAtStart)
@@ -415,7 +415,7 @@ private func fixture(_ name: String) throws -> URL {
         #expect(toc[0].title == "Chapter 1")
         #expect(toc[0].level == 0)
         #expect(toc[0].fraction == 0)
-        let fractions = toc.map(\.fraction)
+        let fractions = try toc.map { try #require($0.fraction) }
         #expect(fractions == fractions.sorted())
 
         let part = try #require(toc.first { $0.title == "Chapter 5, Part Two" })
@@ -423,10 +423,11 @@ private func fixture(_ name: String) throws -> URL {
         let nextChapter = try #require(toc.first { $0.title == "Chapter 6" })
         #expect(part.level == 1)
         #expect(part.href.hasSuffix("#part-two"))
-        #expect(part.fraction > chapter.fraction)
-        #expect(part.fraction < nextChapter.fraction)
+        let partAt = try #require(part.fraction)
+        #expect(partAt > (chapter.fraction ?? 1))
+        #expect(partAt < (nextChapter.fraction ?? 0))
 
-        let landed = try #require(await view.go(toFraction: toc[20].fraction))
+        let landed = try #require(await view.go(toFraction: toc[20].fraction ?? -1))
         #expect(landed.chapterTitle == toc[20].title)
     }
 

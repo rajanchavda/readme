@@ -3,15 +3,19 @@ import AppKit
 /// What a page number typed into the go-to-page field means. Pages are `ReaderLocation.page`: fixed
 /// runs of text, numbered from 1.
 enum GoToPage {
-    /// Where the typed page begins, as a fraction of the book for `BookWebView.go(toFraction:)`. A
-    /// number outside the book means the nearest page in it. Nil if it isn't a whole number.
-    static func fraction(forTyped typed: String, pageCount: Int) -> Double? {
+    /// The typed page, for `BookWebView.go(toPage:)`. A number outside the book means the nearest
+    /// page in it. Nil if it isn't a whole number.
+    static func page(forTyped typed: String, pageCount: Int) -> Int? {
         let text = typed.trimmingCharacters(in: .whitespaces)
         guard pageCount > 0, text.wholeMatch(of: /-?[0-9]+/) != nil else { return nil }
         // Too long for an Int is still a number, past one end or the other.
         let number = Int(text) ?? (text.hasPrefix("-") ? 1 : pageCount)
-        let page = min(pageCount, max(1, number))
-        return Double(page - 1) / Double(pageCount)
+        return min(pageCount, max(1, number))
+    }
+
+    /// Where the typed page begins, as a fraction of the book for `BookWebView.go(toFraction:)`.
+    static func fraction(forTyped typed: String, pageCount: Int) -> Double? {
+        page(forTyped: typed, pageCount: pageCount).map { Double($0 - 1) / Double(pageCount) }
     }
 
     /// What the empty field shows: where the reader is and how many pages there are, such as

@@ -242,9 +242,39 @@ final class BookWebView: NSView {
         return await navigate("return await readmeBridge.goToFraction(fraction)", arguments: ["fraction": clamped])
     }
 
+    /// What following a link did.
+    enum LinkResult: Equatable {
+        /// It leads nowhere in the book.
+        case unresolved
+        /// It led somewhere, and this is where, or nil if the book was already there.
+        case went(ReaderLocation?)
+    }
+
     /// Goes to a place in the contents, by its href.
-    func go(toHref href: String) async -> ReaderLocation? {
-        await navigate("return await readmeBridge.goToHref(href)", arguments: ["href": href])
+    func go(toHref href: String) async -> LinkResult {
+        guard isOpen else { return .unresolved }
+        let heard = relocationsHeard
+        do {
+            let reply = try await call(
+                "return await readmeBridge.goToHref(href)", arguments: ["href": href], as: LinkReply.self)
+            await replyArrived?()
+            guard let reply, reply.resolved else { return .unresolved }
+            take(reply.location, ifNothingHeardSince: heard)
+            return .went(reply.location)
+        } catch {
+            Self.log.error("Following a link failed: \(String(describing: error), privacy: .public)")
+            return .unresolved
+        }
+    }
+
+    private struct LinkReply: Decodable, Sendable {
+        var resolved: Bool
+        var location: ReaderLocation?
+    }
+
+    /// The spread that holds the start of `page`, counted as `ReaderLocation.page` is.
+    func go(toPage page: Int) async -> ReaderLocation? {
+        await navigate("return await readmeBridge.goToPage(page)", arguments: ["page": page])
     }
 
     /// The first spread, which `isAtStart` is true on.
