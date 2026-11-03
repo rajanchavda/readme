@@ -18,7 +18,7 @@ enum ImportError: Error, Equatable {
 @MainActor
 struct BookImporter {
     let store: LibraryStore
-    private static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "BookImporter")
+    private nonisolated static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "BookImporter")
 
     init(store: LibraryStore) {
         self.store = store
@@ -32,14 +32,14 @@ struct BookImporter {
 
         try await Task.detached { try EPUBInspector.check(url) }.value
 
-        let fileManager = FileManager.default
         let books = store.booksDirectory
         let staged = books.appendingPathComponent(".importing-\(UUID().uuidString)", isDirectory: false)
-        var keep = false
-        defer { if !keep { try? fileManager.removeItem(at: staged) } }
+        defer { try? FileManager.default.removeItem(at: staged) }
         do {
-            try fileManager.createDirectory(at: books, withIntermediateDirectories: true)
-            try fileManager.copyItem(at: url, to: staged)
+            try await Task.detached {
+                try FileManager.default.createDirectory(at: books, withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: url, to: staged)
+            }.value
         } catch {
             Self.log.error("Copying a book failed: \(String(describing: error), privacy: .public)")
             throw ImportError.unreadable
@@ -49,35 +49,54 @@ struct BookImporter {
         let id: String
         do { id = try await BookID.of(staged) } catch { throw ImportError.unreadable }
         if let existing = store.book(id: id) { return existing }
+        // The same book arriving twice at once waits for the first.
+        if let running = store.imports[id] { return try await running.value }
+        let fallbackTitle = url.deletingPathExtension().lastPathComponent
+        let task = Task { try await finish(staged, id: id, fallbackTitle: fallbackTitle) }
+        store.imports[id] = task
+        defer { store.imports[id] = nil }
+        return try await task.value
+    }
 
+    /// Reads the staged copy's details, moves it into place and records the book.
+    private func finish(_ staged: URL, id: String, fallbackTitle: String) async throws -> Book {
         let (info, cover) = try await details(of: staged)
-        let book = Book(
+        // Another import may have added it while the book was being read.
+        if let existing = store.book(id: id) { return existing }
+        var book = Book(
             id: id,
-            title: info?.title ?? url.deletingPathExtension().lastPathComponent,
+            title: info?.title ?? fallbackTitle,
             author: info?.author,
             fileName: id + ".epub",
             hasCover: false,
             addedAt: Date(),
             lastReadAt: nil, chapterTitle: nil, chapterMinutesLeft: nil)
-        var added = book
         let copy = store.fileURL(for: book)
+        let coverFile = store.coverURL(for: book)
+        let covers = store.coversDirectory
         do {
-            try fileManager.moveItem(at: staged, to: copy)
+            book.hasCover = try await Task.detached {
+                let fileManager = FileManager.default
+                // A copy left by an import that never finished is replaced.
+                try? fileManager.removeItem(at: copy)
+                try fileManager.moveItem(at: staged, to: copy)
+                try? fileManager.removeItem(at: coverFile)
+                guard let png = cover.flatMap(CoverImage.png(from:)) else { return false }
+                do {
+                    try fileManager.createDirectory(at: covers, withIntermediateDirectories: true)
+                    try png.write(to: coverFile, options: .atomic)
+                    return true
+                } catch {
+                    Self.log.error("Saving a cover failed: \(String(describing: error), privacy: .public)")
+                    return false
+                }
+            }.value
         } catch {
+            Self.log.error("Placing a book failed: \(String(describing: error), privacy: .public)")
             throw ImportError.unreadable
         }
-        keep = true
-        if let cover = cover.flatMap(CoverImage.png(from:)) {
-            do {
-                try fileManager.createDirectory(at: store.coversDirectory, withIntermediateDirectories: true)
-                try cover.write(to: store.coverURL(for: book), options: .atomic)
-                added.hasCover = true
-            } catch {
-                Self.log.error("Saving a cover failed: \(String(describing: error), privacy: .public)")
-            }
-        }
-        store.add(added)
-        return added
+        store.add(book)
+        return book
     }
 
     /// Imports each in turn, whatever happens to the others.

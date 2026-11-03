@@ -3,7 +3,8 @@ import OSLog
 
 /// The books in the library, kept in `directory`: `library.json`, the copies in `Books` and the
 /// covers in `Covers`. Every change is written at once, replacing the file whole. A library file
-/// that can't be read is as good as none.
+/// that can't be read is as good as none. Files are written off the main thread, so a change is on
+/// disk a moment after it's made; `saved()` returns when it is.
 @MainActor
 final class LibraryStore: ObservableObject {
     @Published private(set) var books: [Book] = []
@@ -12,10 +13,15 @@ final class LibraryStore: ObservableObject {
     private let positions: PositionStore
     private let now: () -> Date
     private var removing: Task<Void, Never>?
+    private let file: LibraryFile
+    private var unsaved: [Book]?
+    private var saving: Task<Void, Never>?
+    /// Imports under way, by book ID, so the same book imported twice at once is imported once.
+    var imports: [String: Task<Book, any Error>] = [:]
     private static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "LibraryStore")
 
     /// The app's own, in its Application Support folder.
-    static let standard = LibraryStore(directory: URL.applicationSupportDirectory)
+    static let standard = LibraryStore(directory: URL.applicationSupportDirectory, positions: .standard)
 
     /// Places are kept in `directory/Positions` unless `positions` says otherwise, which is where
     /// `PositionStore.standard` keeps them when `directory` is the Application Support folder.
@@ -23,12 +29,12 @@ final class LibraryStore: ObservableObject {
         self.directory = directory
         self.positions = positions ?? PositionStore(directory: directory.appendingPathComponent("Positions", isDirectory: true))
         self.now = now
-        books = Self.load(from: libraryFile)
+        file = LibraryFile(directory: directory)
+        books = Self.load(from: directory.appendingPathComponent("library.json", isDirectory: false))
     }
 
     var booksDirectory: URL { directory.appendingPathComponent("Books", isDirectory: true) }
     var coversDirectory: URL { directory.appendingPathComponent("Covers", isDirectory: true) }
-    private var libraryFile: URL { directory.appendingPathComponent("library.json", isDirectory: false) }
 
     /// The book last read, or if none has been, the one added last.
     var current: Book? {
@@ -58,16 +64,20 @@ final class LibraryStore: ObservableObject {
         guard let book = book(id: id) else { return }
         books.removeAll { $0.id == id }
         save()
-        try? FileManager.default.removeItem(at: fileURL(for: book))
-        try? FileManager.default.removeItem(at: coverURL(for: book))
+        let copy = fileURL(for: book)
+        let cover = coverURL(for: book)
         let previous = removing
         removing = Task { [positions] in
             await previous?.value
+            await Task.detached {
+                try? FileManager.default.removeItem(at: copy)
+                try? FileManager.default.removeItem(at: cover)
+            }.value
             await positions.remove(bookID: id)
         }
     }
 
-    /// Returns once the saved places of every book removed so far are gone.
+    /// Returns once the copies, covers and saved places of every book removed so far are gone.
     func removed() async {
         await removing?.value
     }
@@ -88,12 +98,21 @@ final class LibraryStore: ObservableObject {
         coversDirectory.appendingPathComponent(book.id + ".png", isDirectory: false)
     }
 
+    /// Returns once every change made so far is written.
+    func saved() async {
+        await saving?.value
+    }
+
+    /// Of the changes waiting, only the newest is written.
     private func save() {
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(books).write(to: libraryFile, options: .atomic)
-        } catch {
-            Self.log.error("Saving the library failed: \(String(describing: error), privacy: .public)")
+        unsaved = books
+        guard saving == nil else { return }
+        saving = Task { [weak self, file] in
+            while let self, let snapshot = self.unsaved {
+                self.unsaved = nil
+                await file.write(snapshot)
+            }
+            self?.saving = nil
         }
     }
 
@@ -110,4 +129,24 @@ final class LibraryStore: ObservableObject {
 
 private extension Book {
     var recency: Date { lastReadAt ?? addedAt }
+}
+
+/// Writes `library.json`, whole and atomically, off the main thread.
+private actor LibraryFile {
+    private let directory: URL
+    private static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "LibraryStore")
+
+    init(directory: URL) {
+        self.directory = directory
+    }
+
+    func write(_ books: [Book]) {
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(books)
+                .write(to: directory.appendingPathComponent("library.json", isDirectory: false), options: .atomic)
+        } catch {
+            Self.log.error("Saving the library failed: \(String(describing: error), privacy: .public)")
+        }
+    }
 }

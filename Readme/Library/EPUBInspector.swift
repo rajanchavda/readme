@@ -11,30 +11,40 @@ enum EPUBInspector {
         "http://ns.adobe.com/pdf/enc#RC",
     ]
 
+    /// Files that only protected books carry: Adobe ADEPT, Readium LCP and Apple FairPlay.
+    static let protectionFiles = [
+        "META-INF/rights.xml", "META-INF/license.lcpl", "META-INF/sinf.xml",
+    ]
+
     /// Throws `.notAnEPUB` for a file that isn't a zip with a mimetype or a container.xml, and
-    /// `.copyProtected` for one that encrypts anything but fonts' obfuscation. A file that can't be
-    /// read at all is `.unreadable`.
+    /// `.copyProtected` for one with a protection file, or one that encrypts anything but fonts'
+    /// obfuscation. An `encryption.xml` that can't be read or parsed counts as protection too: there's
+    /// no telling what it hides. A file that can't be read at all is `.unreadable`.
     static func check(_ url: URL) throws(ImportError) {
         guard FileManager.default.isReadableFile(atPath: url.path) else { throw .unreadable }
         guard let archive = ZipArchive(url) else { throw .notAnEPUB }
         guard archive.contains("mimetype") || archive.contains("META-INF/container.xml") else {
             throw .notAnEPUB
         }
-        if let encryption = archive.data(for: "META-INF/encryption.xml"),
-           !encryptionMethods(in: encryption).isSubset(of: obfuscationAlgorithms) {
-            throw .copyProtected
+        if protectionFiles.contains(where: archive.contains) { throw .copyProtected }
+        if archive.contains("META-INF/encryption.xml") {
+            guard let data = archive.data(for: "META-INF/encryption.xml", limit: readLimit),
+                  let methods = encryptionMethods(in: data),
+                  methods.isSubset(of: obfuscationAlgorithms)
+            else { throw .copyProtected }
         }
     }
 
-    /// The algorithm of each EncryptionMethod. A file that doesn't parse names none, so the book gets
-    /// its chance to open, and is turned away then if it can't.
-    static func encryptionMethods(in data: Data) -> Set<String> {
+    /// The most that's read of any entry here. A real encryption.xml is a few kilobytes.
+    static let readLimit = 1 << 20
+
+    /// The algorithm of each EncryptionMethod, or nil if the file doesn't parse.
+    static func encryptionMethods(in data: Data) -> Set<String>? {
         let collector = MethodCollector()
         let parser = XMLParser(data: data)
         parser.delegate = collector
         parser.shouldProcessNamespaces = true
-        parser.parse()
-        return collector.algorithms
+        return parser.parse() ? collector.algorithms : nil
     }
 
     private final class MethodCollector: NSObject, XMLParserDelegate {
@@ -61,6 +71,7 @@ struct ZipArchive {
     }
 
     private let url: URL
+    private let length: UInt64
     private let entries: [String: Entry]
 
     init?(_ url: URL) {
@@ -71,10 +82,8 @@ struct ZipArchive {
         let tail = min(length, 22 + 65535)
         guard (try? handle.seek(toOffset: length - tail)) != nil,
               let end = try? handle.read(upToCount: Int(tail)),
-              let recordStart = end.lastIndex(ofSignature: 0x0605_4b50)
+              let record = Self.endRecord(in: end)
         else { return nil }
-        let record = end.dropFirst(recordStart - end.startIndex)
-        guard record.count >= 22 else { return nil }
         let count = Int(record.uint16(at: 10))
         let directorySize = Int(record.uint32(at: 12))
         let directoryOffset = Int(record.uint32(at: 16))
@@ -103,6 +112,7 @@ struct ZipArchive {
             position = nameStart + nameLength + extraLength + commentLength
         }
         self.url = url
+        self.length = length
         self.entries = entries
     }
 
@@ -110,21 +120,38 @@ struct ZipArchive {
         entries[name] != nil
     }
 
-    /// The entry's bytes, or nil if there's no such entry or it can't be inflated.
-    func data(for name: String) -> Data? {
-        guard let entry = entries[name], let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    /// The end record: the last place its signature is followed by a comment that runs exactly to
+    /// the end of the file. A comment may hold the signature itself, so a match that doesn't fit isn't one.
+    private static func endRecord(in tail: Data) -> Data? {
+        var search = tail
+        while let start = search.lastIndex(ofSignature: 0x0605_4b50) {
+            let record = tail.dropFirst(start - tail.startIndex)
+            if record.count >= 22, 22 + Int(record.uint16(at: 20)) == record.count { return record }
+            search = search.prefix(start - search.startIndex + 3)
+        }
+        return nil
+    }
+
+    /// The entry's bytes, or nil if there's no such entry, it's larger than `limit` (packed or
+    /// unpacked), it reaches past the end of the file, or it doesn't inflate to the size it declares.
+    func data(for name: String, limit: Int) -> Data? {
+        guard let entry = entries[name], entry.size <= limit, entry.compressedSize <= limit,
+              UInt64(entry.headerOffset) + 30 + UInt64(entry.compressedSize) <= length,
+              let handle = try? FileHandle(forReadingFrom: url)
+        else { return nil }
         defer { try? handle.close() }
         guard (try? handle.seek(toOffset: UInt64(entry.headerOffset))) != nil,
               let header = try? handle.read(upToCount: 30), header.count == 30,
               header.uint32(at: 0) == 0x0403_4b50
         else { return nil }
         let skip = Int(header.uint16(at: 26)) + Int(header.uint16(at: 28))
-        guard (try? handle.seek(toOffset: UInt64(entry.headerOffset + 30 + skip))) != nil,
+        guard UInt64(entry.headerOffset) + 30 + UInt64(skip) + UInt64(entry.compressedSize) <= length,
+              (try? handle.seek(toOffset: UInt64(entry.headerOffset + 30 + skip))) != nil,
               let packed = try? handle.read(upToCount: entry.compressedSize), packed.count == entry.compressedSize
         else { return nil }
         switch entry.method {
         case 0:
-            return packed
+            return packed.count == entry.size ? packed : nil
         case 8:
             // Compression's zlib is raw deflate, which is what a zip holds.
             var output = Data(count: max(entry.size, 1))

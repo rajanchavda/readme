@@ -71,6 +71,30 @@ private func pixelSize(of data: Data) throws -> (Int, Int) {
         #expect(files.count == 1)
     }
 
+    @Test func aLeftoverCopyDoesNotBlockImport() async throws {
+        defer { clean() }
+        let original = try fixture("long.epub")
+        let id = try await BookID.of(original)
+        let books = store.booksDirectory
+        try FileManager.default.createDirectory(at: books, withIntermediateDirectories: true)
+        try Data("left behind by a crash".utf8).write(to: books.appendingPathComponent(id + ".epub"))
+        let book = try await importer.importBook(from: original)
+        #expect(try Data(contentsOf: store.fileURL(for: book)) == Data(contentsOf: original))
+        #expect(store.books == [book])
+    }
+
+    @Test func importsOfTheSameBookAtOnceShareOneResult() async throws {
+        defer { clean() }
+        let original = try fixture("long.epub")
+        async let first = importer.importBook(from: original)
+        async let second = importer.importBook(from: original)
+        let (one, two) = try await (first, second)
+        #expect(one == two)
+        #expect(store.books == [one])
+        let files = try FileManager.default.contentsOfDirectory(at: store.booksDirectory, includingPropertiesForKeys: nil)
+        #expect(files.count == 1)
+    }
+
     @Test func rejectsDRM() async throws {
         defer { clean() }
         await #expect(throws: ImportError.copyProtected) {
@@ -117,7 +141,8 @@ private func pixelSize(of data: Data) throws -> (Int, Int) {
         #expect(store.books.count == 2)
         #expect(bare.hasCover == false)
         #expect(!FileManager.default.fileExists(atPath: store.coverURL(for: bare).path))
-        #expect(!broken.title.isEmpty)
+        #expect(broken.title == "Broken Chapter Book")
+        #expect(bare.title == "No Cover Book")
     }
 
     @Test func dropOfManyKeepsGoing() async throws {

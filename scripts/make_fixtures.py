@@ -164,14 +164,17 @@ def write_entry(archive, name, data, compress=zipfile.ZIP_DEFLATED):
 
 def write_epub(
     name, title, chapters, has_toc=True, has_cover=False, extra_files=None, extra_manifest=(),
-    encryption=None, corrupt=(),
+    encryption=None, corrupt=(), meta_inf=None, comment=b"",
 ):
     path = OUT / name
     with zipfile.ZipFile(path, "w") as archive:
+        archive.comment = comment
         write_entry(archive, "mimetype", "application/epub+zip", zipfile.ZIP_STORED)
         write_entry(archive, "META-INF/container.xml", CONTAINER)
         if encryption:
             write_entry(archive, "META-INF/encryption.xml", encryption)
+        for file_name, data in (meta_inf or {}).items():
+            write_entry(archive, f"META-INF/{file_name}", data)
         write_entry(
             archive,
             "OEBPS/content.opf",
@@ -198,6 +201,23 @@ def write_epub(
             name_length, extra_length = struct.unpack("<HH", file.read(4))
             file.seek(offset + 30 + name_length + extra_length)
             file.write(b"\xff" * size)
+
+
+def set_declared_size(path, entry, size=None, compressed_size=None):
+    """Changes what the zip's central directory says about an entry, so the entry lies about itself."""
+    data = bytearray(path.read_bytes())
+    position = data.rfind(b"PK\x01\x02")
+    while position >= 0:
+        name_length = struct.unpack_from("<H", data, position + 28)[0]
+        if bytes(data[position + 46 : position + 46 + name_length]) == entry.encode():
+            if compressed_size is not None:
+                struct.pack_into("<I", data, position + 20, compressed_size)
+            if size is not None:
+                struct.pack_into("<I", data, position + 24, size)
+            path.write_bytes(data)
+            return
+        position = data.rfind(b"PK\x01\x02", 0, position)
+    raise ValueError(entry)
 
 
 def long_book():
@@ -328,6 +348,35 @@ def drm_book():
         [Chapter("ch1", "Locked", cipher)],
         encryption=DRM_ENCRYPTION,
     )
+
+
+def locked_books():
+    """Books that must be turned away as protected, each in a different way."""
+    encryption = "META-INF/encryption.xml"
+
+    def make(name, **options):
+        write_epub(name, "Locked", short_chapters(random.Random(9)), **options)
+        return OUT / name
+
+    make("drm-bad-xml.epub", encryption="<encryption><unclosed")
+    set_declared_size(
+        make("drm-bad-size.epub", encryption=DRM_ENCRYPTION), encryption, size=len(DRM_ENCRYPTION) + 7)
+    # Claims to inflate to nearly 4 GB, which must never be allocated.
+    set_declared_size(
+        make("drm-bomb.epub", encryption=DRM_ENCRYPTION), encryption, size=0xFFFFFFF0)
+    # Claims to be stored beyond the end of the file.
+    set_declared_size(
+        make("drm-past-end.epub", encryption=DRM_ENCRYPTION), encryption, compressed_size=500_000)
+    make("drm-rights.epub", meta_inf={"rights.xml": "<rights/>"})
+    make("drm-lcp.epub", meta_inf={"license.lcpl": "{}"})
+    make("drm-sinf.epub", meta_inf={"sinf.xml": "<sinf/>"})
+
+
+def comment_book():
+    """A good book whose zip comment holds what looks like an end record."""
+    write_epub(
+        "pk-comment.epub", "Comment Book", short_chapters(random.Random(10)),
+        comment=b"PK\x05\x06" + b"x" * 30)
 
 
 def obfuscated_book():
@@ -492,6 +541,8 @@ def main():
     link_hints_book()
     drm_book()
     obfuscated_book()
+    locked_books()
+    comment_book()
     plain_zip()
     (OUT / "not-an-epub.epub").write_bytes(random.Random(6).randbytes(4096))
 

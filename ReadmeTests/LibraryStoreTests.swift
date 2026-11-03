@@ -72,12 +72,13 @@ private let place = ReaderLocation(
         #expect(store.books.first?.chapterMinutesLeft == 6.5)
     }
 
-    @Test func survivesRestart() throws {
+    @Test func survivesRestart() async throws {
         let folder = try libraryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = LibraryStore(directory: folder)
         store.add(book("a", added: 1))
         store.markRead(id: "a", location: place)
+        await store.saved()
         #expect(LibraryStore(directory: folder).books == store.books)
     }
 
@@ -100,6 +101,7 @@ private let place = ReaderLocation(
         }
         store.remove(id: "gone")
         await store.removed()
+        await store.saved()
         #expect(store.books.map(\.id) == ["kept"])
         #expect(!FileManager.default.fileExists(atPath: store.fileURL(for: gone).path))
         #expect(!FileManager.default.fileExists(atPath: store.coverURL(for: gone).path))
@@ -109,13 +111,14 @@ private let place = ReaderLocation(
         #expect(LibraryStore(directory: folder).books.map(\.id) == ["kept"])
     }
 
-    @Test func corruptLibraryFileStartsEmpty() throws {
+    @Test func corruptLibraryFileStartsEmpty() async throws {
         let folder = try libraryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         try Data("{ not json".utf8).write(to: folder.appendingPathComponent("library.json"))
         let store = LibraryStore(directory: folder)
         #expect(store.books.isEmpty)
         store.add(book("a", added: 1))
+        await store.saved()
         #expect(LibraryStore(directory: folder).books.map(\.id) == ["a"])
     }
 }
