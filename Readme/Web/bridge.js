@@ -23,6 +23,10 @@ let latest = null // the last `relocate` detail from foliate
 let relocations = 0
 let busy = false // true during a command, so its in-between stops aren't reported
 let lastPostedCFI = null
+// Where the reader is: the place they last went to, which a layout change shows again and leaves as
+// it was. The spread it then lands on usually starts a little before it, so going back to that
+// spread's start instead would creep back a page with each change.
+let place = null
 let columnCount = 2
 // How wide each column should be, in points, or null to let foliate pick.
 let columnWidth = null
@@ -110,12 +114,14 @@ const enqueue = run => {
     return result
 }
 
-// Resolves to the new location, or null if nothing moved.
-const navigate = move => enqueue(async () => {
+// Resolves to the new location, or null if nothing moved. The reader's place is then `target`, or
+// the start of where they landed.
+const navigate = (move, target) => enqueue(async () => {
     const before = relocations
     await move()
     await settle()
     if (relocations === before) return null
+    place = target ?? latest?.cfi ?? place
     post()
     return location()
 })
@@ -230,10 +236,10 @@ const setLayout = (css, columns, width) => {
     view.renderer.setStyles?.(css ?? '')
 }
 
-// Makes a layout change, then goes back to the last place reported, which foliate's own
-// re-rendering hasn't moved.
+// Makes a layout change, then goes back to the reader's place, which foliate's own re-rendering
+// hasn't moved.
 const holdingPlace = async change => {
-    const cfi = lastPostedCFI ?? view.lastLocation?.cfi
+    const cfi = place ?? lastPostedCFI ?? view.lastLocation?.cfi
     change()
     await settle()
     if (cfi) await view.goTo(cfi)
@@ -330,7 +336,11 @@ const open = async (url, cfi, css, columns, width) => {
         if (busy) return
         // foliate re-rendering, usually mid-resize, so wait to see where it ends up.
         if (detail.reason === 'anchor') scheduleRelayout()
-        else post()
+        else {
+            // A move of foliate's own, such as following a link in the book.
+            place = detail.cfi
+            post()
+        }
     })
     view.addEventListener('external-link', event => event.preventDefault())
     // Otherwise a big image can be painted blank and repainted later when it's decoded, which a page
@@ -353,16 +363,22 @@ const open = async (url, cfi, css, columns, width) => {
     }
     view.renderer.setAttribute('flow', 'paginated')
     setLayout(css, columns, width)
+    let wentToCFI = !!cfi
     try {
         await view.init({ lastLocation: cfi ?? null })
     } catch (error) {
         console.warn('Could not go to the saved place', error)
+        wentToCFI = false
     }
     // Going to a place foliate can't find fails quietly, so check that it moved.
-    if (!relocations || !currentDocument())
+    if (!relocations || !currentDocument()) {
+        wentToCFI = false
         await view.renderer.goTo({ index: firstSectionIndex(), anchor: 0 })
+    }
     if (!relocations) throw new Error('The book could not be displayed')
     await settle()
+    // A place that took the book somewhere is kept as it was given.
+    place = wentToCFI ? cfi : latest?.cfi ?? null
     busy = false
     post()
     new ResizeObserver(scheduleRelayout).observe(view.renderer)
@@ -423,7 +439,7 @@ globalThis.readmeBridge = {
     settled,
     next: () => navigate(() => view.next()),
     previous: () => navigate(() => view.prev()),
-    goToCFI: cfi => navigate(() => view.goTo(cfi)),
+    goToCFI: cfi => navigate(() => view.goTo(cfi), cfi),
     goToFraction: fraction => navigate(() => view.goToFraction(fraction)),
     // Whether the link led anywhere in the book, and where the book went, or null if it was already
     // there. foliate's goTo answers nothing for a link it can't follow.

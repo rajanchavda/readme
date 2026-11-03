@@ -6,6 +6,10 @@ import Foundation
 ///
 /// A live resize or a fullscreen transition is one change from start to end, however many restyles
 /// it takes, so its place is kept until it ends and then let go, used or not.
+///
+/// The place is where the reader is, which only a turn, a jump or opening the book moves. A layout
+/// change shows it on whichever page now holds it, which usually starts a little before it. Going back
+/// to that page's start next time would creep back a page at a time, so the place stays as it was.
 struct PlaceKeeper {
     struct Capture: Equatable {
         var cfi: String
@@ -13,11 +17,22 @@ struct PlaceKeeper {
     }
 
     private(set) var turns = 0
+    /// The start of the spread the reader last turned or jumped to, or opened the book at.
+    private(set) var place: String?
     private(set) var layoutChangeCapture: Capture?
     private(set) var isChangingLayout = false
 
     mutating func turned() {
         turns += 1
+    }
+
+    mutating func moved(to cfi: String?) {
+        place = cfi
+    }
+
+    /// Where the reader is, or what's shown if that isn't known yet.
+    func place(showing shown: String?) -> String? {
+        place ?? shown
     }
 
     func capture(_ cfi: String?) -> Capture? {

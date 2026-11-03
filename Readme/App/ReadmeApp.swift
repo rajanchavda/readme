@@ -71,7 +71,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
         let reader = showReader()
-        Task { await reader.open(url, at: nil) }
+        Task { await reader.open(url) }
+    }
+
+    /// The reader's place is saved as they read, and this waits for the last of it to be written.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let reader else { return .terminateNow }
+        Task {
+            await reader.keepPlace()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -94,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Until the library arrives, launching shows the reading window, which asks for a book.
     @discardableResult
     private func showReader() -> ReaderWindowController {
-        let window = reader ?? ReaderWindowController()
+        let window = reader ?? ReaderWindowController(positions: isTesting ? nil : .standard)
         reader = window
         window.show()
         return window

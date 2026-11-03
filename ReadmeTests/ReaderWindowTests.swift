@@ -131,6 +131,17 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         places.turned()
         #expect(places.target(places.endLayoutChange()) == nil)
     }
+
+    /// A layout change shows the place on whichever page now holds it, and that page's start isn't
+    /// where the reader is.
+    @Test func theReadersPlaceOutlivesWhatsShown() {
+        var places = PlaceKeeper()
+        #expect(places.place(showing: "shown") == "shown")
+        places.moved(to: "a")
+        #expect(places.place(showing: "shown") == "a")
+        places.moved(to: nil)
+        #expect(places.place(showing: "shown") == "shown")
+    }
 }
 
 @MainActor
