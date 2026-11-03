@@ -12,13 +12,15 @@ struct CurrentBookShelf: View {
         ShelfRow(height: ShelfLayout.ledgeHeight, gap: 28) {
             if let book {
                 ShelfBook(book: book, width: 150, library: library, extraShadow: true, onOpen: onOpen, onRemove: onRemove)
+                    .id(book.id)
                     .transition(.opacity)
                 info(book)
+                    .id(book.id)
+                    .transition(.opacity)
             } else {
-                Rectangle()
+                RoundedRectangle(cornerRadius: 3)
                     .strokeBorder(ShelfStyle.text.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     .frame(width: 150, height: 225)
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Drop a book here")
                         .font(ShelfStyle.title(34))

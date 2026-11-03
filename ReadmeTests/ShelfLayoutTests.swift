@@ -59,9 +59,86 @@ import Testing
     }
 
     @Test func oneMessagePerKindOfFailure() {
-        let lines = LibraryView.messages(for: [.notAnEPUB, .copyProtected, .notAnEPUB, .notAnEPUB])
+        let lines = ShelfDrops.messages(for: [.notAnEPUB, .copyProtected, .notAnEPUB, .notAnEPUB])
         #expect(lines == ["This file isn't an EPUB book.", "This book is copy-protected, so it can't be opened here."])
-        #expect(LibraryView.message(for: .unreadable) == "This book couldn't be read.")
+        #expect(ShelfDrops.message(for: .unreadable) == "This book couldn't be read.")
+    }
+}
+
+private func someBook(_ n: Int = 0) -> Book {
+    Book(id: "id\(n)", title: "T", author: nil, fileName: "\(n).epub", hasCover: false, addedAt: .now,
+         lastReadAt: nil, chapterTitle: nil, chapterMinutesLeft: nil)
+}
+
+@MainActor
+@Suite(.serialized) struct ShelfDropsTests {
+    private func drops(
+        _ results: @escaping @Sendable ([URL]) -> [Result<Book, ImportError>], notice: Duration = .seconds(10),
+        progress: Duration = .seconds(10)
+    ) -> ShelfDrops {
+        ShelfDrops(noticeDuration: notice, progressDelay: progress, importAll: { results($0) })
+    }
+
+    private let file = URL(fileURLWithPath: "/tmp/a.epub")
+
+    @Test func failureKindsMergeAcrossDrops() async {
+        let first = drops { _ in [.failure(.notAnEPUB), .failure(.notAnEPUB)] }
+        await first.add([file, file])
+        #expect(first.lines == ["This file isn't an EPUB book."])
+
+        var next: [Result<Book, ImportError>] = []
+        let merged = ShelfDrops(importAll: { _ in next })
+        next = [.failure(.notAnEPUB)]
+        await merged.add([file])
+        next = [.failure(.copyProtected), .failure(.notAnEPUB)]
+        await merged.add([file, file])
+        #expect(merged.notice == [.notAnEPUB, .copyProtected])
+    }
+
+    @Test func aBookAlreadyThereIsNotAnError() async {
+        let d = drops { _ in [.success(someBook())] }
+        await d.add([file])
+        #expect(d.lines.isEmpty)
+        #expect(d.adding == 0)
+    }
+
+    @Test func noticeFadesByItself() async throws {
+        let d = drops({ _ in [.failure(.unreadable)] }, notice: .milliseconds(150))
+        await d.add([file])
+        #expect(d.lines == ["This book couldn't be read."])
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(d.lines.isEmpty)
+    }
+
+    @Test func anotherFailureRestartsTheFade() async throws {
+        let d = drops({ _ in [.failure(.unreadable)] }, notice: .milliseconds(500))
+        await d.add([file])
+        try await Task.sleep(for: .milliseconds(300))
+        await d.add([file])
+        // 600 ms after the first, which alone would have faded it, and 300 after the second.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!d.lines.isEmpty)
+        try await Task.sleep(for: .milliseconds(700))
+        #expect(d.lines.isEmpty)
+    }
+
+    @Test func aSlowImportSaysBooksAreBeingAdded() async throws {
+        let d = ShelfDrops(noticeDuration: .seconds(10), progressDelay: .milliseconds(50), importAll: { files in
+            try? await Task.sleep(for: .milliseconds(400))
+            return files.map { _ in .success(someBook()) }
+        })
+        let running = Task { await d.add([file, file, file]) }
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(d.adding == 3)
+        #expect(ShelfDrops.progressLine(3) == "Adding 3 books…")
+        await running.value
+        #expect(d.adding == 0)
+    }
+
+    @Test func aQuickImportSaysNothing() async {
+        let d = drops { files in files.map { _ in .success(someBook()) } }
+        await d.add([file])
+        #expect(d.adding == 0)
     }
 }
 
@@ -100,9 +177,10 @@ import Testing
         return rep
     }
 
-    /// Renders the library for looking at, when `SHELF_RENDERS` is set (`TEST_RUNNER_SHELF_RENDERS=1 scripts/test.sh`).
-    @Test func rendersSavedForLooking() async throws {
-        guard ProcessInfo.processInfo.environment["SHELF_RENDERS"] != nil else { return }
+    /// Always renders the full library and checks the rail runs to the window's right edge. With
+    /// `SHELF_RENDERS` set (`TEST_RUNNER_SHELF_RENDERS=1 scripts/test.sh`) it also saves renders for looking at.
+    @Test func railReachesTheWindowEdgeAndRendersAreSaved() async throws {
+        let dump = ProcessInfo.processInfo.environment["SHELF_RENDERS"] != nil
         BundledFonts.register()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("task14-renders", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -129,8 +207,15 @@ import Testing
         func importer(_ store: LibraryStore) -> BookImporter { BookImporter(store: store) }
 
         let size = CGSize(width: 980, height: 800)
+        let twelve = try await library(count: 12)
+        let check = try #require(snapshot(LibraryView(library: twelve, importer: importer(twelve), onOpen: { _ in }), size: size))
+        #expect(check.pixelsWide == 1960)
+        // The top shelf's rail is at 262...276 points down; the last pixel column is wood, not background.
+        let edge = try #require(check.colorAt(x: 1958, y: 538)?.usingColorSpace(.deviceRGB))
+        #expect(edge.redComponent > 0.3, "the rail stops short of the right edge")
+        guard dump else { return }
         let cases: [(String, LibraryStore)] = [
-            ("empty", try await library(count: 0)), ("one", try await library(count: 1)), ("twelve", try await library(count: 12)),
+            ("empty", try await library(count: 0)), ("one", try await library(count: 1)), ("twelve", twelve),
         ]
         for (name, store) in cases {
             let rep = try #require(snapshot(LibraryView(library: store, importer: importer(store), onOpen: { _ in }), size: size))
@@ -143,7 +228,7 @@ import Testing
         let results = await importer(store).importAll([junk])
         #expect(results.count == 1)
         if case .failure(let error) = results[0] { #expect(error == .notAnEPUB) } else { Issue.record("expected a failure") }
-        let view = LibraryView(library: store, importer: importer(store), onOpen: { _ in }, showing: [.copyProtected, .notAnEPUB])
+        let view = LibraryView(library: store, importer: importer(store), onOpen: { _ in }, previewing: [.copyProtected, .notAnEPUB])
         let rep = try #require(snapshot(view, size: size))
         try rep.representation(using: .png, properties: [:])!.write(to: dir.appendingPathComponent("failure.png"))
     }

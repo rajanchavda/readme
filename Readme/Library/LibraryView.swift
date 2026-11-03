@@ -6,25 +6,29 @@ struct LibraryView: View {
     let importer: BookImporter
     let onOpen: (Book) -> Void
 
-    @State private var notice: Notice?
+    @StateObject private var drops: ShelfDrops
     @State private var targeted = false
+    @State private var scrollerWidth = Self.reservedScrollerWidth()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    struct Notice: Equatable {
-        var id = UUID()
-        var lines: [String]
+    init(library: LibraryStore, importer: BookImporter, onOpen: @escaping (Book) -> Void) {
+        self.init(library: library, importer: importer, onOpen: onOpen, previewing: [])
     }
 
-    /// `showing` is a failure message already on the shelf, for checking how it looks.
-    init(library: LibraryStore, importer: BookImporter, onOpen: @escaping (Book) -> Void, showing: [ImportError] = []) {
-        _notice = State(initialValue: showing.isEmpty ? nil : Notice(lines: Self.messages(for: showing)))
+    /// Where a failure message can be put on the shelf to see how it looks.
+    init(library: LibraryStore, importer: BookImporter, onOpen: @escaping (Book) -> Void, previewing: [ImportError]) {
         self.library = library
         self.importer = importer
         self.onOpen = onOpen
+        let drops = ShelfDrops(importAll: { await importer.importAll($0) })
+        if !previewing.isEmpty { drops.showForPreview(previewing) }
+        _drops = StateObject(wrappedValue: drops)
     }
 
     var body: some View {
         GeometryReader { geometry in
+            // A legacy scroller keeps its width even when hidden, which would leave the shelves short of
+            // the window's edge. The scroll view is made that much wider and the excess is clipped away.
             ScrollView(.vertical) {
                 Shelves(
                     library: library, size: geometry.size, animation: settle, onOpen: onOpen,
@@ -33,6 +37,9 @@ struct LibraryView: View {
                 .frame(minHeight: geometry.size.height, alignment: .top)
             }
             .scrollIndicators(.hidden)
+            .frame(width: geometry.size.width + scrollerWidth, alignment: .leading)
+            .frame(width: geometry.size.width, alignment: .leading)
+            .clipped()
         }
         .background(LinearGradient(colors: [ShelfStyle.top, ShelfStyle.bottom], startPoint: .top, endPoint: .bottom))
         .overlay {
@@ -43,58 +50,29 @@ struct LibraryView: View {
                 .animation(.easeOut(duration: 0.15), value: targeted)
         }
         .overlay(alignment: .bottom) {
-            if let notice {
-                NoticeView(notice: notice)
-                    .padding(.bottom, 34)
-                    .transition(.opacity)
-                    .id(notice.id)
-            }
+            NoticeView(lines: drops.lines, adding: drops.adding)
+                .padding(.bottom, 40)
+                .allowsHitTesting(false)
         }
+        .animation(.easeOut(duration: 0.25), value: drops.lines)
+        .animation(.easeOut(duration: 0.25), value: drops.adding)
         .environment(\.colorScheme, .dark)
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
             guard !files.isEmpty else { return false }
-            Task { await add(files) }
+            Task { await drops.add(files) }
             return true
         } isTargeted: { targeted = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+            scrollerWidth = Self.reservedScrollerWidth()
+        }
     }
 
     private var settle: Animation? { reduceMotion ? nil : ShelfStyle.settle }
 
-    private func add(_ files: [URL]) async {
-        let results = await importer.importAll(files)
-        let failures = results.compactMap { result -> ImportError? in
-            if case .failure(let error) = result { return error }
-            return nil
-        }
-        guard !failures.isEmpty else { return }
-        show(Notice(lines: Self.messages(for: failures)))
-    }
-
-    private func show(_ new: Notice) {
-        withAnimation(.easeOut(duration: 0.2)) { notice = new }
-        Task {
-            try? await Task.sleep(for: Self.noticeDuration)
-            guard notice?.id == new.id else { return }
-            withAnimation(.easeOut(duration: 0.6)) { notice = nil }
-        }
-    }
-
-    static let noticeDuration: Duration = .seconds(4)
-
-    /// One line for each kind of failure, in the order they first happened, however many files failed.
-    static func messages(for errors: [ImportError]) -> [String] {
-        var seen: [ImportError] = []
-        for error in errors where !seen.contains(error) { seen.append(error) }
-        return seen.map(message)
-    }
-
-    static func message(for error: ImportError) -> String {
-        switch error {
-        case .copyProtected: "This book is copy-protected, so it can't be opened here."
-        case .notAnEPUB: "This file isn't an EPUB book."
-        case .unreadable: "This book couldn't be read."
-        }
+    private static func reservedScrollerWidth() -> CGFloat {
+        NSScroller.preferredScrollerStyle == .legacy
+            ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
     }
 }
 
@@ -109,7 +87,7 @@ private struct Shelves: View {
     var body: some View {
         let rows = ShelfLayout.rows(library.others, width: size.width)
         let empties = max(0, ShelfLayout.emptyRowCount(height: size.height) - rows.count)
-        VStack(spacing: ShelfLayout.shelfGap) {
+        LazyVStack(spacing: ShelfLayout.shelfGap) {
             CurrentBookShelf(book: library.current, library: library, onOpen: onOpen, onRemove: onRemove)
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 ShelfRow {
@@ -129,21 +107,33 @@ private struct Shelves: View {
     }
 }
 
-/// A quiet message that sits on the shelf and goes by itself.
+/// A quiet message that sits on the shelf and goes by itself, and a soft line while books are added.
 private struct NoticeView: View {
-    let notice: LibraryView.Notice
+    let lines: [String]
+    let adding: Int
 
     var body: some View {
-        VStack(spacing: 4) {
-            ForEach(notice.lines, id: \.self) { line in
-                Text(line)
-                    .font(ShelfStyle.body(16, italic: true))
-                    .foregroundStyle(ShelfStyle.text)
+        if !lines.isEmpty || adding > 0 {
+            VStack(spacing: 4) {
+                ForEach(lines, id: \.self) { line in
+                    Text(line)
+                        .font(ShelfStyle.body(16, italic: true))
+                        .foregroundStyle(ShelfStyle.text)
+                }
+                if adding > 0 {
+                    Text(ShelfDrops.progressLine(adding))
+                        .font(ShelfStyle.body(15, italic: true))
+                        .foregroundStyle(ShelfStyle.muted)
+                }
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            // Solid, so the rail behind it doesn't show through.
+            .background(Color(red: 0x24 / 255, green: 0x1F / 255, blue: 0x1A / 255), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ShelfStyle.text.opacity(0.1)))
+            .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
+            .accessibilityElement(children: .combine)
+            .transition(.opacity)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .background(Color.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .combine)
     }
 }

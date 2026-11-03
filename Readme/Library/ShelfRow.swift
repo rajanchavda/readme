@@ -80,5 +80,6 @@ struct ShelfBook: View {
         }
         .accessibilityLabel([book.title, book.author].compactMap { $0 }.joined(separator: ", "))
         .accessibilityHint("Opens the book")
+        .accessibilityAction(named: "Remove") { onRemove(book) }
     }
 }
