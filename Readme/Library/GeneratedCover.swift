@@ -83,7 +83,7 @@ enum GeneratedCover {
         var size = start
         while size > smallest {
             if let lines = wrap(text, width: width, breakingWords: false, measure: { measure($0, size) }), fits(lines, size) {
-                return Lines(size: size, lines: lines)
+                return Lines(size: size, lines: balanced(lines, text: text, width: width, measure: { measure($0, size) }))
             }
             size *= 0.95
         }
@@ -99,6 +99,24 @@ enum GeneratedCover {
             lines[room - 1] = last.trimmingCharacters(in: .whitespaces) + "…"
         }
         return Lines(size: size, lines: lines)
+    }
+
+    /// The same number of lines, as even as can be, so the last isn't a word or a character left over:
+    /// the narrowest line width that still wraps to that many.
+    private static func balanced(_ lines: [String], text: String, width: CGFloat, measure: (String) -> CGFloat) -> [String] {
+        guard lines.count > 1 else { return lines }
+        var (low, high) = (width / 2, width)
+        var best = lines
+        for _ in 0..<12 {
+            let middle = (low + high) / 2
+            if let narrower = wrap(text, width: middle, breakingWords: false, measure: measure), narrower.count == lines.count {
+                best = narrower
+                high = middle
+            } else {
+                low = middle
+            }
+        }
+        return best
     }
 
     /// Greedy line breaking at spaces. Returns nil when a word is wider than a line and may not be broken.

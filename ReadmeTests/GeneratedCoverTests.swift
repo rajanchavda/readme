@@ -69,6 +69,7 @@ private func contrast(_ a: Color, _ b: Color) -> Double {
         #expect(NSFont(name: "EBGaramond-Italic", size: 20) != nil)
         #expect(NSFont(name: "EB Garamond Italic", size: 20) != nil)
         #expect(CoverFonts.title(size: 20).familyName == "Fraunces")
+        #expect(CoverFonts.title(size: 20).fontName == "Fraunces-SemiBold")
         #expect(CoverFonts.author(size: 20).fontName == "EBGaramond-Italic")
     }
 
@@ -151,6 +152,16 @@ private func contrast(_ a: Color, _ b: Color) -> Double {
         check("📚🙂 Emoji 👨‍👩‍👧‍👦 Title", "🙂")
     }
 
+    @Test func lastLineIsNotAnOrphan() {
+        BundledFonts.register()
+        let lines = GeneratedCover.layout(title: "吾輩は猫である", author: nil, width: width).title.lines
+        #expect(lines.count == 2)
+        #expect(lines.map(\.count).min()! >= 3)
+        let latin = GeneratedCover.layout(title: "The Count of Monte Cristo", author: nil, width: width).title
+        let widths = latin.lines.map { ($0 as NSString).size(withAttributes: [.font: CoverFonts.title(size: latin.size)]).width }
+        #expect(latin.lines.count < 2 || widths.min()! > widths.max()! * 0.4)
+    }
+
     @Test func smallAndLargeWidths() {
         for w: CGFloat in [60, 112, 150, 300] {
             let layout = GeneratedCover.layout(title: "Great Expectations and Other Long Things", author: "Charles Dickens", width: w)
@@ -218,6 +229,64 @@ func render(_ view: some View, scale: CGFloat = 2) -> NSImage? {
         #expect(tall.height == 400)
     }
 
+    private func key(_ book: Book, _ width: CGFloat = 150) -> BookCoverView.Key {
+        BookCoverView.Key(id: book.id, hasCover: book.hasCover, width: width)
+    }
+
+    @Test func staleStateOfAnotherBookIsNotShown() throws {
+        let image = try #require(CGContext(
+            data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage())
+        let a = book("aa", hasCover: true), b = book("bb", hasCover: true)
+        let resolved = BookCoverView.Resolved(key: key(a), state: .loaded(image))
+        if case .loaded = BookCoverView.shown(resolved, for: key(a), initial: .loading) {} else { Issue.record("own state not shown") }
+        if case .loading = BookCoverView.shown(resolved, for: key(b), initial: .loading) {} else {
+            Issue.record("another book's cover was shown")
+        }
+        // A new width is a new key too.
+        if case .loading = BookCoverView.shown(resolved, for: key(a, 200), initial: .loading) {} else {
+            Issue.record("another size's state was shown")
+        }
+    }
+
+    @Test func aCancelledLoadLeavesNoTrace() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("big.png")
+        try png(.blue, size: NSSize(width: 1200, height: 1800), to: url)
+        // Starts on the main actor, so it can't run until this test waits: it is cancelled before it begins.
+        let task = Task { await CoverImages.load(url, width: 150) }
+        task.cancel()
+        #expect(await task.value == nil)
+        #expect(CoverImages.cached(url, width: 150) == nil)
+        #expect(!CoverImages.knownUnreadable(url))
+    }
+
+    @Test func cacheIsBoundedByBytes() {
+        #expect(CoverImages.byteLimit == 64 * 1024 * 1024)
+    }
+
+    @Test func aBrokenCoverFileShowsTheGeneratedCover() async throws {
+        let library = try emptyLibrary()
+        defer { try? FileManager.default.removeItem(at: library.coversDirectory.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: library.coversDirectory, withIntermediateDirectories: true)
+        let broken = book("0badc0de", hasCover: true)
+        try Data("x".utf8).write(to: library.coverURL(for: broken))
+        let missing = book("0ff1ce", hasCover: true)
+        let real = book("c0ffee", hasCover: true)
+        try png(.systemTeal, size: NSSize(width: 500, height: 300), to: library.coverURL(for: real))
+
+        if case .failed = await BookCoverView.resolve(broken, in: library, width: 150) {} else { Issue.record("broken") }
+        if case .failed = await BookCoverView.resolve(missing, in: library, width: 150) {} else { Issue.record("missing") }
+        if case .loaded(let image) = await BookCoverView.resolve(real, in: library, width: 150) {
+            #expect(image.width > 0)
+        } else {
+            Issue.record("real")
+        }
+        if case .failed = await BookCoverView.resolve(book("n0cover"), in: library, width: 150) {} else { Issue.record("none") }
+    }
+
+    /// Renders the covers for looking at, when `COVER_RENDERS` is set (`TEST_RUNNER_COVER_RENDERS=1 scripts/test.sh`).
     @Test func rendersSavedForLooking() async throws {
         BundledFonts.register()
         let library = try emptyLibrary()
@@ -236,25 +305,24 @@ func render(_ view: some View, scale: CGFloat = 2) -> NSImage? {
             ("empty", book(sampleID(5), title: "", author: "Only An Author")),
             ("japanese", book(sampleID(6), title: "吾輩は猫である", author: "夏目漱石")),
             ("broken", broken),
+            ("real", withCover),
         ]
-        // The tests are sandboxed, so the renders are left in the temporary folder, to be copied out.
+        // Loads first, as the view does, so the render shows what the shelf would.
+        _ = await CoverImages.load(library.coverURL(for: withCover), width: 150)
+        _ = await CoverImages.load(library.coverURL(for: broken), width: 150)
+        let dump = ProcessInfo.processInfo.environment["COVER_RENDERS"] != nil
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("task13-renders", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if dump { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
         for (name, book) in samples {
             let image = try #require(render(BookCoverView(book: book, width: 150, library: library)))
-            let rep = NSBitmapImageRep(data: image.tiffRepresentation!)!
-            try rep.representation(using: .png, properties: [:])!.write(to: dir.appendingPathComponent("\(name).png"))
+            // 150 by 225, and 20 of padding round it, at 2x.
+            #expect(image.representations.first?.pixelsWide == 380, "\(name)")
+            #expect(image.representations.first?.pixelsHigh == 530, "\(name)")
+            if dump {
+                try NSBitmapImageRep(data: image.tiffRepresentation!)!.representation(using: .png, properties: [:])!
+                    .write(to: dir.appendingPathComponent("\(name).png"))
+            }
         }
-        // A cover that has been found unreadable shows the generated one from the start.
-        _ = await CoverImages.load(library.coverURL(for: broken), width: 150)
-        let fallback = try #require(render(BookCoverView(book: broken, width: 150, library: library)))
-        try NSBitmapImageRep(data: fallback.tiffRepresentation!)!.representation(using: .png, properties: [:])!
-            .write(to: dir.appendingPathComponent("broken.png"))
-        // A real cover, once loaded, is drawn in the view.
-        _ = await CoverImages.load(library.coverURL(for: withCover), width: 150)
-        let image = try #require(render(BookCoverView(book: withCover, width: 150, library: library)))
-        let rep = NSBitmapImageRep(data: image.tiffRepresentation!)!
-        try rep.representation(using: .png, properties: [:])!.write(to: dir.appendingPathComponent("real.png"))
     }
 }
 
