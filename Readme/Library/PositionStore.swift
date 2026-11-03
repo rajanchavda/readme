@@ -45,6 +45,37 @@ actor PositionStore {
     }
 }
 
+/// Writes places to a store one at a time, off the main thread, so a reader turning pages quickly
+/// never waits on the disk. Of a book's places waiting, only the newest is written.
+@MainActor
+final class PlaceWriter {
+    private let store: PositionStore
+    /// By book, so one book's place isn't lost to another's.
+    private var unsaved: [String: ReaderLocation] = [:]
+    private var saving: Task<Void, Never>?
+
+    init(store: PositionStore) {
+        self.store = store
+    }
+
+    func save(_ location: ReaderLocation, bookID: String) {
+        unsaved[bookID] = location
+        guard saving == nil else { return }
+        saving = Task { [weak self, store] in
+            while let self, let (bookID, location) = self.unsaved.first {
+                self.unsaved[bookID] = nil
+                await store.save(location, bookID: bookID)
+            }
+            self?.saving = nil
+        }
+    }
+
+    /// Returns once every place given so far is written.
+    func written() async {
+        await saving?.value
+    }
+}
+
 /// Which book a file is, until the library gives each book an ID of its own: the SHA-256 of the file's
 /// contents, so the same book has the same ID wherever it's kept and whatever it's called.
 enum BookID {

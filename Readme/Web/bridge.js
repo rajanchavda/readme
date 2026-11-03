@@ -343,6 +343,15 @@ const open = async (url, cfi, css, columns, width) => {
         }
     })
     view.addEventListener('external-link', event => event.preventDefault())
+    // A link in the book waits its turn with the commands, so a layout change under way can't undo
+    // it. The app hears it's been followed, and again once it's landed, as a move it didn't ask for.
+    view.addEventListener('link', event => {
+        event.preventDefault()
+        const { href } = event.detail
+        const tell = () => globalThis.webkit?.messageHandlers?.readme?.postMessage(JSON.stringify({ type: 'link' }))
+        tell()
+        navigate(() => view.goTo(href)).catch(error => console.warn(error)).finally(tell)
+    })
     // Otherwise a big image can be painted blank and repainted later when it's decoded, which a page
     // that isn't visible may never do, leaving a gap in a snapshot.
     view.addEventListener('load', ({ detail: { doc } }) => {
@@ -363,7 +372,8 @@ const open = async (url, cfi, css, columns, width) => {
     }
     view.renderer.setAttribute('flow', 'paginated')
     setLayout(css, columns, width)
-    let wentToCFI = !!cfi
+    // foliate opens a place it can't resolve at the start, without saying so.
+    let wentToCFI = !!cfi && !!view.resolveNavigation(cfi)
     try {
         await view.init({ lastLocation: cfi ?? null })
     } catch (error) {
@@ -436,6 +446,8 @@ globalThis.readmeBridge = {
     open,
     currentDocument,
     location,
+    // Where the reader is, which a layout change goes back to. See `place`.
+    place: () => place,
     settled,
     next: () => navigate(() => view.next()),
     previous: () => navigate(() => view.prev()),

@@ -22,12 +22,6 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         var bookID: String?
     }
 
-    /// A place waiting to be written.
-    private struct Unsaved {
-        var location: ReaderLocation
-        var bookID: String
-    }
-
     var onShowLibrary: (() -> Void)?
 
     /// The mockup's stage, which makes the book the size the curl was approved at.
@@ -63,9 +57,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var opening: Task<Void, Never>?
     /// The book being opened, until it's settled at its place.
     private var openingBook: BookWebView?
-    /// Places are written one at a time, off the main thread, and only the newest of those waiting is.
-    private var unsaved: Unsaved?
-    private var saving: Task<Void, Never>?
+    private let writer: PlaceWriter?
 
     /// Restyles run one at a time, and those asked for while one runs are folded into the next.
     private var restyling: Task<Void, Never>?
@@ -96,6 +88,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     init(defaults: UserDefaults = .standard, positions: PositionStore? = nil) {
         self.defaults = defaults
         self.positions = positions
+        writer = positions.map(PlaceWriter.init(store:))
         settings = ReaderSettings.load(defaults)
         let frame = NSRect(origin: .zero, size: Self.contentSize)
         layout = BookFrame(in: frame.size, settings: settings, fullscreen: false)
@@ -266,6 +259,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             guard let self, let book, self.session?.book === book else { return }
             self.relocated(to: location)
         }
+        // A link is a jump the window didn't make, so it counts as one: when it's followed and when
+        // it lands.
+        book.onLink = { [weak self, weak book] in
+            guard let self, let book, self.session?.book === book else { return }
+            self.places.turned()
+        }
         hint.isHidden = true
         placeViews()
         applyColors(animated: false)
@@ -283,16 +282,21 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                 guard !Task.isCancelled, self.session?.book === book else { return }
                 self.session?.bookID = bookID
                 // The book opens on the page that holds its place, which starts before it. A place it
-                // couldn't find goes nowhere when a layout change goes back to it.
-                self.places.moved(to: start ?? location.cfi)
-                let opened = self.places.capture(start ?? location.cfi)
+                // couldn't find is replaced by where it opened.
+                let place = await book.place() ?? location.cfi
+                guard !Task.isCancelled, self.session?.book === book else { return }
+                let isLost = start != nil && place != start
+                self.places.moved(to: place)
+                let opened = self.places.capture(place)
                 self.window?.title = url.deletingPathExtension().lastPathComponent
                 self.show(location)
                 await book.settle()
                 guard !Task.isCancelled, self.session?.book === book else { return }
                 self.openingBook = nil
                 // A page turned as the book settled is where the reader now is.
-                if self.places.target(opened) == nil, let here = book.currentLocation { self.keep(here) }
+                if isLost || self.places.hasTurned(since: opened), let here = book.currentLocation {
+                    self.keep(here)
+                }
                 NSAnimationContext.runAnimationGroup({ context in
                     context.duration = Self.motion
                     context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -351,21 +355,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     /// The reader is at `location` now: layout changes go back to it, and it's saved.
     private func keep(_ location: ReaderLocation) {
         places.moved(to: location.cfi)
-        guard let positions, let bookID = session?.bookID else { return }
-        unsaved = Unsaved(location: location, bookID: bookID)
-        guard saving == nil else { return }
-        saving = Task { [weak self] in
-            while let self, let next = self.unsaved {
-                self.unsaved = nil
-                await positions.save(next.location, bookID: next.bookID)
-            }
-            self?.saving = nil
-        }
+        guard let bookID = session?.bookID else { return }
+        writer?.save(location, bookID: bookID)
     }
 
-    /// Returns once the reader's place is written. The app waits for this as it quits.
+    /// Returns once the turns, jumps and restyles under way are over and the reader's place is
+    /// written. The app waits for this as it quits.
     func keepPlace() async {
-        await saving?.value
+        await session?.turns.landed()
+        await jumping?.value
+        await restyling?.value
+        await writer?.written()
     }
 
     // MARK: Commands and keys
@@ -414,7 +414,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
-    private func turn(_ direction: TurnDirection, isRepeat: Bool = false) {
+    func turn(_ direction: TurnDirection, isRepeat: Bool = false) {
         guard !isCovered, let session else { return }
         places.turned()
         session.turns.turn(direction, isRepeat: isRepeat)
@@ -660,7 +660,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         if self.session?.book === book, let here = book.currentLocation {
             show(here)
             // A page turned while the layout changed is where the reader now is.
-            if places.target(capture) == nil { keep(here) }
+            if places.hasTurned(since: capture) { keep(here) }
             await session.cache.refresh(around: here)
         }
     }

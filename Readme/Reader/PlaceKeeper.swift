@@ -45,6 +45,12 @@ struct PlaceKeeper {
         return capture.cfi
     }
 
+    /// True if a page has turned since `capture`. With nothing captured, nothing is known to have.
+    func hasTurned(since capture: Capture?) -> Bool {
+        guard let capture else { return false }
+        return capture.turns != turns
+    }
+
     mutating func beginLayoutChange(at cfi: String?) {
         guard !isChangingLayout else { return }
         isChangingLayout = true

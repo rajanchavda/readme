@@ -147,6 +147,14 @@ final class TurnCoordinator {
         waitingTask = Task { [weak self] in await self?.waitAndTurn(direction) }
     }
 
+    /// Returns once the turns and jumps asked for so far have moved the book: a turn waiting for its
+    /// images makes its move, then every move under way lands and settles. A page still held by the
+    /// fingers isn't a turn yet.
+    func landed() async {
+        await waitingTask?.value
+        for move in Array(underWay.values) { await move.value }
+    }
+
     /// Follows the fingers. What arrives with no swipe to act on, such as the rest of a gesture whose
     /// swipe a press has ended, is ignored.
     func follow(_ signal: SwipeSignal) {

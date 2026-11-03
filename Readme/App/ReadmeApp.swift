@@ -1,6 +1,40 @@
 import AppKit
 import SwiftUI
 
+/// Waits for work to finish, or for a time, whichever comes first, then goes on once.
+enum Deadline {
+    @MainActor
+    static func wait(
+        for work: @escaping @MainActor () async -> Void, atMost bound: Duration,
+        then: @escaping @MainActor () -> Void
+    ) {
+        let once = Once(then)
+        Task { @MainActor in
+            await work()
+            once.run()
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: bound)
+            once.run()
+        }
+    }
+
+    @MainActor
+    private final class Once {
+        private var action: (@MainActor () -> Void)?
+
+        init(_ action: @escaping @MainActor () -> Void) {
+            self.action = action
+        }
+
+        func run() {
+            let action = self.action
+            self.action = nil
+            action?()
+        }
+    }
+}
+
 /// Anchor class so tests can locate the app bundle via `Bundle(for:)`.
 final class BundleToken {}
 
@@ -74,11 +108,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await reader.open(url) }
     }
 
+    private static let quitPatience: Duration = .seconds(2)
+
     /// The reader's place is saved as they read, and this waits for the last of it to be written.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let reader else { return .terminateNow }
-        Task {
-            await reader.keepPlace()
+        // A stuck page mustn't stop the app quitting.
+        Deadline.wait(for: { await reader.keepPlace() }, atMost: Self.quitPatience) {
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

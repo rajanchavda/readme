@@ -105,3 +105,24 @@ private let here = ReaderLocation(
 }
 
 private final class PositionStoreToken {}
+
+@MainActor
+@Suite struct PlaceWriterTests {
+    /// Places for two books given one after the other, faster than they're written, are both kept.
+    @Test func eachBookKeepsItsNewestPlace() async throws {
+        let folder = try positionsFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = PositionStore(directory: folder)
+        let writer = PlaceWriter(store: store)
+        var later = here
+        later.cfi = "epubcfi(/6/16!/4/2,/1:0,/1:80)"
+        var other = here
+        other.cfi = "epubcfi(/6/4!/4/2,/1:0,/1:20)"
+        writer.save(here, bookID: "a")
+        writer.save(other, bookID: "b")
+        writer.save(later, bookID: "a")
+        await writer.written()
+        #expect(await store.location(bookID: "a") == later)
+        #expect(await store.location(bookID: "b") == other)
+    }
+}

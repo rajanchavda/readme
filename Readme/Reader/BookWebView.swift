@@ -23,6 +23,8 @@ enum BookWebViewError: Error, Equatable {
 @MainActor
 final class BookWebView: NSView {
     var onRelocate: ((ReaderLocation) -> Void)?
+    /// Hears a link in the book being followed, and again when it's landed, after its relocation.
+    var onLink: (() -> Void)?
     private var relocationListeners: [(ReaderLocation) -> Void] = []
     /// Counts relocations heard, so a reply can tell whether one came in while it was on its way.
     private var relocationsHeard = 0
@@ -324,6 +326,13 @@ final class BookWebView: NSView {
         }
     }
 
+    /// Where the reader is, as the page holds it across layout changes: the place last gone to, or
+    /// the start of where a turn landed. A book opened at a place it couldn't find has where it opened.
+    func place() async -> String? {
+        guard isOpen else { return nil }
+        return try? await call("return readmeBridge.place()", as: String.self)
+    }
+
     // MARK: Contents and styles
 
     func toc() async -> [TOCEntry] {
@@ -436,6 +445,8 @@ final class BookWebView: NSView {
         switch (event.type, event.location) {
         case ("ready", _):
             readerIsReady(load: event.load)
+        case ("link", nil):
+            onLink?()
         case ("relocate", let location?):
             relocationsHeard += 1
             currentLocation = location

@@ -132,6 +132,16 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(places.target(places.endLayoutChange()) == nil)
     }
 
+    /// A restyle with nothing captured, as while a book opens, hasn't seen a turn.
+    @Test func noCaptureHasSeenNoTurn() {
+        var places = PlaceKeeper()
+        let capture = places.capture("a")
+        #expect(!places.hasTurned(since: capture))
+        places.turned()
+        #expect(places.hasTurned(since: capture))
+        #expect(!places.hasTurned(since: nil))
+    }
+
     /// A layout change shows the place on whichever page now holds it, and that page's start isn't
     /// where the reader is.
     @Test func theReadersPlaceOutlivesWhatsShown() {
@@ -141,6 +151,41 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(places.place(showing: "shown") == "a")
         places.moved(to: nil)
         #expect(places.place(showing: "shown") == "shown")
+    }
+}
+
+/// Quitting waits for the reader's place to be written, but not for ever.
+@MainActor
+@Suite struct DeadlineTests {
+    @Test func workThatNeverEndsIsLeftAtTheBound() async {
+        let started = ContinuousClock.now
+        let calls = Counter()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            Deadline.wait(for: { try? await Task.sleep(for: .seconds(30)) }, atMost: .milliseconds(100)) {
+                calls.count += 1
+                if calls.count == 1 { done.resume() }
+            }
+        }
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(calls.count == 1)
+    }
+
+    @Test func workThatEndsGoesOnOnce() async throws {
+        let started = ContinuousClock.now
+        let calls = Counter()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            Deadline.wait(for: {}, atMost: .milliseconds(300)) {
+                calls.count += 1
+                if calls.count == 1 { done.resume() }
+            }
+        }
+        #expect(ContinuousClock.now - started < .milliseconds(300))
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(calls.count == 1)
+    }
+
+    private final class Counter {
+        var count = 0
     }
 }
 

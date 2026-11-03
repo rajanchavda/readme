@@ -150,18 +150,51 @@ private func scratchDefaults() -> UserDefaults {
         #expect(await store.location(bookID: id)?.cfi == saved.cfi)
     }
 
-    @Test func aTurnIsSaved() async throws {
+    /// A turn the reader asks for and closes the window on, before its curl or its move is over, is
+    /// still saved by the time quitting would go ahead.
+    @Test(arguments: [1, 3])
+    func aTurnStillLandingIsSaved(turns count: Int) async throws {
         let folder = try positionsFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = PositionStore(directory: folder)
         let (reader, id) = try await openReader(store: store)
         _ = try await markerHalfway(reader)
-        let book = try #require(reader.book)
-        let turned = try #require(await book.next())
-        // Closed straight after the turn, before anything has had time to be written.
+        await reader.keepPlace()
+        let before = try #require(reader.location)
+        for _ in 0..<count { reader.turn(.forward) }
         reader.window?.close()
         await reader.keepPlace()
-        #expect(await store.location(bookID: id)?.cfi == turned.cfi)
+        let saved = try #require(await store.location(bookID: id))
+        #expect(saved.page > before.page)
+        #expect(saved.cfi == reader.location?.cfi)
+    }
+
+    /// A link in the book is a move of the reader's, so a restyle under way doesn't take them back.
+    @Test func aLinkFollowedDuringARestyleIsKept() async throws {
+        let folder = try positionsFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = PositionStore(directory: folder)
+        let (reader, id) = try await openReader(store: store)
+        defer { reader.window?.close() }
+        _ = try await markerHalfway(reader)
+        let book = try #require(reader.book)
+        reader.change(settings { $0.fontSize = 26 })
+        _ = try await book.call(
+            """
+            const doc = readmeBridge.currentDocument()
+            const link = doc.createElement('a')
+            link.setAttribute('href', 'ch20.xhtml')
+            link.style.display = 'none'
+            doc.body.append(link)
+            link.click()
+            link.remove()
+            """, as: Bool.self)
+        try await settle(reader)
+        try await Task.sleep(for: .milliseconds(300))
+        try await settle(reader)
+        #expect(reader.location?.chapterTitle == "Chapter 20")
+        await reader.keepPlace()
+        #expect(await store.location(bookID: id)?.chapterTitle == "Chapter 20")
     }
 
     @Test func aPlaceThatNoLongerResolvesOpensNearestIt() async throws {
@@ -181,6 +214,11 @@ private func scratchDefaults() -> UserDefaults {
             defer { reader.window?.close() }
             let opened = try #require(reader.location, "\(cfi)")
             #expect(opened.fraction < 0.5, "\(cfi)")
+            // Where it opened replaces the place that's gone.
+            await reader.keepPlace()
+            let saved = await store.location(bookID: id)?.cfi
+            #expect(saved == opened.cfi || saved == cfi && !opened.isAtStart, "\(cfi): saved \(saved ?? "-")")
+            if cfi.isEmpty || cfi == "not a cfi" || cfi.contains("999!") { #expect(saved == opened.cfi, "\(cfi)") }
             // The book still works: its look can change, which keeps it where it opened, and its
             // pages turn.
             reader.change(settings { $0.fontSize = 26 })
