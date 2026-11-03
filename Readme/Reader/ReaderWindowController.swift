@@ -261,7 +261,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         }
         // A link is a jump the window didn't make, so it counts as one: when it's followed and when
         // it lands.
-        book.onLink = { [weak self, weak book] in
+        book.onLink = { [weak self, weak book] _ in
             guard let self, let book, self.session?.book === book else { return }
             self.places.turned()
         }

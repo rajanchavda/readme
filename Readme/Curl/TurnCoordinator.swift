@@ -110,6 +110,9 @@ final class TurnCoordinator {
     private var moveNumber = 0
     /// The latest jump, which moves asked for after it wait for.
     private var jumping: Task<Void, Never>?
+    /// Links in the book followed and not yet landed, and the jumps waiting for them to.
+    private var linksLanding = 0
+    private var linkWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// The paper's colour, which the back of a single turning page shows.
     var pageColor = CGColor(gray: 1, alpha: 1)
@@ -133,6 +136,9 @@ final class TurnCoordinator {
             webView.takeSnapshot(with: configuration) { _, _ in finished() }
         }
         cache.onUnforeseenMove = { [weak self] in self?.bookMovedElsewhere() }
+        book.addLinkListener { [weak self] landed in
+            if landed { self?.linkLanded() } else { self?.linkFollowed() }
+        }
     }
 
     /// `isRepeat` is a held key's repeat. Pages stop when the key is let go, so a repeat is dropped,
@@ -376,6 +382,11 @@ final class TurnCoordinator {
     /// play out over the jump's place. Turns asked for meanwhile wait for the jump and turn from where
     /// it lands, with no curl until that place's images are ready.
     func jump(_ go: @escaping () async -> ReaderLocation?) async -> ReaderLocation? {
+        await startJump(go)?.value
+    }
+
+    /// Starts the jump at once, so a press straight after it waits for it. Nil if there's no book.
+    private func startJump(_ go: @escaping () async -> ReaderLocation?) -> Task<ReaderLocation?, Never>? {
         guard book.currentLocation != nil else { return nil }
         finishEarlierTurns()
         let earlier = Array(underWay.values)
@@ -393,7 +404,31 @@ final class TurnCoordinator {
         let done = Task { _ = await jump.value }
         underWay[number] = done
         jumping = done
-        return await jump.value
+        return jump
+    }
+
+    /// A link in the book waits in the page's queue, perhaps behind a restyle, and the book still shows
+    /// the old place until it lands. It's a jump the coordinator didn't make: no curl starts from the
+    /// old place's images meanwhile, and turns pressed meanwhile turn from where it lands.
+    private func linkFollowed() {
+        linksLanding += 1
+        _ = startJump { [weak self] in
+            await self?.linksLanded()
+            return self?.book.currentLocation
+        }
+    }
+
+    private func linkLanded() {
+        linksLanding = max(0, linksLanding - 1)
+        guard linksLanding == 0 else { return }
+        let waiters = linkWaiters
+        linkWaiters = []
+        waiters.forEach { $0.resume() }
+    }
+
+    private func linksLanded() async {
+        guard linksLanding > 0 else { return }
+        await withCheckedContinuation { linkWaiters.append($0) }
     }
 
     /// Waits for the web view to have the landed page on screen, then uncovers it.

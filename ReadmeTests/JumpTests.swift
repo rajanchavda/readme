@@ -107,6 +107,28 @@ private struct Started {
         try await expectCurlsMatchTheBook(turns, [.forward])
     }
 
+    /// A link waits in the page's queue behind commands already there, and a press made meanwhile
+    /// turns from where the link lands, not from where the book still is.
+    @Test func aPressWhileALinkWaitsInLineNeverCurlsFromTheOldPlace() async throws {
+        defer { window.orderOut(nil) }
+        let turns = try await openWithFullBuffer(at: 0.3)
+        let old = try oldImages()
+        let here = try #require(view.currentLocation)
+        var heard: [ReaderLocation] = []
+        view.addRelocationListener { heard.append($0) }
+        // Moves that go nowhere, but take their time, ahead of the link.
+        _ = try await view.call(
+            """
+            for (let i = 0; i < 4; i++) readmeBridge.goToCFI(cfi);
+            """ + "\n" + clickScript, arguments: ["href": "ch20.xhtml", "cfi": here.cfi], as: Bool.self)
+        try await expectNoOldImages(old, whenTurning: .forward, with: turns)
+        let linked = try #require(heard.first { $0.chapterTitle == "Chapter 20" }, "The link went nowhere")
+        let landed = try #require(view.currentLocation)
+        #expect(landed.chapterTitle == "Chapter 20")
+        #expect(landed.cfi != linked.cfi, "The press didn't turn from the link's place")
+        #expect(landed.page > linked.page)
+    }
+
     @Test func aPressStraightAfterGoingToAFractionNeverCurlsFromTheOldPlace() async throws {
         defer { window.orderOut(nil) }
         let turns = try await openWithFullBuffer(at: 0.5)

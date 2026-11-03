@@ -348,9 +348,10 @@ const open = async (url, cfi, css, columns, width) => {
     view.addEventListener('link', event => {
         event.preventDefault()
         const { href } = event.detail
-        const tell = () => globalThis.webkit?.messageHandlers?.readme?.postMessage(JSON.stringify({ type: 'link' }))
-        tell()
-        navigate(() => view.goTo(href)).catch(error => console.warn(error)).finally(tell)
+        const tell = landed => globalThis.webkit?.messageHandlers?.readme?.postMessage(
+            JSON.stringify({ type: 'link', landed }))
+        tell(false)
+        navigate(() => view.goTo(href)).catch(error => console.warn(error)).finally(() => tell(true))
     })
     // Otherwise a big image can be painted blank and repainted later when it's decoded, which a page
     // that isn't visible may never do, leaving a gap in a snapshot.

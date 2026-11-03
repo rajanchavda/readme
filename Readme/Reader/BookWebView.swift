@@ -24,8 +24,10 @@ enum BookWebViewError: Error, Equatable {
 final class BookWebView: NSView {
     var onRelocate: ((ReaderLocation) -> Void)?
     /// Hears a link in the book being followed, and again when it's landed, after its relocation.
-    var onLink: (() -> Void)?
+    /// `landed` says which.
+    var onLink: ((_ landed: Bool) -> Void)?
     private var relocationListeners: [(ReaderLocation) -> Void] = []
+    private var linkListeners: [(_ landed: Bool) -> Void] = []
     /// Counts relocations heard, so a reply can tell whether one came in while it was on its way.
     private var relocationsHeard = 0
     private(set) var currentLocation: ReaderLocation?
@@ -103,6 +105,11 @@ final class BookWebView: NSView {
     /// window acts on it.
     func addRelocationListener(_ listener: @escaping (ReaderLocation) -> Void) {
         relocationListeners.append(listener)
+    }
+
+    /// Link listeners hear of a link before `onLink` does, as relocation listeners do.
+    func addLinkListener(_ listener: @escaping (_ landed: Bool) -> Void) {
+        linkListeners.append(listener)
     }
 
     // MARK: Opening
@@ -446,7 +453,9 @@ final class BookWebView: NSView {
         case ("ready", _):
             readerIsReady(load: event.load)
         case ("link", nil):
-            onLink?()
+            let landed = event.landed ?? true
+            linkListeners.forEach { $0(landed) }
+            onLink?(landed)
         case ("relocate", let location?):
             relocationsHeard += 1
             currentLocation = location
@@ -473,6 +482,7 @@ final class BookWebView: NSView {
         var type: String
         var location: ReaderLocation?
         var load: String?
+        var landed: Bool?
     }
 }
 
