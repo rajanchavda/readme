@@ -6,7 +6,7 @@ import OSLog
 /// thread, and each save replaces its file whole, so a file is either the old place or the new one.
 /// One that can't be read is as good as none.
 actor PositionStore {
-    private let directory: URL
+    private nonisolated let directory: URL
     private static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "PositionStore")
     private static let plain = CharacterSet(
         charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
@@ -33,13 +33,20 @@ actor PositionStore {
         return try? JSONDecoder().decode(ReaderLocation.self, from: data)
     }
 
+    /// The same, read at once on the caller's thread, for launching straight into a book. A save
+    /// under way is either read whole or not at all.
+    nonisolated func locationNow(bookID: String) -> ReaderLocation? {
+        guard let data = try? Data(contentsOf: file(for: bookID)) else { return nil }
+        return try? JSONDecoder().decode(ReaderLocation.self, from: data)
+    }
+
     func remove(bookID: String) {
         try? FileManager.default.removeItem(at: file(for: bookID))
     }
 
     /// Anything but letters, digits, `-` and `_` is percent-encoded, so every ID has a file of its own
     /// in the folder.
-    private func file(for bookID: String) -> URL {
+    private nonisolated func file(for bookID: String) -> URL {
         let name = bookID.addingPercentEncoding(withAllowedCharacters: Self.plain) ?? bookID
         return directory.appendingPathComponent(name + ".json", isDirectory: false)
     }

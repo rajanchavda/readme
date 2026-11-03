@@ -15,6 +15,14 @@ struct LibraryView: View {
         self.init(library: library, importer: importer, onOpen: onOpen, previewing: [])
     }
 
+    /// With notices the app can add to, as it does when a book on the shelf won't open.
+    init(library: LibraryStore, importer: BookImporter, drops: ShelfDrops, onOpen: @escaping (Book) -> Void) {
+        self.library = library
+        self.importer = importer
+        self.onOpen = onOpen
+        _drops = StateObject(wrappedValue: drops)
+    }
+
     /// Where a failure message can be put on the shelf to see how it looks.
     init(library: LibraryStore, importer: BookImporter, onOpen: @escaping (Book) -> Void, previewing: [ImportError]) {
         self.library = library

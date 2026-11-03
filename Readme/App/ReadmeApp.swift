@@ -90,9 +90,9 @@ struct ReadmeApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var reader: ReaderWindowController?
+    private var app: AppCoordinator?
 
-    /// Tests are hosted in the app, and shouldn't have a reader window in their way.
+    /// Tests are hosted in the app, and shouldn't have a window in their way.
     private var isTesting: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
@@ -103,50 +103,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if !isTesting { showReader() }
+        if !isTesting { coordinator().launch() }
     }
 
+    /// Books dropped on the Dock icon, or opened from the Finder.
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first else { return }
-        let reader = showReader()
-        Task { await reader.open(url) }
+        guard !isTesting, !urls.isEmpty else { return }
+        coordinator().open(urls)
     }
 
     private static let quitPatience: Duration = .seconds(2)
 
-    /// The reader's place is saved as they read, and this waits for the last of it to be written.
+    /// The reader's place and the library are saved as they read, and this waits for the last of
+    /// them to be written.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let reader else { return .terminateNow }
+        guard let app else { return .terminateNow }
         // A stuck page mustn't stop the app quitting.
-        Deadline.wait(for: { await reader.keepPlace() }, atMost: Self.quitPatience) {
+        Deadline.wait(for: { await app.prepareToQuit() }, atMost: Self.quitPatience) {
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
     }
 
+    /// Clicking the Dock icon brings the window back, showing what it showed.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        showReader()
+        guard !isTesting else { return true }
+        coordinator().showWindow()
         return true
     }
 
+    /// Closing the window leaves the app running, as a Mac app does.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        !isTesting
+        false
     }
 
     func chooseBook() {
-        showReader().chooseBook()
+        guard !isTesting else { return }
+        coordinator().chooseBook()
     }
 
     func perform(_ command: ReaderCommand) {
-        reader?.perform(command)
+        app?.reader.perform(command)
     }
 
-    /// Until the library arrives, launching shows the reading window, which asks for a book.
-    @discardableResult
-    private func showReader() -> ReaderWindowController {
-        let window = reader ?? ReaderWindowController(positions: isTesting ? nil : .standard)
-        reader = window
-        window.show()
-        return window
+    private func coordinator() -> AppCoordinator {
+        if let app { return app }
+        let made = AppCoordinator.standard()
+        app = made
+        return made
     }
 }

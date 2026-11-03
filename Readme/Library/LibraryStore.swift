@@ -11,6 +11,8 @@ final class LibraryStore: ObservableObject {
 
     private let directory: URL
     private let positions: PositionStore
+    /// The picture of the spread each book was left on, for launching straight back into it.
+    let spreads: LastSpreadCache
     private let now: () -> Date
     private var removing: Task<Void, Never>?
     private let file: LibraryFile
@@ -29,6 +31,7 @@ final class LibraryStore: ObservableObject {
         self.directory = directory
         self.positions = positions ?? PositionStore(directory: directory.appendingPathComponent("Positions", isDirectory: true))
         self.now = now
+        spreads = LastSpreadCache(directory: directory.appendingPathComponent("LastSpreads", isDirectory: true))
         file = LibraryFile(directory: directory)
         books = Self.load(from: directory.appendingPathComponent("library.json", isDirectory: false))
     }
@@ -59,7 +62,15 @@ final class LibraryStore: ObservableObject {
         books.first { $0.id == id }
     }
 
-    /// Takes the book out, and deletes its copy, its cover and its saved place.
+    /// Takes out, quietly, every book whose copy has gone, and returns them.
+    @discardableResult
+    func removeMissing(fileExists: (URL) -> Bool) -> [Book] {
+        let missing = books.filter { !fileExists(fileURL(for: $0)) }
+        for book in missing { remove(id: book.id) }
+        return missing
+    }
+
+    /// Takes the book out, and deletes its copy, its cover, its saved place and its last spread.
     func remove(id: String) {
         guard let book = book(id: id) else { return }
         books.removeAll { $0.id == id }
@@ -67,17 +78,18 @@ final class LibraryStore: ObservableObject {
         let copy = fileURL(for: book)
         let cover = coverURL(for: book)
         let previous = removing
-        removing = Task { [positions] in
+        removing = Task { [positions, spreads] in
             await previous?.value
             await Task.detached {
                 try? FileManager.default.removeItem(at: copy)
                 try? FileManager.default.removeItem(at: cover)
             }.value
             await positions.remove(bookID: id)
+            await spreads.remove(bookID: id)
         }
     }
 
-    /// Returns once the copies, covers and saved places of every book removed so far are gone.
+    /// Returns once the copies, covers, saved places and last spreads of every book removed so far are gone.
     func removed() async {
         await removing?.value
     }

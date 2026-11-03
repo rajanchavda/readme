@@ -127,7 +127,7 @@ private func someBook(_ n: Int = 0) -> Book {
             try? await Task.sleep(for: .milliseconds(400))
             return files.map { _ in .success(someBook()) }
         })
-        let running = Task { await d.add([file, file, file]) }
+        let running = Task { _ = await d.add([file, file, file]) }
         try await Task.sleep(for: .milliseconds(250))
         #expect(d.adding == 3)
         #expect(ShelfDrops.progressLine(3) == "Adding 3 books…")

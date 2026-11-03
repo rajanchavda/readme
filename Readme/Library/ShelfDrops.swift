@@ -27,8 +27,9 @@ final class ShelfDrops: ObservableObject {
     }
 
     /// Imports `files`. Books already in the library come back as successes, and aren't a problem.
-    func add(_ files: [URL]) async {
-        guard !files.isEmpty else { return }
+    @discardableResult
+    func add(_ files: [URL]) async -> [Result<Book, ImportError>] {
+        guard !files.isEmpty else { return [] }
         pending += files.count
         let count = files.count
         let delay = progressDelay
@@ -46,9 +47,12 @@ final class ShelfDrops: ObservableObject {
             return nil
         }
         if !failures.isEmpty { show(failures) }
+        return results
     }
 
-    private func show(_ failures: [ImportError]) {
+    /// Shows a failure from elsewhere, such as a book on the shelf that couldn't be opened.
+    func show(_ failures: [ImportError]) {
+        guard !failures.isEmpty else { return }
         for error in failures where !notice.contains(error) { notice.append(error) }
         fading?.cancel()
         let duration = noticeDuration

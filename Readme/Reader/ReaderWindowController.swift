@@ -10,6 +10,10 @@ import WebKit
 /// Every change to the look, whether theme, font, size, line width, window size or fullscreen, lays the
 /// book out again, goes back to the spread it was on and refreshes the curl's images, so the next curl
 /// never shows the old look.
+///
+/// It's the app's one window, and the library lies over the book when it's shown, the two crossfading.
+/// A book from the library opens behind the picture of the spread it was last left on, if one was kept
+/// in this look, so it appears at once and the live page fades in over it once it has landed.
 @MainActor
 final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     /// One open book and everything turning its pages. Each book gets a new one.
@@ -20,9 +24,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let turns: TurnCoordinator
         /// Which book it is, for its place. Known once the book has been read.
         var bookID: String?
+        /// The library's book, if it's one from the library.
+        var record: Book?
     }
 
     var onShowLibrary: (() -> Void)?
+    /// Hears where the reader is in a library book: when it has opened, and at each place kept.
+    var onRead: ((_ bookID: String, ReaderLocation) -> Void)?
+    /// Hears that a library book couldn't be opened, as when its file is no longer a book.
+    var onOpenFailed: ((Book) -> Void)?
 
     /// The mockup's stage, which makes the book the size the curl was approved at.
     private static let contentSize = NSSize(width: 1048, height: 620)
@@ -32,9 +42,26 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     /// How long the window has to keep its size before the curl's images are made again.
     private static let resizeQuiet: Duration = .milliseconds(150)
     private static let paintTimeout: Duration = .milliseconds(500)
+    /// The picture of the spread a book was left on is taken at most this often.
+    private static let spreadInterval: Duration = .seconds(1)
+    private static let noticeDuration: Duration = .seconds(4)
     private static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "ReaderWindowController")
 
+    private let root = NSView()
     private let desk: DeskView
+    /// The library, over the desk, while it's shown.
+    private var libraryHost: NSView?
+    private(set) var isShowingLibrary = false
+    /// The last spread a book was left on, shown under its page until the page is ready.
+    private let placeholder = PassThroughView()
+    private var placeholderBookID: String?
+    private let notice: NSTextField
+    private var noticeFading: Task<Void, Never>?
+    private let library: LibraryStore?
+    private var spreads: LastSpreadCache? { library?.spreads }
+    private var spreadMemory: Task<Void, Never>?
+    private var spreadWanted = false
+    private var lastSpreadAttempt: ContinuousClock.Instant?
     private let cover = PassThroughView()
     private let spine = SpineView()
     private let progressBar = PassThroughView()
@@ -85,9 +112,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var isOverToolbar = false
     private var areTrafficLightsShown = true
 
-    init(defaults: UserDefaults = .standard, positions: PositionStore? = nil) {
+    /// Library books are opened from `library`, and it keeps their last spreads.
+    init(defaults: UserDefaults = .standard, positions: PositionStore? = nil, library: LibraryStore? = nil) {
         self.defaults = defaults
         self.positions = positions
+        self.library = library
         writer = positions.map(PlaceWriter.init(store:))
         settings = ReaderSettings.load(defaults)
         let frame = NSRect(origin: .zero, size: Self.contentSize)
@@ -105,21 +134,35 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
         desk = DeskView(frame: frame, bookFrame: layout.frame)
         desk.autoresizesSubviews = false
-        window.contentView = desk
+        desk.autoresizingMask = [.width, .height]
+        root.frame = frame
+        root.wantsLayer = true
+        root.addSubview(desk)
+        window.contentView = root
 
         hint = NSTextField(labelWithString: "Press ⌘O to open a book")
         hint.textColor = NSColor(srgbRed: 0.96, green: 0.94, blue: 0.89, alpha: 0.7)
         hint.font = .systemFont(ofSize: 15)
+        // Only for a file that couldn't be opened: the library is where books are found.
+        hint.isHidden = true
+        notice = NSTextField(labelWithString: "")
+        notice.textColor = hint.textColor
+        notice.font = .systemFont(ofSize: 14)
+        notice.alignment = .center
 
         toolbarModel = ReaderToolbarModel(settings: settings)
         toolbar = ReaderToolbarHost(model: toolbarModel)
         super.init(window: window)
 
-        for view in [cover, spine, progressBar] { view.wantsLayer = true }
+        for view in [cover, spine, progressBar, placeholder] { view.wantsLayer = true }
         cover.isHidden = true
+        placeholder.isHidden = true
+        placeholder.layer?.contentsGravity = .resize
         desk.addSubview(spine)
         desk.addSubview(hint)
         desk.addSubview(progressBar)
+        notice.alphaValue = 0
+        desk.addSubview(notice)
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         desk.addSubview(toolbar)
         NSLayoutConstraint.activate([
@@ -163,12 +206,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         // The desk hears the mouse in an inactive window too, for the traffic lights. The toolbar
         // only wakes in the window being read.
         desk.onMouseMoved = { [weak self] point in
-            guard let self else { return }
+            guard let self, !self.isShowingLibrary else { return }
             if self.window?.isKeyWindow == true { self.wake() }
             self.followPointer(to: point)
         }
         desk.onMouseExited = { [weak self] in
-            guard let self else { return }
+            guard let self, !self.isShowingLibrary else { return }
             self.sleep()
             if !self.isFullscreen { self.showTrafficLights(false, animated: true) }
         }
@@ -192,7 +235,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         // A monitor, because the web view takes scrolling over the book. Nothing in it scrolls, as
         // the book's in pages.
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            guard let self, let window = self.window else { return event }
+            guard let self, let window = self.window, !self.isShowingLibrary else { return event }
             let route = ScrollRoute(
                 isOurWindow: event.window === window, hasSheet: window.attachedSheet != nil,
                 contents: self.contentsPlace(of: event))
@@ -216,20 +259,43 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func chooseBook() {
-        guard let window else { return }
+    /// Asks for an EPUB in a sheet, and hands it to `chosen`.
+    func chooseBook(_ chosen: @escaping (URL) -> Void) {
+        guard let window, window.attachedSheet == nil else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "epub") ?? .data]
         panel.allowsMultipleSelection = false
-        panel.beginSheetModal(for: window) { [weak self] response in
+        panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else { return }
-            Task { await self?.open(url) }
+            chosen(url)
         }
     }
 
-    /// Opens a book at `cfi`, or where the reader left it, or at its start. A place that's no longer in
-    /// the book opens it at its start. `Book` replaces the URL once the library arrives.
+    /// The library book that's open, whether or not the library is over it.
+    var openBook: Book? {
+        guard let session, session.book.isBookOpen else { return nil }
+        return session.record
+    }
+
+    /// Opens a library book at `cfi`, or where the reader left it, or at its start, and puts the
+    /// library away. A place that's no longer in the book opens it at the same share of the way
+    /// through. A book that won't open is handed to `onOpenFailed`.
+    func open(_ book: Book, at cfi: String? = nil) async {
+        guard let library else { return }
+        if placeholderBookID != book.id {
+            hidePlaceholder()
+            showLastSpread(of: book)
+        }
+        showBook(animated: true)
+        await open(file: library.fileURL(for: book), record: book, at: cfi)
+    }
+
+    /// Opens a file that isn't in the library, as the tests do.
     func open(_ url: URL, at cfi: String? = nil) async {
+        await open(file: url, record: nil, at: cfi)
+    }
+
+    private func open(file url: URL, record: Book?, at cfi: String?) async {
         opening?.cancel()
         session?.curl.end()
         session?.book.removeFromSuperview()
@@ -245,6 +311,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let curl = CurlView(frame: layout.frame)
         // Shown once it has the book, so an empty white page never flashes up.
         book.alphaValue = 0
+        noticeFading?.cancel()
+        notice.alphaValue = 0
         // The spine's shadow belongs to the pages, so it lies on the book and the cover, and the
         // turning page passes over it. The curl draws its own on the pages beneath.
         desk.addSubview(book, positioned: .below, relativeTo: spine)
@@ -252,7 +320,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         desk.addSubview(curl, positioned: .above, relativeTo: spine)
         let cache = SpreadCache(visible: book)
         let turns = TurnCoordinator(book: book, cache: cache, curl: curl)
-        session = Session(book: book, curl: curl, cache: cache, turns: turns)
+        session = Session(book: book, curl: curl, cache: cache, turns: turns, record: record)
         openingBook = book
         places.moved(to: nil)
         book.onRelocate = { [weak self, weak book] location in
@@ -274,21 +342,30 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             do {
                 guard let self else { return }
                 await book.applyStyles(css: self.css(), columns: self.layout.columns, columnWidth: self.layout.columnWidth)
-                let bookID = await self.bookID(of: url)
-                var start = cfi
-                if start == nil, let bookID { start = await self.positions?.location(bookID: bookID)?.cfi }
+                var bookID = record?.id
+                if bookID == nil { bookID = await self.bookID(of: url) }
+                var saved: ReaderLocation?
+                if let bookID { saved = await self.positions?.location(bookID: bookID) }
+                let start = cfi ?? saved?.cfi
+                // How far through the book the place was, for when the place itself is gone.
+                let share = saved.flatMap { $0.cfi == start ? $0.fraction : nil }
                 guard !Task.isCancelled, self.session?.book === book else { return }
                 let location = try await book.open(url, at: start)
                 guard !Task.isCancelled, self.session?.book === book else { return }
                 self.session?.bookID = bookID
                 // The book opens on the page that holds its place, which starts before it. A place it
-                // couldn't find is replaced by where it opened.
-                let place = await book.place() ?? location.cfi
+                // couldn't find is replaced by where it opened, or by the same share of the way through.
+                var place = await book.place() ?? location.cfi
                 guard !Task.isCancelled, self.session?.book === book else { return }
                 let isLost = start != nil && place != start
+                if isLost, let share, share > 0, let found = await book.go(toFraction: share) {
+                    guard !Task.isCancelled, self.session?.book === book else { return }
+                    place = await book.place() ?? found.cfi
+                    guard !Task.isCancelled, self.session?.book === book else { return }
+                }
                 self.places.moved(to: place)
                 let opened = self.places.capture(place)
-                self.window?.title = url.deletingPathExtension().lastPathComponent
+                self.window?.title = record?.title ?? url.deletingPathExtension().lastPathComponent
                 self.show(location)
                 await book.settle()
                 guard !Task.isCancelled, self.session?.book === book else { return }
@@ -296,17 +373,31 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                 // A page turned as the book settled is where the reader now is.
                 if isLost || self.places.hasTurned(since: opened), let here = book.currentLocation {
                     self.keep(here)
+                } else if let bookID, let here = book.currentLocation {
+                    self.onRead?(bookID, here)
                 }
+                // Over the last spread, if that's showing, so the page never dims on its way in.
                 NSAnimationContext.runAnimationGroup({ context in
                     context.duration = Self.motion
                     context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                     book.animator().alphaValue = 1
-                }, completionHandler: nil)
+                }, completionHandler: { [weak self] in
+                    Task { @MainActor in
+                        guard let self, self.session?.book === book else { return }
+                        self.hidePlaceholder()
+                    }
+                })
                 if let here = book.currentLocation { await cache.refresh(around: here) }
+                self.rememberSpread()
             } catch {
                 Self.log.error("Opening failed: \(String(describing: error), privacy: .public)")
-                guard !Task.isCancelled else { return }
-                self?.showFailure(of: url)
+                guard !Task.isCancelled, let self, self.session?.book === book else { return }
+                if let record {
+                    self.closeFailed()
+                    self.onOpenFailed?(record)
+                } else {
+                    self.showFailure(of: url)
+                }
             }
         }
         self.opening = opening
@@ -314,13 +405,178 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func showFailure(of url: URL) {
-        session?.book.removeFromSuperview()
-        session?.curl.removeFromSuperview()
-        session = nil
-        toolbarModel.timeLeft = nil
+        closeFailed()
         hint.stringValue = "\(url.lastPathComponent) couldn't be opened"
         hint.isHidden = false
         placeViews()
+    }
+
+    private func closeFailed() {
+        session?.book.removeFromSuperview()
+        session?.curl.removeFromSuperview()
+        session = nil
+        hidePlaceholder()
+        toolbarModel.timeLeft = nil
+        window?.title = "Readme"
+        placeViews()
+    }
+
+    // MARK: The library and the last spread
+
+    /// Lays `view` over the desk, to be shown by `showLibrary`.
+    func setLibrary(_ view: NSView) {
+        libraryHost?.removeFromSuperview()
+        view.frame = root.bounds
+        view.autoresizingMask = [.width, .height]
+        view.wantsLayer = true
+        view.isHidden = !isShowingLibrary
+        view.alphaValue = isShowingLibrary ? 1 : 0
+        root.addSubview(view, positioned: .above, relativeTo: desk)
+        libraryHost = view
+    }
+
+    /// Fades the library in over the book, which stays open beneath it at its place.
+    func showLibrary(animated: Bool = true) {
+        guard !isShowingLibrary else { return }
+        isShowingLibrary = true
+        closeContents()
+        closePageField()
+        desk.abandonSwipe()
+        sleep()
+        if let window, window.firstResponder !== window { window.makeFirstResponder(nil) }
+        showTrafficLights(true, animated: animated)
+        Task { await self.flushSpread() }
+        guard let host = libraryHost else { return }
+        host.isHidden = false
+        fade(host, to: 1, animated: animated)
+    }
+
+    /// Fades the library away from over the book that's open.
+    func showBook(animated: Bool = true) {
+        guard isShowingLibrary else { return }
+        isShowingLibrary = false
+        showTrafficLights(isFullscreen, animated: animated)
+        guard let host = libraryHost else { return }
+        fade(host, to: 0, animated: animated) { [weak self] in
+            guard let self, !self.isShowingLibrary else { return }
+            host.isHidden = true
+        }
+    }
+
+    private func fade(_ view: NSView, to alpha: CGFloat, animated: Bool, then done: (@MainActor () -> Void)? = nil) {
+        let moves = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = moves ? Self.motion : 0
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            view.animator().alphaValue = alpha
+        }, completionHandler: {
+            Task { @MainActor in done?() }
+        })
+    }
+
+    /// Everything that changes how the open book's spread looks, as the last spread is kept by.
+    private func spreadSignature() -> String {
+        LastSpreadCache.signature(
+            size: layout.frame.size, scale: window?.backingScaleFactor ?? 2, columns: layout.columns,
+            columnWidth: layout.columnWidth, css: css())
+    }
+
+    /// Shows the picture of the spread `book` was left on, if one was kept in the look the window has
+    /// now. True if it did.
+    @discardableResult
+    func showLastSpread(of book: Book) -> Bool {
+        guard let spreads else { return false }
+        layout = BookFrame(in: desk.bounds.size, settings: settings, fullscreen: isFullscreen)
+        guard let image = spreads.image(bookID: book.id, signature: spreadSignature()) else { return false }
+        placeholderBookID = book.id
+        hint.isHidden = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        placeholder.layer?.contents = image
+        placeholder.isHidden = false
+        // Under the pages, which fade in over it, and under the spine's shadow, as the pages are.
+        if let page = session?.book {
+            desk.addSubview(placeholder, positioned: .below, relativeTo: page)
+        } else {
+            desk.addSubview(placeholder, positioned: .below, relativeTo: spine)
+        }
+        CATransaction.commit()
+        placeViews()
+        applyColors(animated: false)
+        return true
+    }
+
+    private func hidePlaceholder() {
+        placeholderBookID = nil
+        placeholder.isHidden = true
+        placeholder.layer?.contents = nil
+        placeholder.removeFromSuperview()
+        placeViews()
+    }
+
+    var isShowingLastSpread: Bool { placeholderBookID != nil }
+
+    /// Keeps a picture of the spread the reader's on, at most once a `spreadInterval`, and soon after
+    /// the last place asked for.
+    private func rememberSpread() {
+        guard spreads != nil, session?.bookID != nil else { return }
+        spreadWanted = true
+        guard spreadMemory == nil else { return }
+        var wait = Duration.zero
+        if let last = lastSpreadAttempt { wait = max(.zero, Self.spreadInterval - last.duration(to: .now)) }
+        spreadMemory = Task { [weak self] in
+            if wait > .zero { try? await Task.sleep(for: wait) }
+            await self?.writeSpread()
+            self?.spreadMemory = nil
+            if self?.spreadWanted == true { self?.rememberSpread() }
+        }
+    }
+
+    private func writeSpread() async {
+        spreadWanted = false
+        lastSpreadAttempt = .now
+        // A layout change remembers it once it's over.
+        guard let spreads, let session, let bookID = session.bookID, let here = session.book.currentLocation,
+              !isLayingOut
+        else { return }
+        // A book taken off the shelf while it lay open under the library keeps nothing.
+        if session.record != nil, library?.book(id: bookID) == nil { return }
+        var image = session.cache.imagesBelong(to: here) ? session.cache.image(for: .current) : nil
+        if image == nil {
+            // A picture taken mid-curl would be of the wrong page, so it waits for the next chance.
+            guard !session.turns.isTurning else {
+                spreadWanted = true
+                return
+            }
+            image = await snapshot(of: session.book)
+        }
+        guard let image, self.session?.book === session.book, session.book.currentLocation?.cfi == here.cfi,
+              !isLayingOut
+        else { return }
+        spreads.save(image, signature: spreadSignature(), bookID: bookID)
+    }
+
+    /// Takes the picture that's waiting now, and returns once it's written.
+    private func flushSpread() async {
+        if let memory = spreadMemory {
+            memory.cancel()
+            await memory.value
+        }
+        await spreads?.written()
+    }
+
+    /// A quiet line along the bottom of the desk that goes by itself.
+    func showNotice(_ text: String) {
+        notice.stringValue = text
+        notice.sizeToFit()
+        placeViews()
+        fade(notice, to: 1, animated: true)
+        noticeFading?.cancel()
+        noticeFading = Task { [weak self] in
+            try? await Task.sleep(for: Self.noticeDuration)
+            guard !Task.isCancelled, let self else { return }
+            self.fade(self.notice, to: 0, animated: true)
+        }
     }
 
     private func show(_ location: ReaderLocation) {
@@ -357,6 +613,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         places.moved(to: location.cfi)
         guard let bookID = session?.bookID else { return }
         writer?.save(location, bookID: bookID)
+        onRead?(bookID, location)
+        rememberSpread()
     }
 
     /// Returns once the turns, jumps and restyles under way are over and the reader's place is
@@ -366,11 +624,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         await jumping?.value
         await restyling?.value
         await writer?.written()
+        await flushSpread()
     }
 
     // MARK: Commands and keys
 
     func perform(_ command: ReaderCommand) {
+        // Over the library, only what's about the window does anything.
+        if isShowingLibrary && command != .toggleFullscreen && command != .showLibrary { return }
         switch command {
         case .biggerText, .smallerText:
             var changed = settings
@@ -392,7 +653,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func handle(_ event: NSEvent) -> Bool {
-        guard let window, event.window === window, window.attachedSheet == nil,
+        guard let window, event.window === window, window.attachedSheet == nil, !isShowingLibrary,
               let action = KeyAction.of(
                 key: event.charactersIgnoringModifiers ?? "", keyCode: event.keyCode, modifiers: event.modifierFlags,
                 isRepeat: event.isARepeat, isFullscreen: isFullscreen, isTyping: window.firstResponder is NSText,
@@ -570,6 +831,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     // MARK: For tests
 
     var location: ReaderLocation? { session?.book.currentLocation }
+    var deskView: NSView { desk }
     var book: BookWebView? { session?.book }
     var layoutColumns: Int { layout.columns }
     var isShowingContents: Bool { isContentsShown }
@@ -662,6 +924,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             // A page turned while the layout changed is where the reader now is.
             if places.hasTurned(since: capture) { keep(here) }
             await session.cache.refresh(around: here)
+            rememberSpread()
         }
     }
 
@@ -729,7 +992,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             session.curl.frame = layout.frame
         }
         spine.frame = layout.frame
-        spine.isHidden = layout.columns != 2 || session == nil
+        spine.isHidden = layout.columns != 2 || (session == nil && placeholderBookID == nil)
+        placeholder.frame = layout.frame
         if isContentsShown {
             contents.frame = contentsFrame(shown: true)
             contentsScrim.frame = desk.bounds
@@ -739,6 +1003,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             x: ((desk.bounds.width - GoToPageField.size.width) / 2).rounded(),
             y: desk.bounds.height - 52 - GoToPageField.size.height,
             width: GoToPageField.size.width, height: GoToPageField.size.height)
+        notice.frame.origin = NSPoint(
+            x: ((desk.bounds.width - notice.frame.width) / 2).rounded(), y: max(8, (layout.frame.minY - notice.frame.height) / 2).rounded())
         hint.sizeToFit()
         hint.frame.origin = NSPoint(
             x: ((desk.bounds.width - hint.frame.width) / 2).rounded(),
@@ -874,7 +1140,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidExitFullScreen(_ notification: Notification) {
         endLayoutChange()
-        showTrafficLights(false, animated: true)
+        showTrafficLights(isShowingLibrary, animated: true)
     }
 
     /// A transition that doesn't happen leaves the window as it was, and its text size with it.
@@ -882,7 +1148,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         isFullscreen = false
         toolbarModel.isFullscreen = false
         endLayoutChange()
-        showTrafficLights(false, animated: true)
+        showTrafficLights(isShowingLibrary, animated: true)
     }
 
     func windowDidFailToExitFullScreen(_ window: NSWindow) {

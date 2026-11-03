@@ -239,7 +239,7 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         let reader = ReaderWindowController()
         defer { reader.window?.close() }
         await reader.open(try fixture("long.epub"), at: nil)
-        let desk = try #require(reader.window?.contentView)
+        let desk = reader.deskView
         let spine = try #require(desk.subviews.firstIndex { $0 is SpineView })
         let curl = try #require(desk.subviews.firstIndex { $0 is CurlView })
         let book = try #require(desk.subviews.firstIndex { $0 is BookWebView })
