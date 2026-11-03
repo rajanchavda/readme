@@ -340,6 +340,37 @@ final class BookWebView: NSView {
         return try? await call("return readmeBridge.place()", as: String.self)
     }
 
+    // MARK: Library details
+
+    /// What the book says about itself, as the library lists it.
+    struct Info: Decodable, Sendable, Equatable {
+        var title: String?
+        var author: String?
+    }
+
+    func info() async -> Info? {
+        guard isOpen else { return nil }
+        do {
+            return try await call("return readmeBridge.bookInfo()", as: Info.self)
+        } catch {
+            Self.log.error("Reading the book's details failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    /// The cover image as the book holds it, in whatever format that is, or nil if it has none or it
+    /// can't be read in time.
+    func coverData() async -> Data? {
+        guard isOpen else { return nil }
+        do {
+            guard let encoded = try await call("return await readmeBridge.cover()", as: String.self) else { return nil }
+            return Data(base64Encoded: encoded)
+        } catch {
+            Self.log.error("Reading the cover failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
     // MARK: Contents and styles
 
     func toc() async -> [TOCEntry] {

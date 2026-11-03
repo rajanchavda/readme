@@ -443,8 +443,37 @@ const tocEntries = async () => {
     return entries
 }
 
+// A title or a name is a string, or a map from language to string when the book gives it in several.
+const plainText = value => {
+    if (typeof value === 'string') return value.trim() || null
+    if (value && typeof value === 'object') return plainText(Object.values(value)[0])
+    return null
+}
+
+// What the library shows of a book. The first author, as the shelf has room for one.
+const bookInfo = () => {
+    const metadata = book?.metadata ?? {}
+    const author = [].concat(metadata.author ?? [])[0]
+    return { title: plainText(metadata.title), author: plainText(author?.name ?? author) }
+}
+
+// The cover as base64, or null for a book that has none or whose cover can't be read.
+const coverBase64 = () => enqueue(async () => {
+    const blob = await book?.getCover?.().catch(() => null)
+    if (!blob) return null
+    const url = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(blob)
+    })
+    return url.slice(url.indexOf(',') + 1)
+})
+
 globalThis.readmeBridge = {
     open,
+    bookInfo,
+    cover: coverBase64,
     currentDocument,
     location,
     // Where the reader is, which a layout change goes back to. See `place`.

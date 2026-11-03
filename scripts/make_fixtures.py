@@ -38,6 +38,21 @@ DRM_ENCRYPTION = """<?xml version="1.0" encoding="UTF-8"?>
 </encryption>
 """
 
+# Font obfuscation, which every reading system undoes with the book's own identifier. It isn't DRM.
+OBFUSCATION_ENCRYPTION = """<?xml version="1.0" encoding="UTF-8"?>
+<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+            xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+  <enc:EncryptedData>
+    <enc:EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/>
+    <enc:CipherData><enc:CipherReference URI="OEBPS/fixture.ttf"/></enc:CipherData>
+  </enc:EncryptedData>
+  <enc:EncryptedData>
+    <enc:EncryptionMethod Algorithm="http://ns.adobe.com/pdf/enc#RC"/>
+    <enc:CipherData><enc:CipherReference URI="OEBPS/other.ttf"/></enc:CipherData>
+  </enc:EncryptedData>
+</encryption>
+"""
+
 
 def paragraphs(rng, count, words=80):
     return "\n".join(
@@ -315,6 +330,22 @@ def drm_book():
     )
 
 
+def obfuscated_book():
+    """Obfuscated fonts and nothing else listed as encrypted, so it must open as an ordinary book."""
+    write_epub(
+        "obfuscated.epub",
+        "Obfuscated Fonts Book",
+        short_chapters(random.Random(8)),
+        encryption=OBFUSCATION_ENCRYPTION,
+    )
+
+
+def plain_zip():
+    """A zip that holds no book: no mimetype and no container.xml."""
+    with zipfile.ZipFile(OUT / "plain-zip.epub", "w") as archive:
+        write_entry(archive, "notes/hello.txt", "Hello, this is not a book.\n")
+
+
 def spreads_book():
     """Chapters of rising length, so several of them end on a half-empty two-page spread."""
     rng = random.Random(7)
@@ -460,6 +491,8 @@ def main():
     remote_image_book()
     link_hints_book()
     drm_book()
+    obfuscated_book()
+    plain_zip()
     (OUT / "not-an-epub.epub").write_bytes(random.Random(6).randbytes(4096))
 
 
