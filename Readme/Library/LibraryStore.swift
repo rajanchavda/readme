@@ -70,16 +70,25 @@ final class LibraryStore: ObservableObject {
         return missing
     }
 
+    /// Hears a book being taken out, at once, before anything of it is deleted.
+    var onRemove: ((String) -> Void)?
+    /// Waited for before a removed book's files are deleted, so a place still being written for it
+    /// is gone too.
+    var beforeDeleting: (() async -> Void)?
+
     /// Takes the book out, and deletes its copy, its cover, its saved place and its last spread.
     func remove(id: String) {
         guard let book = book(id: id) else { return }
         books.removeAll { $0.id == id }
         save()
+        onRemove?(id)
+        let waitForWrites = beforeDeleting
         let copy = fileURL(for: book)
         let cover = coverURL(for: book)
         let previous = removing
         removing = Task { [positions, spreads] in
             await previous?.value
+            await waitForWrites?()
             await Task.detached {
                 try? FileManager.default.removeItem(at: copy)
                 try? FileManager.default.removeItem(at: cover)

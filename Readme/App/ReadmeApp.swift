@@ -70,15 +70,11 @@ struct ReadmeApp: App {
             }
     }
 
-    /// The reading window's own key monitor sees these keys first. The menu is for finding them, and
-    /// for clicking.
     private func item(_ command: ReaderCommand) -> some View {
-        Button(command.title) { appDelegate.perform(command) }
-            .keyboardShortcut(
-                KeyEquivalent(Character(command.shortcut.key)), modifiers: Self.modifiers(command.shortcut.modifiers))
+        CommandItem(command: command, state: appDelegate.state) { appDelegate.perform(command) }
     }
 
-    private static func modifiers(_ flags: NSEvent.ModifierFlags) -> EventModifiers {
+    static func modifiers(_ flags: NSEvent.ModifierFlags) -> EventModifiers {
         var modifiers: EventModifiers = []
         if flags.contains(.command) { modifiers.insert(.command) }
         if flags.contains(.control) { modifiers.insert(.control) }
@@ -88,9 +84,27 @@ struct ReadmeApp: App {
     }
 }
 
+/// A reader command in the menus. The reading window's own key monitor sees these keys first. The
+/// menu is for finding them, and for clicking. Over the library, only what's about the window is
+/// available.
+private struct CommandItem: View {
+    let command: ReaderCommand
+    @ObservedObject var state: AppState
+    let action: () -> Void
+
+    var body: some View {
+        Button(command.title, action: action)
+            .keyboardShortcut(
+                KeyEquivalent(Character(command.shortcut.key)),
+                modifiers: ReadmeApp.modifiers(command.shortcut.modifiers))
+            .disabled(state.isShowingLibrary && command != .showLibrary && command != .toggleFullscreen)
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var app: AppCoordinator?
+    let state = AppState()
 
     /// Tests are hosted in the app, and shouldn't have a window in their way.
     private var isTesting: Bool {
@@ -148,7 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func coordinator() -> AppCoordinator {
         if let app { return app }
-        let made = AppCoordinator.standard()
+        let made = AppCoordinator.standard(state: state)
         app = made
         return made
     }

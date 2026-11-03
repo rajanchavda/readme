@@ -49,6 +49,12 @@ final class ReadMarker {
     }
 }
 
+/// What the menus show as available.
+@MainActor
+final class AppState: ObservableObject {
+    @Published var isShowingLibrary = false
+}
+
 /// The app's one window and what it shows: the library, or a book. It decides where launching goes,
 /// opens books from the shelf, the Open panel and the Dock, and waits for everything to be written
 /// as the app quits.
@@ -63,8 +69,15 @@ final class AppCoordinator {
         library?.markRead(id: id, location: location)
     }
     private var hasLaunched = false
+    /// The book being opened, from the moment it's asked for until it has landed or failed.
+    private var openingID: String?
+    /// What the menus need to know.
+    let state: AppState
 
-    init(library: LibraryStore, positions: PositionStore, defaults: UserDefaults = .standard) {
+    init(
+        library: LibraryStore, positions: PositionStore, defaults: UserDefaults = .standard, state: AppState = AppState()
+    ) {
+        self.state = state
         self.library = library
         self.positions = positions
         let importer = BookImporter(store: library)
@@ -81,6 +94,13 @@ final class AppCoordinator {
         reader.setLibrary(shelf)
         reader.onShowLibrary = { [weak self] in self?.showLibrary() }
         reader.onRead = { [weak self] id, location in self?.marker.read(id: id, location: location) }
+        reader.onShowingLibraryChange = { [weak self] showing in self?.state.isShowingLibrary = showing }
+        library.onRemove = { [weak self] id in
+            guard let self, self.reader.currentRecordID == id || self.openingID == id else { return }
+            self.openingID = nil
+            self.reader.closeBook()
+        }
+        library.beforeDeleting = { [weak self] in await self?.reader.placesKept() }
         reader.onOpenFailed = { [weak self] _ in
             guard let self else { return }
             self.showLibrary()
@@ -88,8 +108,8 @@ final class AppCoordinator {
         }
     }
 
-    static func standard() -> AppCoordinator {
-        AppCoordinator(library: .standard, positions: .standard)
+    static func standard(state: AppState) -> AppCoordinator {
+        AppCoordinator(library: .standard, positions: .standard, state: state)
     }
 
     var isShowingLibrary: Bool { reader.isShowingLibrary }
@@ -136,14 +156,17 @@ final class AppCoordinator {
     }
 
     /// Opens `book` in the window, at `cfi` or where it was left. The book that's open already only
-    /// has the library taken from over it, and another one has its place kept first.
+    /// has the library taken from over it, one that's still opening is left to finish, and another
+    /// one has its place kept first.
     func open(_ book: Book, at cfi: String? = nil) async {
+        if cfi == nil, openingID == book.id { return }
         if cfi == nil, reader.openBook?.id == book.id {
             reader.showBook()
             return
         }
+        openingID = book.id
+        defer { if openingID == book.id { openingID = nil } }
         marker.flush()
-        await reader.keepPlace()
         await reader.open(book, at: cfi)
     }
 
@@ -192,9 +215,11 @@ final class AppCoordinator {
     /// The reader's place, the library and the last spread, all written. The app waits for this as
     /// it quits.
     func prepareToQuit() async {
-        await reader.keepPlace()
+        // The places first, and the picture of the spread, which can be slow, last.
+        await reader.placesKept()
         marker.flush()
         await library.saved()
         await library.removed()
+        await reader.keepPlace()
     }
 }

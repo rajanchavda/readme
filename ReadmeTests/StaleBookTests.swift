@@ -199,3 +199,81 @@ func spreadImage() throws -> CGImage {
         #expect(spreads.image(bookID: "a", signature: "paper 1048x620@2") == nil)
     }
 }
+
+/// Opening a book more than once, and taking the open book off the shelf.
+@MainActor
+@Suite(.serialized, .timeLimit(.minutes(3))) struct OpenBookTests {
+    @Test func openingTheBookAlreadyOpeningOrOpenLoadsItOnce() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let positions = PositionStore(directory: folder.appendingPathComponent("Positions", isDirectory: true))
+        let library = LibraryStore(directory: folder, positions: positions)
+        let book = try await shelve("long.epub", in: library)
+        let coordinator = AppCoordinator(library: library, positions: positions, defaults: scratchDefaults())
+        defer { coordinator.reader.window?.close() }
+        coordinator.reader.window?.setFrameAutosaveName("")
+        coordinator.showLibrary()
+
+        // A double click: the second arrives while the first is still opening.
+        let first = Task { await coordinator.open(book) }
+        await Task.yield()
+        let second = Task { await coordinator.open(book) }
+        await first.value
+        await second.value
+        #expect(coordinator.reader.loadsStarted == 1)
+        #expect(!coordinator.isShowingLibrary)
+        let view = try #require(coordinator.reader.book)
+
+        // And once it's open, from the library again.
+        coordinator.showLibrary()
+        await coordinator.open(book)
+        #expect(coordinator.reader.loadsStarted == 1)
+        #expect(coordinator.reader.book === view)
+        #expect(!coordinator.isShowingLibrary)
+    }
+
+    @Test func removingTheOpenBookClosesIt() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let positions = PositionStore(directory: folder.appendingPathComponent("Positions", isDirectory: true))
+        let library = LibraryStore(directory: folder, positions: positions)
+        let book = try await shelve("long.epub", in: library)
+        let coordinator = AppCoordinator(library: library, positions: positions, defaults: scratchDefaults())
+        defer { coordinator.reader.window?.close() }
+        coordinator.reader.window?.setFrameAutosaveName("")
+        await coordinator.open(book)
+        coordinator.reader.perform(.goToEnd)
+        await coordinator.reader.settled()
+        coordinator.showLibrary()
+
+        library.remove(id: book.id)
+        #expect(coordinator.reader.openBook == nil)
+        #expect(coordinator.reader.book == nil)
+        #expect(coordinator.reader.window?.title == "Readme")
+        await library.removed()
+        await coordinator.prepareToQuit()
+        #expect(await positions.location(bookID: book.id) == nil)
+        #expect(library.spreads.image(bookID: book.id, signature: "") == nil)
+        #expect(!FileManager.default.fileExists(atPath: library.spreads.imageURL(bookID: book.id).path))
+    }
+
+    @Test func aBookThatWontOpenLeavesTheLibraryWhereItIs() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let positions = PositionStore(directory: folder.appendingPathComponent("Positions", isDirectory: true))
+        let library = LibraryStore(directory: folder, positions: positions)
+        let book = try await shelve("no-cover.epub", in: library)
+        try Data("not a book at all".utf8).write(to: library.fileURL(for: book))
+        let coordinator = AppCoordinator(library: library, positions: positions, defaults: scratchDefaults())
+        defer { coordinator.reader.window?.close() }
+        coordinator.reader.window?.setFrameAutosaveName("")
+        coordinator.showLibrary()
+        var shown: [Bool] = []
+        let previous = coordinator.reader.onShowingLibraryChange
+        coordinator.reader.onShowingLibraryChange = { shown.append($0); previous?($0) }
+        await coordinator.open(book)
+        #expect(coordinator.isShowingLibrary)
+        #expect(shown.isEmpty, "The library went \(shown)")
+        #expect(coordinator.drops.notice == [.unreadable])
+    }
+}

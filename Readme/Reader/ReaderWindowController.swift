@@ -33,6 +33,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     var onRead: ((_ bookID: String, ReaderLocation) -> Void)?
     /// Hears that a library book couldn't be opened, as when its file is no longer a book.
     var onOpenFailed: ((Book) -> Void)?
+    /// Hears the library being shown, or put away.
+    var onShowingLibraryChange: ((Bool) -> Void)?
 
     /// The mockup's stage, which makes the book the size the curl was approved at.
     private static let contentSize = NSSize(width: 1048, height: 620)
@@ -97,6 +99,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     /// True while a resize that isn't a live resize or a fullscreen transition, such as zooming, is
     /// its own layout change, which ends once the window keeps its size.
     private var isResizeOwnChange = false
+    private var isResizeSettling = false
     /// Pages don't turn while the old look covers the book.
     private var isCovered = false
 
@@ -278,16 +281,29 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Opens a library book at `cfi`, or where the reader left it, or at its start, and puts the
-    /// library away. A place that's no longer in the book opens it at the same share of the way
-    /// through. A book that won't open is handed to `onOpenFailed`.
+    /// library away once it has landed. A place that's no longer in the book opens it at the same
+    /// share of the way through. A book that won't open is handed to `onOpenFailed`, with the
+    /// library left as it was. The book open before it has its place kept first.
     func open(_ book: Book, at cfi: String? = nil) async {
         guard let library else { return }
+        if session != nil { await keepPlace() }
         if placeholderBookID != book.id {
             hidePlaceholder()
             showLastSpread(of: book)
         }
-        showBook(animated: true)
         await open(file: library.fileURL(for: book), record: book, at: cfi)
+    }
+
+    /// The library book open or opening, whether or not it has landed.
+    var currentRecordID: String? { session?.record?.id }
+
+    /// Closes the book, as when it's taken off the shelf. Nothing more is kept for it.
+    func closeBook() {
+        opening?.cancel()
+        openingBook = nil
+        spreadMemory?.cancel()
+        spreadWanted = false
+        closeFailed()
     }
 
     /// Opens a file that isn't in the library, as the tests do.
@@ -296,6 +312,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func open(file url: URL, record: Book?, at cfi: String?) async {
+        loadsStarted += 1
         opening?.cancel()
         session?.curl.end()
         session?.book.removeFromSuperview()
@@ -325,7 +342,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         places.moved(to: nil)
         book.onRelocate = { [weak self, weak book] location in
             guard let self, let book, self.session?.book === book else { return }
-            self.relocated(to: location)
+            self.relocated(to: location, in: book)
         }
         // A link is a jump the window didn't make, so it counts as one: when it's followed and when
         // it lands.
@@ -372,13 +389,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                 self.openingBook = nil
                 // A page turned as the book settled is where the reader now is.
                 if isLost || self.places.hasTurned(since: opened), let here = book.currentLocation {
-                    self.keep(here)
+                    self.keep(here, in: book)
                 } else if let bookID, let here = book.currentLocation {
                     self.onRead?(bookID, here)
                 }
+                // The library stays until there's a book to show instead, so one that won't open
+                // leaves it where it is.
+                if record != nil { self.showBook(animated: true) }
                 // Over the last spread, if that's showing, so the page never dims on its way in.
                 NSAnimationContext.runAnimationGroup({ context in
-                    context.duration = Self.motion
+                    context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : Self.motion
                     context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                     book.animator().alphaValue = 1
                 }, completionHandler: { [weak self] in
@@ -439,6 +459,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     func showLibrary(animated: Bool = true) {
         guard !isShowingLibrary else { return }
         isShowingLibrary = true
+        onShowingLibraryChange?(true)
         closeContents()
         closePageField()
         desk.abandonSwipe()
@@ -455,6 +476,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     func showBook(animated: Bool = true) {
         guard isShowingLibrary else { return }
         isShowingLibrary = false
+        onShowingLibraryChange?(false)
         showTrafficLights(isFullscreen, animated: animated)
         guard let host = libraryHost else { return }
         fade(host, to: 0, animated: animated) { [weak self] in
@@ -474,7 +496,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         })
     }
 
-    /// Everything that changes how the open book's spread looks, as the last spread is kept by.
+    /// What a picture of `book`'s spread shows: the page's own size, styles and columns, and the scale
+    /// the picture was taken at.
+    private func signature(of image: CGImage, in book: BookWebView) -> String {
+        let size = book.frame.size
+        let scale = size.width > 0 ? CGFloat(image.width) / size.width : 0
+        return LastSpreadCache.signature(
+            size: size, scale: scale, columns: book.columns, columnWidth: book.columnWidth, css: book.css)
+    }
+
+    /// The look a spread would have in the window now, to match a kept picture against.
     private func spreadSignature() -> String {
         LastSpreadCache.signature(
             size: layout.frame.size, scale: window?.backingScaleFactor ?? 2, columns: layout.columns,
@@ -539,6 +570,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         guard let spreads, let session, let bookID = session.bookID, let here = session.book.currentLocation,
               !isLayingOut
         else { return }
+        // A resize that hasn't settled may not have reached the pictures yet.
+        guard !isResizeSettling else {
+            spreadWanted = true
+            return
+        }
         // A book taken off the shelf while it lay open under the library keeps nothing.
         if session.record != nil, library?.book(id: bookID) == nil { return }
         var image = session.cache.imagesBelong(to: here) ? session.cache.image(for: .current) : nil
@@ -551,9 +587,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             image = await snapshot(of: session.book)
         }
         guard let image, self.session?.book === session.book, session.book.currentLocation?.cfi == here.cfi,
-              !isLayingOut
+              !isLayingOut, !isResizeSettling
         else { return }
-        spreads.save(image, signature: spreadSignature(), bookID: bookID)
+        spreads.save(image, signature: signature(of: image, in: session.book), bookID: bookID)
     }
 
     /// Takes the picture that's waiting now, and returns once it's written.
@@ -603,28 +639,36 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         openingBook != nil || restyling != nil || places.isChangingLayout
     }
 
-    private func relocated(to location: ReaderLocation) {
+    private func relocated(to location: ReaderLocation, in book: BookWebView) {
         show(location)
-        if !isLayingOut { keep(location) }
+        if !isLayingOut { keep(location, in: book) }
     }
 
-    /// The reader is at `location` now: layout changes go back to it, and it's saved.
-    private func keep(_ location: ReaderLocation) {
+    /// The reader is at `location` in `book` now: layout changes go back to it, and it's saved under
+    /// that book's ID. A place from a book that's no longer the one open is nobody's.
+    private func keep(_ location: ReaderLocation, in book: BookWebView) {
+        guard let session, session.book === book else { return }
         places.moved(to: location.cfi)
-        guard let bookID = session?.bookID else { return }
+        guard let bookID = session.bookID else { return }
         writer?.save(location, bookID: bookID)
         onRead?(bookID, location)
         rememberSpread()
     }
 
     /// Returns once the turns, jumps and restyles under way are over and the reader's place is
-    /// written. The app waits for this as it quits.
+    /// written, and then the picture of its spread.
     func keepPlace() async {
+        await placesKept()
+        await flushSpread()
+    }
+
+    /// Returns once the turns, jumps and restyles under way are over and the reader's place is
+    /// written. The app waits for this as it quits, before the picture of the spread, which can be slow.
+    func placesKept() async {
         await session?.turns.landed()
         await jumping?.value
         await restyling?.value
         await writer?.written()
-        await flushSpread()
     }
 
     // MARK: Commands and keys
@@ -832,6 +876,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     var location: ReaderLocation? { session?.book.currentLocation }
     var deskView: NSView { desk }
+    /// How many times a book has begun loading.
+    private(set) var loadsStarted = 0
     var book: BookWebView? { session?.book }
     var layoutColumns: Int { layout.columns }
     var isShowingContents: Bool { isContentsShown }
@@ -922,7 +968,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         if self.session?.book === book, let here = book.currentLocation {
             show(here)
             // A page turned while the layout changed is where the reader now is.
-            if places.hasTurned(since: capture) { keep(here) }
+            if places.hasTurned(since: capture) { keep(here, in: book) }
             await session.cache.refresh(around: here)
             rememberSpread()
         }
@@ -1087,9 +1133,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             placeViews()
         }
         resizeSettling?.cancel()
+        isResizeSettling = true
         resizeSettling = Task { [weak self] in
             try? await Task.sleep(for: Self.resizeQuiet)
             guard !Task.isCancelled, let self else { return }
+            self.isResizeSettling = false
             if self.isResizeOwnChange {
                 self.endLayoutChange()
             } else {
@@ -1117,6 +1165,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         isResizeOwnChange = false
         guard places.isChangingLayout else { return }
         resizeSettling?.cancel()
+        isResizeSettling = false
         restyle(animated: false, returningTo: places.endLayoutChange())
     }
 
