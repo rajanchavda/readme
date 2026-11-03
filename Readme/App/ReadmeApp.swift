@@ -42,6 +42,10 @@ final class BundleToken {}
 struct ReadmeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    init() {
+        BundledFonts.register()
+    }
+
     var body: some Scene {
         Settings { EmptyView() }
             .commands {
