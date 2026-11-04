@@ -21,6 +21,9 @@ targets:
       - path: Readme/Web
         type: folder
         buildPhase: resources
+      # The licences of what's bundled travel with the app.
+      - path: THIRD_PARTY_NOTICES.md
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rajanchavda.Readme

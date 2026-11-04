@@ -20,6 +20,10 @@ Readme isn't yet registered with Apple, so the first time you open it your Mac a
 
 Readme opens. **You only have to do this once.** From now on it opens like any other app, from your Applications folder or the Dock.
 
+**If there's no Open Anyway button:** on macOS 15 and later it only shows for about an hour after you tried to open Readme. Double-click Readme in Applications again, click **Done**, then go back to **Privacy & Security**.
+
+**A quicker way on macOS 14:** in your Applications folder, right-click (or Control-click) **Readme**, choose **Open**, then click **Open** in the message that appears. Newer versions of macOS don't offer this, so use the steps above there.
+
 ## Your first book
 
 Drag an EPUB file onto the shelf, then click it to start reading. You can also drop an EPUB on Readme's icon in the Dock.
