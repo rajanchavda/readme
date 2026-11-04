@@ -878,6 +878,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     var location: ReaderLocation? { session?.book.currentLocation }
     var deskView: NSView { desk }
+    /// The curl's images around the place, once the cache has made them.
+    func spreadImages() async -> [CGImage] {
+        guard let session else { return [] }
+        await session.cache.neighboursReady()
+        return [SpreadSlot.current, .next, .previous].compactMap { session.cache.image(for: $0) }
+    }
     /// How many times a book has begun loading.
     private(set) var loadsStarted = 0
     var book: BookWebView? { session?.book }

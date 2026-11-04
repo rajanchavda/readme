@@ -229,11 +229,25 @@ const inlineSize = width => {
     return fits ? DEFAULT_INLINE_SIZE : Math.floor(width / columnCount)
 }
 
+// foliate paints the margins around the pages (its `filter` part) with the page's colour, but after
+// a restyle it does so in an animation frame, and a page in a window that's never shown, as the
+// curl's offscreen one is, never gets one. Its pictures would keep the old theme's margins, so they
+// take the page's colour here, at once.
+const marginStyle = document.createElement('style')
+document.head.append(marginStyle)
+const paintMargins = () => {
+    const doc = currentDocument()
+    if (!doc?.body) return
+    const color = doc.defaultView.getComputedStyle(doc.body).backgroundColor
+    marginStyle.textContent = `foliate-view::part(filter) { background: ${color} !important; }`
+}
+
 const setLayout = (css, columns, width) => {
     columnCount = Math.max(1, Math.trunc(finite(columns, 2)))
     columnWidth = Number.isFinite(width) && width > 0 ? width : null
     fitColumns()
     view.renderer.setStyles?.(css ?? '')
+    paintMargins()
 }
 
 // Makes a layout change, then goes back to the reader's place, which foliate's own re-rendering
