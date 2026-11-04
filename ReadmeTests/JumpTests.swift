@@ -95,6 +95,43 @@ private struct Started {
         try expect(started, matches: .forward, from: before, to: try await snapshot())
     }
 
+    /// How the reader got somewhere new, before swiping straight away.
+    enum Jump: CaseIterable, Sendable {
+        case contents, page, link
+    }
+
+    /// Fingers that swipe straight after a jump, faster than the new place's images can be made, still
+    /// turn the page with the curl, made from the right spreads, as soon as they're ready.
+    @Test(arguments: Jump.allCases, [TurnDirection.forward, .backward])
+    func aQuickSwipeStraightAfterAJumpStillCurls(after jump: Jump, going direction: TurnDirection) async throws {
+        defer { window.orderOut(nil) }
+        let turns = try await openWithFullBuffer(at: 0.3)
+        switch jump {
+        case .contents:
+            _ = await turns.jump { [view] in
+                if case let .went(landed) = await view.go(toHref: "ch20.xhtml") { return landed }
+                return nil
+            }
+        case .page:
+            let pages = try #require(view.currentLocation?.pageCount)
+            _ = await turns.jump { [view] in await view.go(toPage: pages * 3 / 4) }
+        case .link:
+            try await clickLink(to: "ch20.xhtml")
+        }
+        let before = try await snapshot()
+        turns.follow(.start(direction))
+        turns.follow(.move(300))
+        turns.follow(.release(velocity: 0))
+        var seen = started()
+        while turns.isTurning {
+            if seen == nil { seen = started() }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let after = try await snapshot()
+        let curled = try #require(seen, "The \(direction) swipe after \(jump) turned without the curl")
+        try expect(curled, matches: direction, from: before, to: after)
+    }
+
     // MARK: Pressing before the images are ready
 
     @Test func aPressStraightAfterALinkNeverCurlsFromTheOldPlace() async throws {

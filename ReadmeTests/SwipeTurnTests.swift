@@ -312,7 +312,17 @@ private func fixture(_ name: String) throws -> URL {
         await cache.refresh(around: start)
         try await waitForCurl()
         #expect(curl.stripLayers.count == CurlPose.strips)
+        // It rises to meet the fingers, rather than appearing where they are.
+        #expect(curl.progress < 0.4)
+        var risen: [Double] = [curl.progress]
+        let deadline = ContinuousClock.now + .seconds(1)
+        while curl.progress < 0.4 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+            if curl.progress != risen.last { risen.append(curl.progress) }
+        }
         #expect(curl.progress == 0.4)
+        #expect(risen.count >= 3, "It jumped: \(risen)")
+        #expect(zip(risen, risen.dropFirst()).allSatisfy { $0 <= $1 }, "\(risen)")
         turns.follow(.move(100))
         #expect(curl.progress == 0.6)
         turns.follow(.release(velocity: 0))
@@ -321,7 +331,9 @@ private func fixture(_ name: String) throws -> URL {
         #expect(view.currentLocation?.cfi != start.cfi)
     }
 
-    @Test func aCommitWithoutImagesJustChangesThePage() async throws {
+    /// Images that never come, as here where the cache is never given the place, leave the page to
+    /// change without a curl once the swipe has waited its time.
+    @Test func aCommitWhoseImagesNeverComeChangesThePageWithoutACurl() async throws {
         defer { window.orderOut(nil) }
         let start = try await view.open(fixture("long.epub"), at: nil)
         let turns = coordinator()
@@ -337,18 +349,26 @@ private func fixture(_ name: String) throws -> URL {
         #expect(view.currentLocation?.cfi != start.cfi)
     }
 
-    /// The images are right on hand by then, but the fingers have already gone: no curl plays.
-    @Test func imagesArrivingOnlyAfterTheReleaseAreNotCurled() async throws {
+    /// The fingers have let go to turn before the images came: the page waits for them, and then
+    /// turns with the whole curl. A swipe always turns with the curl.
+    @Test func imagesArrivingOnlyAfterTheReleaseStillCurlTheTurn() async throws {
         defer { window.orderOut(nil) }
+        window.orderFrontRegardless()
         let start = try await view.open(fixture("long.epub"), at: nil)
         let turns = coordinator()
         turns.follow(.start(.forward))
         turns.follow(.move(300))
         turns.follow(.release(velocity: 0))
+        #expect(turns.isTurning)
+        #expect(view.currentLocation?.cfi == start.cfi)
         await cache.refresh(around: start)
-        #expect(curl.stripLayers.isEmpty)
-        try await waitUntilDone(turns)
-        #expect(curl.stripLayers.isEmpty)
+        var curled = !curl.stripLayers.isEmpty
+        while turns.isTurning {
+            if !curl.stripLayers.isEmpty { curled = true }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(curled)
+        #expect(view.currentLocation?.cfi != start.cfi)
     }
 
     @Test func aFallBackWithoutImagesDoesNothing() async throws {
@@ -461,6 +481,9 @@ private func fixture(_ name: String) throws -> URL {
         #expect(!curl.isPlaying)
         turns.follow(.move(300))
         try await waitForCurl()
+        // Its images came after the fingers began, so it rises to meet them.
+        let deadline = ContinuousClock.now + .seconds(1)
+        while curl.progress < 0.6 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(2)) }
         #expect(curl.progress == 0.6)
         #expect(!curl.isPlaying)
         turns.follow(.release(velocity: 0))

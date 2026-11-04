@@ -62,9 +62,11 @@ enum CurlPieces {
 /// first, so every press counts and the book never seems to ignore one.
 ///
 /// A swipe holds the same curl under the reader's fingers, with the web view staying where it is until
-/// they let go past the point of turning. It waits as long as the fingers do for its images, as there's
-/// no press to answer yet, and never curls once they've gone. A press while they're down counts as them
-/// letting go, standing still, so what's held always ends the same way and keys can't stop working.
+/// they let go past the point of turning. It always turns with the curl. Its images can still be on
+/// their way, as just after a jump: then the curl rises to meet the fingers as soon as they come, or,
+/// if the fingers let go to turn before then, plays the whole turn once they come. A press while the
+/// fingers are down counts as them letting go, standing still, so what's held always ends the same
+/// way and keys can't stop working.
 @MainActor
 final class TurnCoordinator {
     /// How long a press waits for images before the page changes without a curl. A page takes about
@@ -75,12 +77,19 @@ final class TurnCoordinator {
     private static let paintTimeout: Duration = .milliseconds(500)
     /// How often a swipe looks for its images.
     private static let swipePollInterval: Duration = .milliseconds(10)
+    /// How long a swipe that's let go to turn waits for its images. The furthest spread a jump has to
+    /// make takes about a second and a half on a long book, so this is only for images that never come.
+    static let swipePatience: Duration = .milliseconds(2500)
+    /// How long a curl whose images came after the fingers began takes to rise to meet them.
+    private static let catchUpDuration = 0.15
 
     /// A swipe with the fingers down.
     private struct Swipe {
         let direction: TurnDirection
         var tracker: SwipeTracker
         var isCurling = false
+        /// The curl is still rising to where the fingers are, so it doesn't follow them yet.
+        var isCatchingUp = false
 
         /// Going back is the forward curl played from its end.
         var curlProgress: Double {
@@ -105,6 +114,7 @@ final class TurnCoordinator {
     private var curlNumber = 0
     private var swipe: Swipe?
     private var swipeWait: Task<Void, Never>?
+    private var catchUp: Task<Void, Never>?
     /// The moves and jumps that haven't finished, by number. A jump waits for them.
     private var underWay: [Int: Task<Void, Never>] = [:]
     private var moveNumber = 0
@@ -169,7 +179,7 @@ final class TurnCoordinator {
             startSwipe(direction)
         case let .move(distance):
             _ = swipe?.tracker.changed(deltaX: distance)
-            if let swipe, swipe.isCurling { curl.setProgress(swipe.curlProgress) }
+            if let swipe, swipe.isCurling, !swipe.isCatchingUp { curl.setProgress(swipe.curlProgress) }
         case let .release(velocity):
             guard let outcome = swipe?.tracker.ended(velocityX: velocity) else { return }
             finishSwipe(outcome)
@@ -198,18 +208,20 @@ final class TurnCoordinator {
         tracker.began()
         swipe = Swipe(direction: direction, tracker: tracker)
         if pickUpSwipe() { return }
+        // The images the fingers need are rendered first.
+        cache.prefer(direction)
         // Waits on nothing but the fingers, so it mustn't keep this object alive if they never lift.
         swipeWait = Task { [weak self] in
             while true {
                 try? await Task.sleep(for: Self.swipePollInterval)
-                guard !Task.isCancelled, let self, !self.pickUpSwipe() else { return }
+                guard !Task.isCancelled, let self, !self.pickUpSwipe(late: true) else { return }
             }
         }
     }
 
     /// True if the swipe needs no more waiting: its curl is on screen, it never has one, or it's past
     /// the end of the book and so over. The images can only be trusted with nothing left to land.
-    private func pickUpSwipe() -> Bool {
+    private func pickUpSwipe(late: Bool = false) -> Bool {
         guard let held = swipe, unlanded == 0 else { return false }
         if isPastTheEnd(held.direction) {
             swipe = nil
@@ -223,9 +235,35 @@ final class TurnCoordinator {
         // An earlier curl still waiting to come off must leave this one be.
         curlNumber += 1
         begin(held.direction, pieces)
-        curl.setProgress(held.curlProgress)
         swipe?.isCurling = true
+        if late {
+            riseToFingers(from: held.direction == .forward ? 0 : 1)
+        } else {
+            curl.setProgress(held.curlProgress)
+        }
         return true
+    }
+
+    /// The fingers are already partway across, so the curl eases up to them rather than appearing
+    /// there, then follows them as usual.
+    private func riseToFingers(from start: Double) {
+        swipe?.isCatchingUp = true
+        curl.setProgress(start)
+        catchUp = Task { [weak self] in
+            let began = ContinuousClock.now
+            while !Task.isCancelled {
+                guard let self, let held = self.swipe, held.isCatchingUp else { return }
+                let elapsed = began.duration(to: .now) / .seconds(1)
+                let share = min(1, elapsed / Self.catchUpDuration)
+                let eased = 1 - (1 - share) * (1 - share)
+                self.curl.setProgress(start + (held.curlProgress - start) * eased)
+                if share >= 1 {
+                    self.swipe?.isCatchingUp = false
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(8))
+            }
+        }
     }
 
     private func finishSwipe(_ outcome: SwipeOutcome) {
@@ -233,6 +271,8 @@ final class TurnCoordinator {
         swipe = nil
         swipeWait?.cancel()
         swipeWait = nil
+        catchUp?.cancel()
+        catchUp = nil
         guard held.isCurling else {
             if outcome == .commit { turnWithoutFollowing(held.direction) }
             return
@@ -248,13 +288,18 @@ final class TurnCoordinator {
         CATransaction.flush()
     }
 
-    /// Fingers have let go past the point of turning with no curl under them.
+    /// Fingers have let go past the point of turning before their curl's images came. The turn waits
+    /// for them, longer than a press does, and plays the whole curl as soon as they're here: a swipe
+    /// always turns with the curl. Images that never come leave the page to change without one.
     private func turnWithoutFollowing(_ direction: TurnDirection) {
         if reduceMotion() {
             turn(direction)
-        } else if unlanded > 0 || !isPastTheEnd(direction) {
-            _ = move(direction)
+            return
         }
+        if unlanded == 0, startOrDecline(direction) { return }
+        cache.prefer(direction)
+        waitingTurn = direction
+        waitingTask = Task { [weak self] in await self?.waitAndTurn(direction, patience: Self.swipePatience) }
     }
 
     /// The book's laid out one page across. Its images then hold one page each, as they're made in
@@ -305,11 +350,12 @@ final class TurnCoordinator {
     /// Waits for a move still landing, as its images will be good then, and briefly for images that
     /// may be about to arrive. Checks repeatedly because the cache has no event to wait on that can
     /// also be given up on.
-    private func waitAndTurn(_ direction: TurnDirection) async {
+    private func waitAndTurn(_ direction: TurnDirection, patience: Duration? = nil) async {
         let pressed = ContinuousClock.now
+        let patience = patience ?? self.patience
         while true {
             let isWaitingUsefully = unlanded > 0
-                ? ContinuousClock.now < pressed + Self.landingPatience
+                ? ContinuousClock.now < pressed + max(Self.landingPatience, patience)
                 : images(for: direction) == nil && !isPastTheEnd(direction) && ContinuousClock.now < pressed + patience
             guard isWaitingUsefully else { break }
             try? await Task.sleep(for: .milliseconds(10))

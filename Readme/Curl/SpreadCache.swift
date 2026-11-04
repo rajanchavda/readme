@@ -117,6 +117,16 @@ final class SpreadCache {
         await startRendering(after: nil).value
     }
 
+    /// A turn that way is waiting for its images, so the spreads that way are rendered first. A render
+    /// going the other way is stopped, unless that way's next spread is already done.
+    func prefer(_ direction: TurnDirection) {
+        guard lastDirection != direction else { return }
+        lastDirection = direction
+        let isMissing = (direction == .forward ? ahead : behind).isEmpty
+        guard isMissing, isRendering, anchor != nil else { return }
+        startRendering(after: nil)
+    }
+
     /// Returns when the work in progress is done, so the slots are as full as they'll get here.
     func neighboursReady() async {
         while let task = rendering {
