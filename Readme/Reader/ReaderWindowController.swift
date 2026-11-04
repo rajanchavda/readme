@@ -287,6 +287,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     func open(_ book: Book, at cfi: String? = nil) async {
         guard let library else { return }
         if session != nil { await keepPlace() }
+        // Taken off the shelf while the book before it was being put away.
+        guard library.book(id: book.id) != nil else { return }
         if placeholderBookID != book.id {
             hidePlaceholder()
             showLastSpread(of: book)

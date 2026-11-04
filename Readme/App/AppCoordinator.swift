@@ -96,9 +96,10 @@ final class AppCoordinator {
         reader.onRead = { [weak self] id, location in self?.marker.read(id: id, location: location) }
         reader.onShowingLibraryChange = { [weak self] showing in self?.state.isShowingLibrary = showing }
         library.onRemove = { [weak self] id in
-            guard let self, self.reader.currentRecordID == id || self.openingID == id else { return }
-            self.openingID = nil
-            self.reader.closeBook()
+            guard let self else { return }
+            // One still waiting to open checks the shelf itself, and mustn't close the book open now.
+            if self.openingID == id { self.openingID = nil }
+            if self.reader.currentRecordID == id { self.reader.closeBook() }
         }
         library.beforeDeleting = { [weak self] in await self?.reader.placesKept() }
         reader.onOpenFailed = { [weak self] _ in

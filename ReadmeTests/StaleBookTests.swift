@@ -277,3 +277,83 @@ func spreadImage() throws -> CGImage {
         #expect(coordinator.drops.notice == [.unreadable])
     }
 }
+
+/// The picture of the last spread, saved by a reading window, is the one the next launch shows.
+@MainActor
+@Suite(.serialized, .timeLimit(.minutes(3))) struct LastSpreadRoundTripTests {
+    @Test func aSpreadSavedWhileReadingIsShownAtTheNextLaunchInTheSameLookOnly() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let positions = PositionStore(directory: folder.appendingPathComponent("Positions", isDirectory: true))
+        let library = LibraryStore(directory: folder, positions: positions)
+        let book = try await shelve("long.epub", in: library)
+        let defaults = scratchDefaults()
+        var paper = ReaderSettings()
+        paper.theme = .paper
+        paper.save(defaults)
+        let size = NSSize(width: 1048, height: 620)
+
+        func window() -> ReaderWindowController {
+            let reader = ReaderWindowController(defaults: defaults, positions: positions, library: library)
+            reader.window?.setFrameAutosaveName("")
+            reader.window?.setContentSize(size)
+            return reader
+        }
+
+        let reading = window()
+        reading.window?.orderFrontRegardless()
+        await reading.open(book)
+        await reading.settled()
+        reading.turn(.forward)
+        await reading.keepPlace()
+        reading.turn(.forward)
+        await reading.keepPlace()
+        reading.window?.close()
+        #expect(FileManager.default.fileExists(atPath: library.spreads.imageURL(bookID: book.id).path))
+
+        // The next launch, in the same window and theme.
+        let next = window()
+        defer { next.window?.close() }
+        #expect(next.showLastSpread(of: book))
+
+        // A different size, or theme, shows nothing rather than the wrong picture.
+        let smaller = window()
+        defer { smaller.window?.close() }
+        smaller.window?.setContentSize(NSSize(width: 900, height: 600))
+        #expect(!smaller.showLastSpread(of: book))
+        var night = paper
+        night.theme = .night
+        night.save(defaults)
+        let dark = window()
+        defer { dark.window?.close() }
+        #expect(!dark.showLastSpread(of: book))
+    }
+}
+
+/// A book taken off the shelf while it's waiting to open.
+@MainActor
+@Suite(.serialized, .timeLimit(.minutes(3))) struct RemovalDuringOpenTests {
+    @Test func removingTheBookWaitingToOpenLeavesTheOpenBookAlone() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let positions = PositionStore(directory: folder.appendingPathComponent("Positions", isDirectory: true))
+        let library = LibraryStore(directory: folder, positions: positions)
+        let open = try await shelve("long.epub", in: library)
+        let next = try await shelve("no-cover.epub", in: library)
+        let coordinator = AppCoordinator(library: library, positions: positions, defaults: scratchDefaults())
+        defer { coordinator.reader.window?.close() }
+        coordinator.reader.window?.setFrameAutosaveName("")
+        await coordinator.open(open)
+        coordinator.showLibrary()
+        let loads = coordinator.reader.loadsStarted
+
+        let opening = Task { await coordinator.open(next) }
+        await Task.yield()
+        library.remove(id: next.id)
+        await opening.value
+        await library.removed()
+        #expect(coordinator.reader.openBook?.id == open.id)
+        #expect(coordinator.reader.loadsStarted == loads)
+        #expect(await positions.location(bookID: next.id) == nil)
+    }
+}
