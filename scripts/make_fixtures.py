@@ -528,6 +528,44 @@ def late_resources_book():
     )
 
 
+def wide_content_book():
+    """Content that won't wrap by itself, as real books have: verse set in <pre>, a long web
+    address, a very long word, text held on one line, a wide table and a fixed-width block, with
+    the book's own styles asking for no wrapping."""
+    rng = random.Random(7)
+    verse = "\n".join(
+        "     " + " ".join(rng.choice(WORDS) for _ in range(14)) for _ in range(6)
+    )
+    risky = [
+        f"<pre>{verse}</pre>",
+        "<p>See https://www.gutenberg.org/ebooks/2701/the-whole-of-the-project-gutenberg-license-"
+        "included-with-this-ebook-or-online-at-www.gutenberg.org/license for more.</p>",
+        "<p>Pneumonoultramicroscopicsilicovolcanoconiosisandantidisestablishmentarianismtogether"
+        "withfloccinaucinihilipilification is a word.</p>",
+        '<p><span style="white-space: nowrap">'
+        + " ".join(rng.choice(WORDS) for _ in range(24)) + "</span></p>",
+        '<p class="nowrap">' + " ".join(rng.choice(WORDS) for _ in range(30)) + "</p>",
+        '<table width="900"><tr>'
+        + "".join(f"<td>{' '.join(rng.choice(WORDS) for _ in range(6))}</td>" for _ in range(6))
+        + "</tr></table>",
+        '<div style="width: 900px">' + " ".join(rng.choice(WORDS) for _ in range(40)) + "</div>",
+    ]
+    head = (
+        "<style>pre { white-space: pre; } p { overflow-wrap: normal; word-break: keep-all; } "
+        ".nowrap { white-space: nowrap; }</style>"
+    )
+    chapters = []
+    for number in range(1, 4):
+        title = f"Chapter {number}"
+        parts = [f"<h1>{title}</h1>"]
+        for block in risky:
+            parts.append(paragraphs(rng, 2, words=60))
+            parts.append(block)
+        parts.append(paragraphs(rng, 2, words=60))
+        chapters.append(Chapter(f"ch{number}", title, xhtml(title, "\n".join(parts), head)))
+    write_epub("wide-content.epub", "Wide Content Book", chapters)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     spreads_book()
@@ -544,6 +582,7 @@ def main():
     locked_books()
     comment_book()
     plain_zip()
+    wide_content_book()
     (OUT / "not-an-epub.epub").write_bytes(random.Random(6).randbytes(4096))
 
 

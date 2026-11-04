@@ -52,6 +52,34 @@ enum ReadingCSS {
         body :is(p, li, blockquote, dd) {
             text-align: justify;
         }
+        /* Nothing runs out of its column into the gap, under the spine or onto the facing page,
+           whatever the book asks: words too long for a line break where they must, everything
+           wraps, verse set in <pre> keeps its line breaks, and wide boxes and tables are held to
+           the column. */
+        body, body * {
+            overflow-wrap: anywhere !important;
+            /* keep-all stops WebKit breaking a long word at all. */
+            word-break: normal !important;
+            max-inline-size: 100% !important;
+        }
+        /* WebKit ignores max-width on a table with a width, so tables and their cells take the
+           width their content needs, up to the column's. */
+        body :is(table, td, th, col, colgroup) {
+            width: auto !important;
+        }
+        body * {
+            text-wrap-mode: wrap !important;
+        }
+        /* break-spaces, not pre-wrap, so the spaces where a line wraps go on to the next line
+           instead of hanging out into the gap. */
+        body pre {
+            white-space: break-spaces !important;
+        }
+        @supports not (text-wrap-mode: wrap) {
+            body *:not(pre, pre *) {
+                white-space: normal !important;
+            }
+        }
         ::selection { background: \(hex(colors.soft))66; }
         """
     }
