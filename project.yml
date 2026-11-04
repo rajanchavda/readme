@@ -29,6 +29,12 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Readme
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # A shipped app mustn't let other processes attach to it, so Release leaves out the
+        # debugging entitlement Xcode adds to ad-hoc builds.
+        Release:
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     info:
       path: Readme/Info.plist
       properties:
