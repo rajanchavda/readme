@@ -1,10 +1,13 @@
 import Foundation
 
-/// How wide the page's columns are and how many fit, in the numbers foliate lays out with.
+/// How wide the page's columns are and how many fit. The bridge lays the columns out at the width
+/// asked for and shares what's left of the page out as equal margins, inside and out (bridge.js
+/// `spread`). Two pages are shown only where foliate's own layout would have fitted them, which keeps
+/// every margin at least about 5% of the book's width, well clear of the spine's shadow.
 enum SpreadLayout {
-    /// foliate's #container is the view less a 3.5% gutter on each side.
+    /// foliate's own #container, the view less a 3.5% gutter on each side.
     static let containerShare = 0.93
-    /// foliate's column gap, as a share of the view (`--_gap: 7%`).
+    /// foliate's own column gap, as a share of the view (`--_gap: 7%`).
     static let gapShare = 0.07
 
     /// Width a character takes in a rendered line, as a share of the font size. Calibrated on the

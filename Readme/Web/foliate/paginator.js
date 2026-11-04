@@ -475,12 +475,15 @@ export class Paginator extends HTMLElement {
             --_max-width: calc(var(--_max-inline-size) * var(--_max-column-count-spread));
             --_max-height: var(--_max-block-size);
             display: grid;
+            /* Readme: the outer tracks may shrink to nothing, so the gap the reader sets is the
+               whole margin and the text can sit as far from the spine as from the page's edge.
+               Upstream has minmax(var(--_half-gap), 1fr) for both. */
             grid-template-columns:
-                minmax(var(--_half-gap), 1fr)
+                minmax(0, 1fr)
                 var(--_half-gap)
                 minmax(0, calc(var(--_max-width) - var(--_gap)))
                 var(--_half-gap)
-                minmax(var(--_half-gap), 1fr);
+                minmax(0, 1fr);
             grid-template-rows:
                 minmax(var(--_margin), 1fr)
                 minmax(0, var(--_max-height))

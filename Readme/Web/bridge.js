@@ -211,15 +211,38 @@ const fitColumns = () => {
     laidOutSize = sizeOf(renderer)
     renderer.setAttribute('max-column-count', String(columnCount))
     const { width } = renderer.getBoundingClientRect()
-    renderer.setAttribute('max-inline-size', `${inlineSize(width)}px`)
+    const { gap, inlineSize } = spread(width)
+    renderer.setAttribute('gap', `${gap}%`)
+    renderer.setAttribute('max-inline-size', `${inlineSize}px`)
 }
 
-// foliate's container is CONTAINER_SHARE of the view, and its column gap GAP_SHARE of the view
-// (SpreadLayout has the same numbers). The container can't be wider than
-// `max-inline-size * columns - gap`, so for columns of `columnWidth` that is what to ask for.
+// A book's margins: the text stands as far from the spine as from the page's outer edge. foliate
+// puts half its column gap, G, inside the page on each side of each column (Readme's paginator lets
+// its outer tracks shrink to nothing), so with the container filling the view, columns of width `c`
+// leave G = (width - columns * c) / columns, and every margin is G / 2. foliate works its gap out
+// as g / (1 - g) of the container, so it's asked for g = G / (container + G), and for columns
+// exactly as wide as the view shares out, so the container fills it.
+const MIN_GAP_SHARE = 0.04
+const spread = width => {
+    if (!(width > 0)) return { gap: GAP_SHARE * 100, inlineSize: DEFAULT_INLINE_SIZE }
+    const wanted = textWidth(width)
+    const gap = Math.max(MIN_GAP_SHARE * width, (width - columnCount * wanted) / columnCount)
+    return { gap: gap / (width + gap) * 100, inlineSize: width / columnCount }
+}
+
+// The width of the text in each column: what foliate's own layout made of the column width asked
+// for, before the margins were evened out. SpreadLayout's character widths were measured against
+// these lines, so the text stays exactly as wide as it was and only the margins move.
+// foliate's own layout: its container is at most CONTAINER_SHARE of the view, and at most
+// `max-inline-size` a column, and its gap is GAP_SHARE / (1 - GAP_SHARE) of the container.
 const GAP_SHARE = 0.07
-const inlineSize = width => {
-    if (!(width > 0)) return DEFAULT_INLINE_SIZE
+const textWidth = width => {
+    const container = Math.min(width * CONTAINER_SHARE, columnCount * foliateInlineSize(width))
+    return container / columnCount - GAP_SHARE / (1 - GAP_SHARE) * container
+}
+
+// The `max-inline-size` the column width asked for used to be given to foliate as.
+const foliateInlineSize = width => {
     if (columnWidth > 0) {
         const container = columnWidth / (1 / columnCount - GAP_SHARE / CONTAINER_SHARE)
         // Wider than the view allows: ask for exactly the columns that fill it.
