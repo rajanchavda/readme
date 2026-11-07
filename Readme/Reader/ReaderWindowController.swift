@@ -262,15 +262,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// Asks for an EPUB in a sheet, and hands it to `chosen`.
-    func chooseBook(_ chosen: @escaping (URL) -> Void) {
+    /// Asks for one or more EPUBs in a sheet, and hands them to `chosen`.
+    func chooseBook(_ chosen: @escaping ([URL]) -> Void) {
         guard let window, window.attachedSheet == nil else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "epub") ?? .data]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.beginSheetModal(for: window) { response in
-            guard response == .OK, let url = panel.url else { return }
-            chosen(url)
+            guard response == .OK, !panel.urls.isEmpty else { return }
+            chosen(panel.urls)
         }
     }
 

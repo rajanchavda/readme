@@ -177,6 +177,54 @@ private func someBook(_ n: Int = 0) -> Book {
         return rep
     }
 
+    /// Books added while the shelf is on screen, as when files are dropped on it or opened with ⌘O,
+    /// all stand on the shelves. A lazy stack once kept showing only the shelves it had first drawn.
+    @Test func booksAddedWhileTheShelfIsShownAllAppear() throws {
+        BundledFonts.register()
+        let store = LibraryStore(directory: try libraryFolder())
+        let size = CGSize(width: 1048, height: 620)
+        let host = NSHostingView(
+            rootView: LibraryView(library: store, importer: BookImporter(store: store), onOpen: { _ in })
+                .frame(width: size.width, height: size.height))
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        func settle(_ seconds: Double) {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+            host.layoutSubtreeIfNeeded()
+        }
+        settle(0.5)
+        // The first ones one at a time, the rest together, and none of them read yet.
+        for n in 0..<6 {
+            store.add(book(n, title: "Book number \(n)", author: "Author \(n)"))
+            if n < 3 { settle(0.8) }
+        }
+        // One read, so the others move down a place.
+        store.markRead(id: book(2, title: "", author: nil).id, location: ReaderLocation(
+            cfi: "epubcfi(/6/2)", fraction: 0.1, chapterTitle: "One", chapterMinutesLeft: 5,
+            isAtStart: false, isAtEnd: false, page: 1, pageCount: 9))
+        settle(2.5)
+        let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: rep)
+        // The shelf below the top one stands at 286...496 points down. Its far right has no books, so
+        // it shows the bare background, and covers show as pixels unlike it.
+        let top = Int(2 * (286 + 40)), bottom = Int(2 * 496) - 8
+        let bare = try #require(rep.colorAt(x: rep.pixelsWide - 40, y: top)?.usingColorSpace(.deviceRGB))
+        var different = 0, total = 0
+        for y in stride(from: top, to: bottom, by: 4) {
+            for x in stride(from: 108, to: 1500, by: 4) {
+                total += 1
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                if abs(c.redComponent - bare.redComponent) + abs(c.greenComponent - bare.greenComponent)
+                    + abs(c.blueComponent - bare.blueComponent) > 0.08 { different += 1 }
+            }
+        }
+        #expect(store.books.count == 6)
+        // Five covers standing there fill roughly half of this band; an empty shelf fills none of it.
+        #expect(Double(different) / Double(total) > 0.25, "the books added while the shelf was shown aren't on it")
+    }
+
     /// Always renders the full library and checks the rail runs to the window's right edge. With
     /// `SHELF_RENDERS` set (`TEST_RUNNER_SHELF_RENDERS=1 scripts/test.sh`) it also saves renders for looking at.
     @Test func railReachesTheWindowEdgeAndRendersAreSaved() async throws {

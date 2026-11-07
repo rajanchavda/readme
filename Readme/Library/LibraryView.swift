@@ -84,6 +84,13 @@ struct LibraryView: View {
     }
 }
 
+/// A shelf's books, identified by the first of them.
+private struct ShelfRowBooks: Identifiable {
+    let books: [Book]
+    var id: String { books[0].id }
+    init(_ books: [Book]) { self.books = books }
+}
+
 /// The shelves themselves, laid out for a window of `size`.
 private struct Shelves: View {
     @ObservedObject var library: LibraryStore
@@ -97,9 +104,11 @@ private struct Shelves: View {
         let empties = max(0, ShelfLayout.emptyRowCount(height: size.height) - rows.count)
         LazyVStack(spacing: ShelfLayout.shelfGap) {
             CurrentBookShelf(book: library.current, library: library, onOpen: onOpen, onRemove: onRemove)
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+            // Keyed by the book each shelf starts with, so a lazy stack notices shelves that appear or
+            // change after it first showed.
+            ForEach(rows.map(ShelfRowBooks.init)) { row in
                 ShelfRow {
-                    ForEach(row) { book in
+                    ForEach(row.books) { book in
                         ShelfBook(book: book, width: 112, library: library, onOpen: onOpen, onRemove: onRemove)
                             .transition(.opacity.combined(with: .offset(y: -14)))
                     }

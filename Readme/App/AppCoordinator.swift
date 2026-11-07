@@ -173,9 +173,17 @@ final class AppCoordinator {
 
     func chooseBook() {
         showWindow()
-        reader.chooseBook { [weak self] url in
+        reader.chooseBook { [weak self] urls in
             guard let self else { return }
-            Task { await self.importAndOpen([url]) }
+            Task {
+                if urls.count > 1 {
+                    // Several books chosen at once are for the shelf, not for reading one of them.
+                    self.reader.showLibrary()
+                    await self.drops.add(urls)
+                } else {
+                    await self.importAndOpen(urls)
+                }
+            }
         }
     }
 
