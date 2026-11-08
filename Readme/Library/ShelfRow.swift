@@ -64,7 +64,6 @@ struct ShelfBook: View {
     let onRemove: (Book) -> Void
 
     @State private var hovering = false
-    @State private var cursorPushed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -75,19 +74,7 @@ struct ShelfBook: View {
         .buttonStyle(.plain)
         .offset(y: hovering ? -8 : 0)
         .animation(reduceMotion ? nil : ShelfStyle.lift, value: hovering)
-        .onHover { inside in
-            hovering = inside
-            if inside != cursorPushed {
-                cursorPushed = inside
-                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            }
-        }
-        .onDisappear {
-            if cursorPushed {
-                cursorPushed = false
-                NSCursor.pop()
-            }
-        }
+        .onHover { hovering = $0 }
         .contextMenu {
             Button("Remove", role: .destructive) { onRemove(book) }
         }
