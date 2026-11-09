@@ -26,7 +26,11 @@ The app is designed around four moments.
 
 ## Non-goals for v1
 
-Highlights and notes, sync, a store, collections and tags, dictionary, reading stats, MOBI and PDF, cloud accounts, search. Each adds interface, and interface is what makes a reader feel cluttered.
+Notes, sync, a store, collections and tags, dictionary, reading stats, MOBI and PDF, cloud accounts, search. Each adds interface, and interface is what makes a reader feel cluttered.
+
+## Highlights (added after v1)
+
+Select words and a small bar floats by them with one button, Highlight; over a highlight already there, it says Remove. There is one colour and no notes. Highlights are anchored by the CFI of their range, kept per book in `Application Support/Highlights/<bookID>.json`, and drawn by foliate's overlay, including in the page curl's snapshots. ⌘⇧H (Go menu: Highlights) opens a sidebar like the contents with the book's highlights in reading order: Return or a click goes there, Delete removes one.
 
 ## Anti-goals
 

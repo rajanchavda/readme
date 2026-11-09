@@ -44,6 +44,8 @@ final class SpreadCache {
         var css: String
         var columns: Int
         var columnWidth: Double?
+        var highlights: [String]
+        var highlightColor: String
     }
 
     /// How many spreads are kept in each direction.
@@ -265,7 +267,9 @@ final class SpreadCache {
             appearance: visible.effectiveAppearance.name,
             css: visible.css,
             columns: visible.columns,
-            columnWidth: visible.columnWidth)
+            columnWidth: visible.columnWidth,
+            highlights: visible.highlightCFIs,
+            highlightColor: visible.highlightColor)
     }
 
     // MARK: Rendering
@@ -358,6 +362,10 @@ final class SpreadCache {
         if offscreen.css != layout.css || offscreen.columns != layout.columns
             || offscreen.columnWidth != layout.columnWidth {
             await offscreen.applyStyles(css: layout.css, columns: layout.columns, columnWidth: layout.columnWidth)
+            guard !Task.isCancelled else { return false }
+        }
+        if offscreen.highlightCFIs != layout.highlights || offscreen.highlightColor != layout.highlightColor {
+            await offscreen.setHighlights(layout.highlights, color: layout.highlightColor)
             guard !Task.isCancelled else { return false }
         }
         if offscreen.bookURL != book || !offscreen.isBookOpen {
