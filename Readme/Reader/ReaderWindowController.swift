@@ -72,6 +72,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private let toolbar: ReaderToolbarHost
     private let contents = TOCSidebar(frame: NSRect(x: 0, y: 0, width: TOCSidebar.width, height: 600))
     private let contentsScrim = ContentsScrim()
+    private let highlightsPanel = HighlightsSidebar(frame: NSRect(x: 0, y: 0, width: TOCSidebar.width, height: 600))
+    private let highlightBar = HighlightBar()
+    private var isHighlightsShown = false
+    /// What the reader selected, which the bar offers to highlight, or the CFI of the highlight it
+    /// offers to remove.
+    private var selection: BookWebView.SelectionInfo?
+    private var targetedHighlight: String?
+    private var barShownAt: ContinuousClock.Instant?
+    /// The open book's highlights, in reading order.
+    private var bookHighlights: [Highlight] = []
     private let pageField = GoToPageField(frame: NSRect(origin: .zero, size: GoToPageField.size))
 
     private let defaults: UserDefaults
@@ -172,7 +182,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             toolbar.centerXAnchor.constraint(equalTo: desk.centerXAnchor),
             toolbar.topAnchor.constraint(equalTo: desk.topAnchor, constant: 12),
         ])
-        for view in [pageField, contentsScrim, contents] as [NSView] {
+        for view in [pageField, contentsScrim, contents, highlightsPanel, highlightBar] as [NSView] {
             view.isHidden = true
             desk.addSubview(view)
         }
@@ -201,9 +211,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             session.turns.follow(signal)
         }
         // The open contents and the scrim beside them take every click, so one beside them closes them.
-        desk.chrome = [contents, contentsScrim, pageField, toolbar]
+        desk.chrome = [contents, highlightsPanel, contentsScrim, pageField, toolbar, highlightBar]
         contents.onChoose = { [weak self] entry in self?.choose(entry) }
-        contentsScrim.onClick = { [weak self] in self?.closeContents() }
+        contentsScrim.onClick = { [weak self] in
+            self?.closeContents()
+            self?.closeHighlights()
+        }
+        highlightsPanel.onChoose = { [weak self] highlight in self?.choose(highlight) }
+        highlightsPanel.onRemove = { [weak self] highlight in self?.remove(highlight) }
+        highlightBar.onPress = { [weak self] mode in self?.pressedBar(mode) }
         pageField.onGo = { [weak self] typed in self?.goToPage(typed: typed) ?? false }
         pageField.onClose = { [weak self] in self?.closePageField() }
         // The desk hears the mouse in an inactive window too, for the traffic lights. The toolbar
@@ -321,6 +337,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         session?.curl.removeFromSuperview()
         cover.removeFromSuperview()
         closeContents()
+        closeHighlights()
+        hideHighlightBar()
+        bookHighlights = []
         closePageField()
         contentsLoading?.cancel()
         tableOfContents = nil
@@ -346,6 +365,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             guard let self, let book, self.session?.book === book else { return }
             self.relocated(to: location, in: book)
         }
+        book.onSelection = { [weak self, weak book] info in
+            guard let self, let book, self.session?.book === book else { return }
+            self.selectionChanged(info)
+        }
+        book.onHighlightClicked = { [weak self, weak book] cfi, rect in
+            guard let self, let book, self.session?.book === book else { return }
+            self.highlightClicked(cfi, rect: rect)
+        }
         // A link is a jump the window didn't make, so it counts as one: when it's followed and when
         // it lands.
         book.onLink = { [weak self, weak book] _ in
@@ -369,6 +396,13 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                 // How far through the book the place was, for when the place itself is gone.
                 let share = saved.flatMap { $0.cfi == start ? $0.fraction : nil }
                 guard !Task.isCancelled, self.session?.book === book else { return }
+                // Drawn as the book opens, so a marked page never shows bare.
+                if let bookID, let store = self.library?.highlights {
+                    let marks = await store.highlights(bookID: bookID)
+                    guard !Task.isCancelled, self.session?.book === book else { return }
+                    self.bookHighlights = marks
+                    await book.setHighlights(marks.map(\.cfi), color: Self.highlightColor(self.theme))
+                }
                 let location = try await book.open(url, at: start)
                 guard !Task.isCancelled, self.session?.book === book else { return }
                 self.session?.bookID = bookID
@@ -642,6 +676,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func relocated(to location: ReaderLocation, in book: BookWebView) {
+        hideHighlightBar()
         show(location)
         if !isLayingOut { keep(location, in: book) }
     }
@@ -689,6 +724,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             onShowLibrary?()
         case .toggleTOC:
             toggleContents()
+        case .toggleHighlights:
+            toggleHighlights()
         case .goToStart:
             jump { await $0.goToStart() }
         case .goToEnd:
@@ -703,8 +740,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
               let action = KeyAction.of(
                 key: event.charactersIgnoringModifiers ?? "", keyCode: event.keyCode, modifiers: event.modifierFlags,
                 isRepeat: event.isARepeat, isFullscreen: isFullscreen, isTyping: window.firstResponder is NSText,
-                isInContents: isContentsShown)
-        else { return false }
+                isInContents: isContentsShown || isHighlightsShown)
+        else {
+            // Esc puts the bar away.
+            if event.keyCode == 53, !highlightBar.isHidden, event.window === window {
+                hideHighlightBar()
+                return true
+            }
+            return false
+        }
         switch action {
         case let .command(command):
             perform(command)
@@ -715,6 +759,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             window.toggleFullScreen(nil)
         case .closeContents:
             closeContents()
+            closeHighlights()
         case .ignore:
             break
         }
@@ -831,6 +876,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     /// Slides the contents in over the left of the book, with the keyboard theirs.
     private func openContents(_ entries: [TOCEntry], at fraction: Double) {
         closePageField()
+        closeHighlights()
+        hideHighlightBar()
         isContentsShown = true
         contents.setTheme(theme)
         contents.show(entries, at: fraction)
@@ -869,9 +916,184 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func contentsPlace(of event: NSEvent) -> ScrollRoute.Contents {
-        guard isContentsShown else { return .closed }
+        guard isContentsShown || isHighlightsShown else { return .closed }
         let point = desk.convert(event.locationInWindow, from: nil)
-        return contents.frame.contains(point) ? .under : .beside
+        return contents.frame.contains(point) || highlightsPanel.frame.contains(point) ? .under : .beside
+    }
+
+    // MARK: Highlights
+
+    /// The colour a highlight is drawn in: a warm yellow, a little deeper on the night page. Yellow
+    /// disappears into the sepia page, so that one gets a soft blue.
+    static func highlightColor(_ theme: Theme) -> String {
+        switch theme {
+        case .paper: "#f2c744"
+        case .sepia: "#4f9fd0"
+        case .night: "#d9a63a"
+        }
+    }
+
+    private var highlightStore: HighlightStore? { library?.highlights }
+
+    /// The reader selected words, or let go of them.
+    private func selectionChanged(_ info: BookWebView.SelectionInfo?) {
+        guard let info else {
+            // A click on a highlight collapses the selection just after it's shown the bar.
+            if let shown = barShownAt, targetedHighlight != nil, shown.duration(to: .now) < .milliseconds(400) { return }
+            hideHighlightBar()
+            return
+        }
+        guard highlightStore != nil, session?.bookID != nil, !isContentsShown, !isHighlightsShown else { return }
+        selection = info
+        if bookHighlights.contains(where: { $0.cfi == info.cfi }) {
+            targetedHighlight = info.cfi
+            showHighlightBar(.remove, at: info.rect)
+        } else {
+            targetedHighlight = nil
+            showHighlightBar(.add, at: info.rect)
+        }
+    }
+
+    private func highlightClicked(_ cfi: String, rect: CGRect) {
+        guard !isContentsShown, !isHighlightsShown else { return }
+        selection = nil
+        targetedHighlight = cfi
+        showHighlightBar(.remove, at: rect)
+    }
+
+    /// `rect` is on the page, from its top left. The bar goes by it, in the desk.
+    private func showHighlightBar(_ mode: HighlightBar.Mode, at rect: CGRect) {
+        guard let book = session?.book else { return }
+        let target = CGRect(
+            x: book.frame.minX + rect.minX,
+            y: book.frame.minY + book.bounds.height - rect.maxY,
+            width: rect.width, height: rect.height)
+        highlightBar.setTheme(theme)
+        highlightBar.show(mode)
+        highlightBar.frame = HighlightBar.frame(for: target, in: desk.bounds)
+        highlightBar.isHidden = false
+        barShownAt = .now
+    }
+
+    private func hideHighlightBar() {
+        highlightBar.isHidden = true
+        selection = nil
+        targetedHighlight = nil
+        barShownAt = nil
+    }
+
+    private func pressedBar(_ mode: HighlightBar.Mode) {
+        switch mode {
+        case .add:
+            guard let info = selection else { return }
+            addHighlight(from: info)
+        case .remove:
+            guard let cfi = targetedHighlight, let highlight = bookHighlights.first(where: { $0.cfi == cfi }) else {
+                return hideHighlightBar()
+            }
+            remove(highlight)
+        }
+    }
+
+    private func addHighlight(from info: BookWebView.SelectionInfo) {
+        guard let session, let bookID = session.bookID, let store = highlightStore else { return }
+        hideHighlightBar()
+        let highlight = Highlight(
+            cfi: info.cfi, text: info.text, chapterTitle: info.chapterTitle, fraction: info.fraction)
+        Task { [weak self] in
+            await store.add(highlight, bookID: bookID)
+            await session.book.addHighlight(info.cfi)
+            await session.book.clearSelection()
+            await self?.highlightsChanged(bookID: bookID, in: session.book)
+        }
+    }
+
+    private func remove(_ highlight: Highlight) {
+        guard let session, let bookID = session.bookID, let store = highlightStore else { return }
+        hideHighlightBar()
+        Task { [weak self] in
+            await store.remove(id: highlight.id, bookID: bookID)
+            await session.book.removeHighlight(highlight.cfi)
+            await self?.highlightsChanged(bookID: bookID, in: session.book)
+        }
+    }
+
+    /// Reads the book's highlights again, and has the curl's pictures redrawn with them.
+    private func highlightsChanged(bookID: String, in book: BookWebView) async {
+        guard let store = highlightStore else { return }
+        let marks = await store.highlights(bookID: bookID)
+        guard session?.book === book else { return }
+        bookHighlights = marks
+        if isHighlightsShown { highlightsPanel.show(marks) }
+        if let here = book.currentLocation { await session?.cache.refresh(around: here) }
+        rememberSpread()
+    }
+
+    /// The reader changed theme: the highlights are redrawn in its colour.
+    private func recolorHighlights() {
+        guard let book = session?.book, book.isBookOpen, !bookHighlights.isEmpty else { return }
+        let color = Self.highlightColor(theme)
+        guard color != book.highlightColor else { return }
+        Task { [weak self] in
+            await book.setHighlights(book.highlightCFIs, color: color)
+            guard let self, self.session?.book === book, let here = book.currentLocation else { return }
+            await self.session?.cache.refresh(around: here)
+        }
+    }
+
+    /// Goes to the highlight.
+    func choose(_ highlight: Highlight) {
+        jump { await $0.go(toCFI: highlight.cfi) }
+    }
+
+    private func toggleHighlights() {
+        if isHighlightsShown {
+            closeHighlights()
+            return
+        }
+        guard let session, session.book.isBookOpen, let bookID = session.bookID, let store = highlightStore else { return }
+        Task { [weak self] in
+            let marks = await store.highlights(bookID: bookID)
+            guard let self, self.session?.book === session.book else { return }
+            self.bookHighlights = marks
+            self.openHighlights(marks)
+        }
+    }
+
+    private func openHighlights(_ marks: [Highlight]) {
+        closePageField()
+        closeContents()
+        hideHighlightBar()
+        isHighlightsShown = true
+        highlightsPanel.setTheme(theme)
+        highlightsPanel.show(marks)
+        highlightsPanel.frame = contentsFrame(shown: false)
+        highlightsPanel.isHidden = false
+        contentsScrim.frame = desk.bounds
+        contentsScrim.isHidden = false
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            highlightsPanel.animator().frame = contentsFrame(shown: true)
+        }
+        highlightsPanel.focus()
+    }
+
+    private func closeHighlights() {
+        guard isHighlightsShown else { return }
+        isHighlightsShown = false
+        contentsScrim.isHidden = true
+        if highlightsPanel.hasFocus { window?.makeFirstResponder(nil) }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            highlightsPanel.animator().frame = contentsFrame(shown: false)
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.isHighlightsShown else { return }
+                self.highlightsPanel.isHidden = true
+            }
+        })
     }
 
     // MARK: For tests
@@ -890,6 +1112,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     var layoutColumns: Int { layout.columns }
     var isShowingContents: Bool { isContentsShown }
     var isShowingPageField: Bool { isPageFieldShown }
+    var isShowingHighlights: Bool { isHighlightsShown }
+    var highlightsShown: [Highlight] { highlightsPanel.highlights }
+    func pressHighlightBar() { highlightBar.press() }
+    var highlightBarMode: HighlightBar.Mode? { highlightBar.isHidden ? nil : highlightBar.mode }
     var contentsEntries: [TOCEntry] { contents.entries }
 
     /// Returns once the contents have been read and the restyles and jumps under way are done.
@@ -1052,6 +1278,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             contents.frame = contentsFrame(shown: true)
             contentsScrim.frame = desk.bounds
         }
+        if isHighlightsShown {
+            highlightsPanel.frame = contentsFrame(shown: true)
+            contentsScrim.frame = desk.bounds
+        }
+        hideHighlightBar()
         // Below the toolbar, where it would be if it were awake.
         pageField.frame = NSRect(
             x: ((desk.bounds.width - GoToPageField.size.width) / 2).rounded(),
@@ -1093,6 +1324,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let colors = ReadingCSS.colors(theme)
         toolbarModel.theme = theme
         contents.setTheme(theme)
+        highlightsPanel.setTheme(theme)
+        highlightBar.setTheme(theme)
+        recolorHighlights()
         pageField.setTheme(theme)
         session?.turns.pageColor = colors.page.cgColor
         session?.curl.spineColor = layout.columns == 2 ? colors.spine.cgColor : nil

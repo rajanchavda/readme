@@ -19,7 +19,7 @@ struct KeyShortcut: Equatable {
 
 /// What the reader can ask of the window, besides turning pages. Each has a menu item and a key.
 enum ReaderCommand: CaseIterable {
-    case biggerText, smallerText, toggleTOC, toggleFullscreen, showLibrary, goToStart, goToEnd, goToPage
+    case biggerText, smallerText, toggleTOC, toggleHighlights, toggleFullscreen, showLibrary, goToStart, goToEnd, goToPage
 
     static let fontSizes = 12.0...40.0
     static let fontSizeStep = 2.0
@@ -29,6 +29,7 @@ enum ReaderCommand: CaseIterable {
         case .biggerText: KeyShortcut("+", [.command])
         case .smallerText: KeyShortcut("-", [.command])
         case .toggleTOC: KeyShortcut("t", [.command])
+        case .toggleHighlights: KeyShortcut("h", [.command, .shift])
         case .toggleFullscreen: KeyShortcut("f", [.control, .command])
         case .showLibrary: KeyShortcut("l", [.command])
         case .goToStart: KeyShortcut(KeyShortcut.character(NSUpArrowFunctionKey), [.command])
@@ -42,6 +43,7 @@ enum ReaderCommand: CaseIterable {
         case .biggerText: "Bigger Text"
         case .smallerText: "Smaller Text"
         case .toggleTOC: "Contents"
+        case .toggleHighlights: "Highlights"
         case .toggleFullscreen: "Toggle Full Screen"
         case .showLibrary: "Library"
         case .goToStart: "Go to Start"

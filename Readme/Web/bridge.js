@@ -2,6 +2,7 @@
 // Swift with callAsyncJavaScript and answers with plain JSON-safe values.
 import { makeBook } from './foliate/view.js'
 import { SectionProgress } from './foliate/progress.js'
+import { Overlayer } from './foliate/overlayer.js'
 
 const COMMAND_MS = 15000
 const SECTION_MS = 10000
@@ -33,6 +34,9 @@ let columnWidth = null
 let laidOutSize = null
 let relayoutTimer = null
 let queue = Promise.resolve()
+// The highlights drawn on the book, by CFI, and the colour they're drawn in.
+const highlights = new Set()
+let highlightColor = '#f2c744'
 
 const withTimeout = (promise, ms, label) => {
     let timer
@@ -390,6 +394,65 @@ const open = async (url, cfi, css, columns, width) => {
         tell(false)
         navigate(() => view.goTo(href)).catch(error => console.warn(error)).finally(() => tell(true))
     })
+    // Highlights: the page tells the app about a selection worth marking and about a click on a mark.
+    const tellApp = message => globalThis.webkit?.messageHandlers?.readme?.postMessage(JSON.stringify(message))
+    const rectOf = range => {
+        const frame = range.startContainer.ownerDocument.defaultView?.frameElement
+        const offset = frame?.getBoundingClientRect() ?? { left: 0, top: 0 }
+        const r = range.getBoundingClientRect()
+        return { x: r.left + offset.left, y: r.top + offset.top, width: r.width, height: r.height }
+    }
+    // How far into the book a point of a section is, going by the section's share of the text.
+    const fractionOf = (index, range) => {
+        const fractions = view.getSectionFractions()
+        const start = fractions[index] ?? 0
+        const end = fractions[index + 1] ?? start
+        const body = range.startContainer.ownerDocument.body
+        const total = body?.textContent.length || 1
+        const before = range.cloneRange()
+        before.selectNodeContents(body)
+        before.setEnd(range.startContainer, range.startOffset)
+        return Math.min(1, start + (end - start) * Math.min(1, before.toString().length / total))
+    }
+    view.addEventListener('load', ({ detail: { doc, index } }) => {
+        const report = () => {
+            const selection = doc.getSelection()
+            const text = selection?.toString().trim()
+            if (!selection || selection.isCollapsed || !text) return tellApp({ type: 'selection' })
+            const range = selection.getRangeAt(0)
+            const cfi = view.getCFI(index, range)
+            // Without the range in it a CFI is only the section, which isn't worth marking.
+            if (!cfi.includes(',')) return tellApp({ type: 'selection' })
+            tellApp({
+                type: 'selection', cfi, text, rect: rectOf(range),
+                fraction: fractionOf(index, range),
+                label: view.getProgressOf(index, range).tocItem?.label ?? null,
+            })
+        }
+        let timer
+        doc.addEventListener('selectionchange', () => {
+            // A selection still being made is reported when the pointer lets go.
+            if (!doc.getSelection()?.isCollapsed) return
+            clearTimeout(timer)
+            timer = setTimeout(report, 50)
+        })
+        doc.addEventListener('pointerup', () => { clearTimeout(timer); timer = setTimeout(report, 30) })
+        doc.addEventListener('keyup', event => {
+            if (event.key.startsWith('Arrow') || event.key === 'Shift') {
+                clearTimeout(timer)
+                timer = setTimeout(report, 150)
+            }
+        })
+    })
+    view.addEventListener('draw-annotation', ({ detail: { draw } }) =>
+        draw(Overlayer.highlight, { color: highlightColor }))
+    view.addEventListener('create-overlay', () => {
+        for (const cfi of highlights) view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
+    })
+    view.addEventListener('show-annotation', ({ detail: { value, range } }) => {
+        if (!highlights.has(value)) return
+        tellApp({ type: 'highlight', cfi: value, rect: rectOf(range) })
+    })
     // Otherwise a big image can be painted blank and repainted later when it's decoded, which a page
     // that isn't visible may never do, leaving a gap in a snapshot.
     view.addEventListener('load', ({ detail: { doc } }) => {
@@ -531,6 +594,25 @@ globalThis.readmeBridge = {
     goToStart: () => navigate(() => goToEdge(false)),
     goToEnd: () => navigate(() => goToEdge(true)),
     toc: tocEntries,
+    // Replaces what's drawn with `cfis`, in `color`.
+    setHighlights: async (cfis, color) => {
+        const removed = [...highlights].filter(cfi => !cfis.includes(cfi))
+        highlights.clear()
+        for (const cfi of cfis) highlights.add(cfi)
+        highlightColor = color
+        // The old ones are redrawn too, for the new colour.
+        for (const cfi of removed) await view.deleteAnnotation({ value: cfi }).catch(error => console.warn(error))
+        for (const cfi of cfis) await view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
+    },
+    addHighlight: async cfi => {
+        highlights.add(cfi)
+        await view.addAnnotation({ value: cfi })
+    },
+    removeHighlight: async cfi => {
+        highlights.delete(cfi)
+        await view.deleteAnnotation({ value: cfi })
+    },
+    clearSelection: () => view.deselect(),
     applyStyles: (css, columns, width) => enqueue(() => holdingPlace(() => setLayout(css, columns, width))),
     // Called when Swift resizes the view. The page learns its new size a little later.
     resized: async width => {

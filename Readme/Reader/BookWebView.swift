@@ -26,6 +26,10 @@ final class BookWebView: NSView {
     /// Hears a link in the book being followed, and again when it's landed, after its relocation.
     /// `landed` says which.
     var onLink: ((_ landed: Bool) -> Void)?
+    /// Hears the reader select words worth marking, or nil when the selection is gone.
+    var onSelection: ((SelectionInfo?) -> Void)?
+    /// Hears a click on a highlight: its CFI and where it is on the page.
+    var onHighlightClicked: ((_ cfi: String, _ rect: CGRect) -> Void)?
     private var relocationListeners: [(ReaderLocation) -> Void] = []
     private var linkListeners: [(_ landed: Bool) -> Void] = []
     /// Counts relocations heard, so a reply can tell whether one came in while it was on its way.
@@ -158,6 +162,8 @@ final class BookWebView: NSView {
         isOpen = true
         self.bookURL = url
         currentLocation = location
+        if !highlightCFIs.isEmpty { await setHighlights(highlightCFIs, color: highlightColor) }
+        guard generation == openGeneration else { throw BookWebViewError.superseded }
         if bounds.size != sizeAtOpen { scheduleRelayout() }
         return location
     }
@@ -249,6 +255,42 @@ final class BookWebView: NSView {
         guard fraction.isFinite else { return nil }
         let clamped = min(1, max(0, fraction))
         return await navigate("return await readmeBridge.goToFraction(fraction)", arguments: ["fraction": clamped])
+    }
+
+    /// Words the reader selected. `rect` is in the page's own coordinates, from its top left.
+    struct SelectionInfo: Equatable {
+        var cfi: String
+        var text: String
+        var fraction: Double
+        var chapterTitle: String?
+        var rect: CGRect
+    }
+
+    /// The highlights drawn on the book, and their colour. Kept here so a book opened later has them too.
+    private(set) var highlightCFIs: [String] = []
+    private(set) var highlightColor = "#f2c744"
+
+    /// Draws exactly these highlights, in `color`.
+    func setHighlights(_ cfis: [String], color: String) async {
+        highlightCFIs = cfis
+        highlightColor = color
+        guard isOpen else { return }
+        _ = try? await call(
+            "await readmeBridge.setHighlights(cfis, color)", arguments: ["cfis": cfis, "color": color], as: Bool.self)
+    }
+
+    func addHighlight(_ cfi: String) async {
+        if !highlightCFIs.contains(cfi) { highlightCFIs.append(cfi) }
+        _ = try? await call("await readmeBridge.addHighlight(cfi)", arguments: ["cfi": cfi], as: Bool.self)
+    }
+
+    func removeHighlight(_ cfi: String) async {
+        highlightCFIs.removeAll { $0 == cfi }
+        _ = try? await call("await readmeBridge.removeHighlight(cfi)", arguments: ["cfi": cfi], as: Bool.self)
+    }
+
+    func clearSelection() async {
+        _ = try? await call("readmeBridge.clearSelection()", as: Bool.self)
     }
 
     /// What following a link did.
@@ -492,6 +534,20 @@ final class BookWebView: NSView {
             currentLocation = location
             relocationListeners.forEach { $0(location) }
             onRelocate?(location)
+        case ("selection", _):
+            if let cfi = event.cfi, let text = event.text, let rect = event.rect {
+                onSelection?(SelectionInfo(
+                    cfi: cfi, text: text, fraction: event.fraction ?? 0, chapterTitle: event.label,
+                    rect: CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)))
+            } else {
+                onSelection?(nil)
+            }
+        case ("highlight", _):
+            if let cfi = event.cfi, let rect = event.rect {
+                onHighlightClicked?(cfi, CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height))
+            } else {
+                rejectedMessageCount += 1
+            }
         default:
             rejectedMessageCount += 1
         }
@@ -514,6 +570,18 @@ final class BookWebView: NSView {
         var location: ReaderLocation?
         var load: String?
         var landed: Bool?
+        var cfi: String?
+        var text: String?
+        var fraction: Double?
+        var label: String?
+        var rect: Rect?
+
+        struct Rect: Decodable {
+            var x: Double
+            var y: Double
+            var width: Double
+            var height: Double
+        }
     }
 }
 

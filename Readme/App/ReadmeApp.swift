@@ -58,6 +58,7 @@ struct ReadmeApp: App {
                     item(.smallerText)
                     Divider()
                     item(.toggleTOC)
+                    item(.toggleHighlights)
                     item(.showLibrary)
                     Divider()
                     item(.toggleFullscreen)
