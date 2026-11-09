@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Apple silicon only, macOS 14 or later.
-- Sandboxed, no private APIs, no network access at runtime. No backend or accounts.
+- Sandboxed, no private APIs, no network use at runtime. No backend or accounts. WKWebView in a sandboxed app requires the `com.apple.security.network.client` entitlement, so that one is allowed, and a `WKContentRuleList` blocks all http(s) and ws(s) loads from books.
 - All costs stay at zero: ad-hoc signing (`CODE_SIGN_IDENTITY = "-"`) until the owner pays Apple's fee.
 - Bundle ID `com.rajanchavda.Readme`, display name `Readme` (working name; keep it in one build setting).
 - Never use the `gh` CLI. Plain `git` only. Temporary files go in `scratchpad/`, never `/tmp`.
@@ -48,7 +48,7 @@ Nothing else gets built until the owner has tried this.
 - [ ] **Step 1:** Run `git init -b main`, then commit the existing spec, plan, `.gitignore` and mockup copies as the first commit. Create a branch `build/v1` for the work.
 - [ ] **Step 2:** Write `SmokeTests.appIdentity`: `#expect(Bundle(for: BundleToken.self).bundleIdentifier == "com.rajanchavda.Readme")`, using the app bundle.
 - [ ] **Step 3:** Run `scripts/test.sh SmokeTests`. Expected: FAIL (no project yet).
-- [ ] **Step 4:** Write `project.yml`: macOS 14 target, Swift 6, sandbox on with `com.apple.security.files.user-selected.read-only`, no network entitlements, ad-hoc signing, `CFBundleDocumentTypes` for `org.idpf.epub-container`. Write an app that opens an empty window.
+- [ ] **Step 4:** Write `project.yml`: macOS 14 target, Swift 6, sandbox on with `com.apple.security.files.user-selected.read-only`, no other entitlements yet, ad-hoc signing, `CFBundleDocumentTypes` for `org.idpf.epub-container`. Write an app that opens an empty window.
 - [ ] **Step 5:** Run `scripts/test.sh SmokeTests`. Expected: PASS.
 - [ ] **Step 6:** Commit: `chore: add project skeleton`.
 
@@ -104,7 +104,7 @@ shade = |sin(angle)| * 0.16;  cast = sin(pi*t)
   - `brokenChapterStillOpens`: open `broken-chapter.epub`, walk every section with `next()`, expect no thrown error.
   - `missingTOCIsEmpty`: `no-toc.epub` gives `toc() == []`.
 - [ ] **Step 2:** Run `scripts/test.sh BookWebViewTests`. Expected: FAIL.
-- [ ] **Step 3:** Implement. Serve everything through a `WKURLSchemeHandler` on `readme-book://`. Send the header `Content-Security-Policy: default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * 'unsafe-inline'; font-src * blob: data: readme-book:` on `reader.html` (foliate's README requires script blocking by CSP, because WebKit needs `allow-scripts` on its iframes). `bridge.js` drives `<foliate-view>`: `flow="paginated"`, `max-column-count=2`. Take `chapterMinutesLeft` from the `time.section` value of foliate's `relocate` event.
+- [ ] **Step 3:** Implement. Serve everything through a `WKURLSchemeHandler` on `readme-book://`. Send the header `Content-Security-Policy: default-src 'self' blob: readme-book:; script-src 'self'; connect-src 'self' blob: readme-book:; img-src * blob: data: readme-book:; style-src * blob: 'unsafe-inline'; font-src * blob: data: readme-book:` on `reader.html` (foliate's README requires script blocking by CSP, because WebKit needs `allow-scripts` on its iframes). `bridge.js` drives `<foliate-view>`: `flow="paginated"`, `max-column-count=2`. Take `chapterMinutesLeft` from the `time.section` value of foliate's `relocate` event.
 - [ ] **Step 4:** Run `scripts/test.sh BookWebViewTests`. Expected: PASS.
 - [ ] **Step 5:** Commit: `feat: render EPUBs with foliate-js`.
 
@@ -228,33 +228,41 @@ shade = |sin(angle)| * 0.16;  cast = sin(pi*t)
 - Consumes: `ReaderSettings`, `ReadingCSS`, `SpreadLayout`, `TurnCoordinator`, `ReaderLocation`.
 - Produces: `struct IdleTimer { var delay = 1.6; mutating func activity(at: TimeInterval); func isAwake(at: TimeInterval) -> Bool }`
 - Produces: `@MainActor final class ReaderWindowController: NSWindowController { func open(_ book: Book, at: String?) async; var onShowLibrary: (() -> Void)? }`. `Book` is defined in Task 12, so until then this takes a URL.
-- Produces: `enum ReaderCommand: CaseIterable { case biggerText, smallerText, toggleTOC, toggleFullscreen, showLibrary }`, each with its key equivalent.
+- Produces: `enum ReaderCommand: CaseIterable { case biggerText, smallerText, toggleTOC, toggleFullscreen, showLibrary, goToStart, goToEnd, goToPage }`, each with its key equivalent. Task 10 implements what the last three do.
 
 - [ ] **Step 1:** Write tests:
   - `IdleTimerTests`: awake straight after activity, asleep 1.6 s later, and activity wakes it again.
-  - `ReaderCommandsTests.shortcuts`: `biggerText` is ⌘+, `smallerText` is ⌘−, `toggleTOC` is ⌘T, `toggleFullscreen` is ⌃⌘F, `showLibrary` is ⌘L.
+  - `ReaderCommandsTests.shortcuts`: `biggerText` is ⌘+, `smallerText` is ⌘−, `toggleTOC` is ⌘T, `toggleFullscreen` is ⌃⌘F, `showLibrary` is ⌘L, `goToStart` is ⌘↑, `goToEnd` is ⌘↓, `goToPage` is ⌘G.
+  - `ReaderCommandsTests.homeAndEnd`: Home with no modifiers maps to `goToStart`, End to `goToEnd`.
   - `ReaderCommandsTests.plainFTogglesFullscreen`: an `f` key with no modifiers maps to `toggleFullscreen`.
   - `ReaderCommandsTests.fontSizeLimits`: size stays within 12 to 40.
 - [ ] **Step 2:** Run both suites. Expected: FAIL.
-- [ ] **Step 3:** Implement to match `docs/mockups/open-book-v2.html`: desk surface, spine shadow overlay, toolbar with blur (themes including Auto, fonts, size, line width, time left, table of contents, library, fullscreen), and the hairline progress bar. Toolbar eases in and out over 200 ms. Hide the title bar, showing traffic lights only on hover. In fullscreen, hide the cursor while idle. Save the window frame with `setFrameAutosaveName`. Themes animate over 200 ms, with no flash. Clicks on the outer page edges turn pages; text in the middle stays selectable.
+- [ ] **Step 3:** Implement to match `docs/mockups/open-book-v2.html`: desk surface, spine shadow overlay, toolbar with blur (themes including Auto, fonts, size, line width, time left, table of contents, library, fullscreen), and the hairline progress bar. Toolbar eases in and out over 200 ms. Hide the title bar, showing traffic lights only on hover. In fullscreen, hide the cursor while idle. Save the window frame with `setFrameAutosaveName`. Themes animate over 200 ms, with no flash. Clicks on the outer page edges turn pages; text in the middle stays selectable. Pass the key event's `isARepeat` through to `TurnCoordinator.turn`, as the trial window does.
 - [ ] **Step 4:** Run both suites. Expected: PASS.
 - [ ] **Step 5:** Commit: `feat: reading window and quiet toolbar`.
 
-### Task 10: Table of contents
+### Task 10: Table of contents and getting around
 
 **Files:**
-- Create: `Readme/Reader/TOCSidebar.swift`, `Readme/Reader/TOCProgress.swift`
-- Test: `ReadmeTests/TOCProgressTests.swift`
+- Create: `Readme/Reader/TOCSidebar.swift`, `Readme/Reader/TOCProgress.swift`, `Readme/Reader/GoToPageField.swift`
+- Modify: `Readme/Reader/ReaderLocation.swift`, `Readme/Web/bridge.js`, `Readme/Reader/ReaderWindowController.swift`
+- Test: `ReadmeTests/TOCProgressTests.swift`, `ReadmeTests/GoToPageTests.swift`
 
 **Interfaces:**
-- Consumes: `TOCEntry`, `BookWebView.toc()`, `BookWebView.go(toFraction:)`.
+- Consumes: `TOCEntry`, `BookWebView.toc()`, `BookWebView.go(toFraction:)`, `ReaderCommand.goToStart`, `.goToEnd`, `.goToPage`.
 - Produces: `enum TOCState { case read, current, unread }`, `enum TOCProgress { static func states(entries: [TOCEntry], fraction: Double) -> [TOCState] }`
+- Produces: `ReaderLocation.page: Int` and `pageCount: Int`, from foliate's `location.current` (plus one) and `location.total`. `enum GoToPage { static func fraction(forTyped: String, pageCount: Int) -> Double? }`
 
 - [ ] **Step 1:** Write `TOCProgressTests`: entries at 0, 0.5 and 0.8 with fraction 0.6 give `[.read, .current, .unread]`; fraction 0 gives the first as `.current`; an empty list gives an empty result.
-- [ ] **Step 2:** Run `scripts/test.sh TOCProgressTests`. Expected: FAIL.
-- [ ] **Step 3:** Implement a slide-in sidebar with `NSVisualEffectView`, toggled by ⌘T, easing over 200 ms. Read chapters are dimmed and the current one is marked quietly. Clicking a chapter closes the sidebar and goes there without a curl. For a book with no table of contents, the toggle does nothing.
-- [ ] **Step 4:** Run `scripts/test.sh TOCProgressTests`. Expected: PASS.
-- [ ] **Step 5:** Commit: `feat: table of contents sidebar`.
+- [ ] **Step 2:** Write `GoToPageTests`:
+  - `fraction(forTyped: "1", pageCount: 100)` is 0, and `"51"` is 0.5.
+  - Text that isn't a whole number gives nil, as does an empty string.
+  - A number past the end, or below 1, goes to the nearest real page.
+  - Against `long.epub`: going to the end lands with `isAtEnd`, going to the start lands with `isAtStart`, the page number survives a font-size change, and the next turn after each jump curls to the right page.
+- [ ] **Step 3:** Run both suites. Expected: FAIL.
+- [ ] **Step 4:** Implement a slide-in sidebar with `NSVisualEffectView`, toggled by ⌘T, easing over 200 ms. Read chapters are dimmed and the current one is marked quietly. Clicking a chapter closes the sidebar and goes there without a curl. For a book with no table of contents, the toggle does nothing. ⌘↑ and Home go to the start, ⌘↓ and End to the last spread. ⌘G shows a small quiet field with "214 of 1,240" as its placeholder: Return goes there and closes it, and Esc closes it without moving. Keys typed in the field must not turn pages. None of these jumps plays a curl.
+- [ ] **Step 5:** Run both suites. Expected: PASS.
+- [ ] **Step 6:** Commit: `feat: table of contents and page shortcuts`.
 
 ### Task 11: Exact position memory
 
@@ -369,7 +377,7 @@ shade = |sin(angle)| * 0.16;  cast = sin(pi*t)
 **Interfaces:**
 - Produces: `build/Readme.dmg`.
 
-- [ ] **Step 1:** Write `scripts/check_release.sh`, which fails unless: `codesign -d --entitlements -` shows the sandbox on and no network entitlements; `lipo -archs` shows `arm64`; `LSMinimumSystemVersion` is `14.0`; and `THIRD_PARTY_NOTICES.md` names foliate-js, zip.js, EB Garamond, Literata and Fraunces.
+- [ ] **Step 1:** Write `scripts/check_release.sh`, which fails unless: `codesign -d --entitlements -` shows the sandbox on, `network.client` as the only network entitlement and no `network.server`; `lipo -archs` shows `arm64`; `LSMinimumSystemVersion` is `14.0`; and `THIRD_PARTY_NOTICES.md` names foliate-js, zip.js, EB Garamond, Literata and Fraunces.
 - [ ] **Step 2:** Run it. Expected: FAIL.
 - [ ] **Step 3:** Confirm each bundled font's and library's licence allows commercial shipping, and include their licence text in the notices. Stop and tell the owner if any doesn't. Write `package.sh` using `hdiutil`, and add a simple app icon. Write `docs/install.md`: plain steps for a reader to open the app the first time through System Settings, Privacy & Security, "Open Anyway".
 - [ ] **Step 4:** Run `scripts/package.sh && scripts/check_release.sh`. Expected: PASS.

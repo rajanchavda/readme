@@ -54,6 +54,10 @@ These are decisions, shown to the owner in working mockups. Don't reopen them wi
 
 **The current book gets its own top shelf.** It stands larger, with "Continue reading", title, author, chapter and time left beside it. The other books fill the shelves below.
 
+**Getting around the book.** After trying the curl, the owner asked for shortcuts to the last page, the index and a specific page number. ⌘T opens the contents, ⌘↑ goes to the start of the book and ⌘↓ to the last page (Home and End do the same), and ⌘G opens a small field to type a page number into. None of these jumps plays a curl. Builder's call: a flowing book has no fixed pages, so a "page" here is a fixed run of text, as in Kindle and Apple Books. The number stays the same when the font or window changes, and the field shows the current page and total, such as "214 of 1,240". It isn't the page number printed in a paper edition.
+
+**Holding an arrow key.** Pages stop when the key is released. A held key only asks for another page once the last one has landed, so nothing queues up. Separate quick presses all count.
+
 **Distribution.** Eventually the Mac App Store. Money is tight, so it starts as a free download from the owner's website.
 
 ## Carried over from the original write-up
