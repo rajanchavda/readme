@@ -2,6 +2,11 @@
 
 Readme needs a Mac with Apple silicon (M1 or later) and macOS 14 Sonoma or later.
 
+## Easiest: Homebrew
+
+`brew install --cask rajanchavda/tap/readme` installs it with no warning to click through. See `docs/homebrew.md`.
+Otherwise, follow the steps below.
+
 ## 1. Copy it to your Applications folder
 
 1. Double-click **Readme.dmg** to open it.
