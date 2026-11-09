@@ -923,9 +923,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Highlights
 
-    /// The colour a highlight is drawn in: a warm yellow, a little deeper on the night page.
+    /// The colour a highlight is drawn in: a warm yellow, a little deeper on the night page. Yellow
+    /// disappears into the sepia page, so that one gets a soft blue.
     static func highlightColor(_ theme: Theme) -> String {
-        theme == .night ? "#d9a63a" : "#f2c744"
+        switch theme {
+        case .paper: "#f2c744"
+        case .sepia: "#4f9fd0"
+        case .night: "#d9a63a"
+        }
     }
 
     private var highlightStore: HighlightStore? { library?.highlights }
