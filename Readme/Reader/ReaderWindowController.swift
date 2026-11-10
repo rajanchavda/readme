@@ -93,6 +93,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var turnWatch: Task<Void, Never>?
     private var marking: Task<Void, Never>?
     private let pageField = GoToPageField(frame: NSRect(origin: .zero, size: GoToPageField.size))
+    private let searchBox = SearchBox(frame: NSRect(x: 0, y: 0, width: SearchBox.width, height: 40))
+    /// Dims the book behind the search box, and closes the box when clicked.
+    private let searchScrim = ContentsScrim()
+    private(set) var isSearchShown = false
+    /// The last search, kept while the book is open so ⌘F comes back to it.
+    private(set) var searchQuery = ""
+    private(set) var searchOutcome: SearchOutcome?
+    private(set) var searchSelection: Int?
 
     private let defaults: UserDefaults
     /// Where each book was left. Without one, books open at their start and nothing is kept.
@@ -194,7 +202,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             toolbar.centerXAnchor.constraint(equalTo: desk.centerXAnchor),
             toolbar.topAnchor.constraint(equalTo: desk.topAnchor, constant: 12),
         ])
-        for view in [pageField, contentsScrim, contents, highlightsPanel, highlightBar] as [NSView] {
+        searchScrim.wantsLayer = true
+        searchScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.12).cgColor
+        for view in [pageField, contentsScrim, contents, highlightsPanel, highlightBar, searchScrim, searchBox] as [NSView] {
             view.isHidden = true
             desk.addSubview(view)
         }
@@ -233,7 +243,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             session.turns.follow(signal)
         }
         // The open contents and the scrim beside them take every click, so one beside them closes them.
-        desk.chrome = [contents, highlightsPanel, contentsScrim, pageField, toolbar, highlightBar]
+        desk.chrome = [contents, highlightsPanel, contentsScrim, pageField, toolbar, highlightBar, searchScrim, searchBox]
         contents.onChoose = { [weak self] entry in self?.choose(entry) }
         contentsScrim.onClick = { [weak self] in
             self?.closeContents()
@@ -244,6 +254,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         highlightBar.onPress = { [weak self] mode in self?.pressedBar(mode) }
         pageField.onGo = { [weak self] typed in self?.goToPage(typed: typed) ?? false }
         pageField.onClose = { [weak self] in self?.closePageField() }
+        searchScrim.onClick = { [weak self] in self?.closeSearch() }
+        searchBox.onQuery = { [weak self] query in
+            guard let self else { return }
+            Task { await self.search(query) }
+        }
+        searchBox.onPick = { [weak self] row in self?.pickSearchMatch(at: row) }
+        searchBox.onClose = { [weak self] in self?.closeSearch() }
+        searchBox.onResize = { [weak self] in self?.placeSearchBox() }
         // The desk hears the mouse in an inactive window too, for the traffic lights. The toolbar
         // only wakes in the window being read.
         desk.onMouseMoved = { [weak self] point in
@@ -366,6 +384,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         turnWatch?.cancel()
         isTurning = false
         closePageField()
+        closeSearch()
+        searchQuery = ""
+        searchOutcome = nil
+        searchSelection = nil
         contentsLoading?.cancel()
         tableOfContents = nil
 
@@ -538,6 +560,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         onShowingLibraryChange?(true)
         closeContents()
         closePageField()
+        closeSearch()
         desk.abandonSwipe()
         sleep()
         if let window, window.firstResponder !== window { window.makeFirstResponder(nil) }
@@ -786,7 +809,90 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Search
 
-    private func showSearch() {}
+    /// Opens the search box over the book, with the last search still in it.
+    private func showSearch() {
+        guard session != nil else { return }
+        closeContents()
+        closeHighlights()
+        closePageField()
+        hideHighlightBar()
+        searchBox.setTheme(theme)
+        if !isSearchShown { searchBox.alphaValue = 0 }
+        isSearchShown = true
+        searchScrim.frame = desk.bounds
+        searchScrim.isHidden = false
+        searchBox.isHidden = false
+        searchBox.begin(query: searchQuery, outcome: searchOutcome, selected: searchSelection)
+        placeSearchBox()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            searchBox.animator().alphaValue = 1
+        }
+    }
+
+    /// Closes the box without moving. Called again as the field gives up the keyboard, which does
+    /// nothing then.
+    func closeSearch() {
+        guard isSearchShown else { return }
+        isSearchShown = false
+        searchScrim.isHidden = true
+        if let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor,
+           (editor.delegate as? NSView)?.isDescendant(of: searchBox) == true {
+            window?.makeFirstResponder(nil)
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            searchBox.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.isSearchShown else { return }
+                self.searchBox.isHidden = true
+            }
+        })
+    }
+
+    /// Searches the open book for `query` straight away, and shows what's found. A reply to a search
+    /// that's since been replaced, or to another book, is dropped.
+    func search(_ query: String) async {
+        searchQuery = query
+        guard let book = session?.book, SearchResults.isSearchable(query) else {
+            searchOutcome = nil
+            searchSelection = nil
+            searchBox.show(nil, for: query)
+            return
+        }
+        guard let outcome = await book.search(query, limit: SearchResults.limit),
+              searchQuery == query, session?.book === book
+        else { return }
+        searchOutcome = outcome
+        searchSelection = nil
+        searchBox.show(outcome, for: query)
+        searchSelection = searchBox.selected
+    }
+
+    /// Closes the box and goes to the match, which glows for a moment once there.
+    func pickSearchMatch(at index: Int) {
+        guard let matches = searchOutcome?.matches, matches.indices.contains(index) else { return }
+        let match = matches[index]
+        searchSelection = index
+        jump { book in
+            let landed = await book.go(toCFI: match.cfi)
+            await book.flash(match.cfi)
+            return landed
+        }
+    }
+
+    /// Centred below where the toolbar would be, like the go-to-page field.
+    private func placeSearchBox() {
+        let height = searchBox.preferredHeight
+        searchBox.frame = NSRect(
+            x: ((desk.bounds.width - SearchBox.width) / 2).rounded(),
+            y: desk.bounds.height - 52 - height,
+            width: SearchBox.width, height: height)
+        searchScrim.frame = desk.bounds
+    }
 
     private func handle(_ event: NSEvent) -> Bool {
         guard let window, event.window === window, window.attachedSheet == nil, !isShowingLibrary,
@@ -836,6 +942,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         guard let session else { return }
         closeContents()
         closePageField()
+        closeSearch()
         places.turned()
         jumping = Task { [weak self] in
             _ = await session.turns.jump { await go(session.book) }
@@ -869,6 +976,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private func showPageField() {
         guard let here = session?.book.currentLocation, here.pageCount > 0 else { return }
         closeContents()
+        closeSearch()
         placeViews()
         pageField.setTheme(theme)
         if !isPageFieldShown { pageField.alphaValue = 0 }
@@ -931,6 +1039,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     /// Slides the contents in over the left of the book, with the keyboard theirs.
     private func openContents(_ entries: [TOCEntry], at fraction: Double) {
         closePageField()
+        closeSearch()
         closeHighlights()
         hideHighlightBar()
         isContentsShown = true
@@ -1117,6 +1226,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     private func openHighlights(_ marks: [Highlight]) {
         closePageField()
+        closeSearch()
         closeContents()
         hideHighlightBar()
         isHighlightsShown = true
@@ -1420,6 +1530,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         }
         hideHighlightBar()
         // Below the toolbar, where it would be if it were awake.
+        if isSearchShown { placeSearchBox() }
         pageField.frame = NSRect(
             x: ((desk.bounds.width - GoToPageField.size.width) / 2).rounded(),
             y: desk.bounds.height - 52 - GoToPageField.size.height,
@@ -1464,6 +1575,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         highlightBar.setTheme(theme)
         recolorHighlights()
         pageField.setTheme(theme)
+        searchBox.setTheme(theme)
         ribbon.color = Self.ribbonColor(theme)
         session?.turns.pageColor = colors.page.cgColor
         session?.curl.spineColor = layout.columns == 2 ? colors.spine.cgColor : nil
