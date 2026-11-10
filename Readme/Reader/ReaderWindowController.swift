@@ -33,6 +33,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     var onRead: ((_ bookID: String, ReaderLocation) -> Void)?
     /// Hears that a library book couldn't be opened, as when its file is no longer a book.
     var onOpenFailed: ((Book) -> Void)?
+    /// Hears whether the open book has a reading marker, for the menu.
+    var onMarkerChange: ((Bool) -> Void)?
     /// Hears the library being shown, or put away.
     var onShowingLibraryChange: ((Bool) -> Void)?
 
@@ -82,6 +84,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var barShownAt: ContinuousClock.Instant?
     /// The open book's highlights, in reading order.
     private var bookHighlights: [Highlight] = []
+    /// The open book's reading marker, if the reader set one.
+    private var bookMarker: Marker?
+    private let ribbon = MarkerRibbon(frame: NSRect(origin: .zero, size: MarkerRibbon.size))
+    private var isRibbonOn = false
+    /// True from a turn's start until it has landed, while the ribbon stays off the page.
+    private var isTurning = false
+    private var turnWatch: Task<Void, Never>?
+    private var marking: Task<Void, Never>?
     private let pageField = GoToPageField(frame: NSRect(origin: .zero, size: GoToPageField.size))
 
     private let defaults: UserDefaults
@@ -176,6 +186,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         desk.addSubview(progressBar)
         notice.alphaValue = 0
         desk.addSubview(notice)
+        ribbon.alphaValue = 0
+        desk.addSubview(ribbon, positioned: .above, relativeTo: spine)
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         desk.addSubview(toolbar)
         NSLayoutConstraint.activate([
@@ -207,7 +219,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         desk.onSwipe = { [weak self] signal in
             guard let self, !self.isCovered, let session = self.session else { return }
             // A swipe may turn the page, which is then where the reader wants to stay.
-            if case .start = signal { self.places.turned() }
+            switch signal {
+            case .start:
+                self.places.turned()
+                self.turnBegan()
+            case .release, .abandon:
+                session.turns.follow(signal)
+                self.watchTurnLanding()
+                return
+            case .move:
+                break
+            }
             session.turns.follow(signal)
         }
         // The open contents and the scrim beside them take every click, so one beside them closes them.
@@ -340,6 +362,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         closeHighlights()
         hideHighlightBar()
         bookHighlights = []
+        setBookMarker(nil)
+        turnWatch?.cancel()
+        isTurning = false
         closePageField()
         contentsLoading?.cancel()
         tableOfContents = nil
@@ -356,6 +381,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         desk.addSubview(book, positioned: .below, relativeTo: spine)
         desk.addSubview(cover, positioned: .above, relativeTo: book)
         desk.addSubview(curl, positioned: .above, relativeTo: spine)
+        // On the pages, under the turning one.
+        desk.addSubview(ribbon, positioned: .below, relativeTo: curl)
         let cache = SpreadCache(visible: book)
         let turns = TurnCoordinator(book: book, cache: cache, curl: curl)
         session = Session(book: book, curl: curl, cache: cache, turns: turns, record: record)
@@ -403,6 +430,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                     self.bookHighlights = marks
                     await book.setHighlights(marks.map(\.cfi), color: Self.highlightColor(self.theme))
                 }
+                if let bookID, let store = self.library?.markers {
+                    let marker = await store.marker(bookID: bookID)
+                    guard !Task.isCancelled, self.session?.book === book else { return }
+                    self.setBookMarker(marker)
+                    await book.setMarker(marker?.cfi)
+                }
                 let location = try await book.open(url, at: start)
                 guard !Task.isCancelled, self.session?.book === book else { return }
                 self.session?.bookID = bookID
@@ -432,6 +465,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                 // The library stays until there's a book to show instead, so one that won't open
                 // leaves it where it is.
                 if record != nil { self.showBook(animated: true) }
+                self.updateRibbon(animated: false)
+                // The book opens where it was left. If the reader marked a page elsewhere, it says so.
+                if let marker = self.bookMarker, book.currentLocation?.isMarked == false {
+                    self.showNotice("Marker on page \(marker.page) — ⌘⇧D to go there")
+                }
                 // Over the last spread, if that's showing, so the page never dims on its way in.
                 NSAnimationContext.runAnimationGroup({ context in
                     context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : Self.motion
@@ -472,6 +510,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         session?.curl.removeFromSuperview()
         session = nil
         hidePlaceholder()
+        setBookMarker(nil)
+        updateRibbon(animated: false)
         toolbarModel.timeLeft = nil
         window?.title = "Readme"
         placeViews()
@@ -653,6 +693,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     private func show(_ location: ReaderLocation) {
         toolbarModel.timeLeft = TimeLeft.text(minutes: location.chapterMinutesLeft)
+        toolbarModel.isMarked = location.isMarked
         placeProgress(location, animated: true)
     }
 
@@ -678,6 +719,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private func relocated(to location: ReaderLocation, in book: BookWebView) {
         hideHighlightBar()
         show(location)
+        updateRibbon(animated: true)
         if !isLayingOut { keep(location, in: book) }
     }
 
@@ -732,6 +774,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             jump { await $0.goToEnd() }
         case .goToPage:
             showPageField()
+        case .toggleMarker:
+            toggleMarker()
+        case .goToMarker:
+            guard let marker = bookMarker else { return }
+            jump { await $0.go(toCFI: marker.cfi) }
         }
     }
 
@@ -769,7 +816,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     func turn(_ direction: TurnDirection, isRepeat: Bool = false) {
         guard !isCovered, let session else { return }
         places.turned()
+        turnBegan()
         session.turns.turn(direction, isRepeat: isRepeat)
+        watchTurnLanding()
     }
 
     // MARK: Jumps
@@ -1096,6 +1145,82 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         })
     }
 
+    // MARK: Reading marker
+
+    /// The ribbon's colour: a muted red on the paper and sepia pages, softer on the night page.
+    static func ribbonColor(_ theme: Theme) -> NSColor {
+        switch theme {
+        case .paper: NSColor(srgbRed: 0.69, green: 0.23, blue: 0.20, alpha: 1)
+        case .sepia: NSColor(srgbRed: 0.62, green: 0.24, blue: 0.18, alpha: 1)
+        case .night: NSColor(srgbRed: 0.62, green: 0.34, blue: 0.32, alpha: 1)
+        }
+    }
+
+    private func setBookMarker(_ marker: Marker?) {
+        bookMarker = marker
+        onMarkerChange?(marker != nil)
+    }
+
+    /// Marks the spread on show, moving the marker if it was elsewhere, or takes it away if this is
+    /// the spread that holds it.
+    private func toggleMarker() {
+        guard let session, session.book.isBookOpen, let bookID = session.bookID, let store = library?.markers,
+              let here = session.book.currentLocation
+        else { return }
+        let book = session.book
+        let previous = marking
+        marking = Task { [weak self] in
+            await previous?.value
+            await session.turns.landed()
+            guard let self, self.session?.book === book else { return }
+            if book.currentLocation?.isMarked == true {
+                await store.remove(bookID: bookID)
+                await book.setMarker(nil)
+                guard self.session?.book === book else { return }
+                self.setBookMarker(nil)
+                self.showNotice("Marker removed")
+            } else {
+                let at = book.currentLocation ?? here
+                let place = await book.place() ?? at.cfi
+                guard let cfi = await book.setMarker(place) else { return }
+                let marker = Marker(cfi: cfi, fraction: at.fraction, page: at.page, chapterTitle: at.chapterTitle)
+                await store.set(marker, bookID: bookID)
+                guard self.session?.book === book else { return }
+                self.setBookMarker(marker)
+                self.showNotice("Marked page \(at.page)")
+            }
+            if let here = book.currentLocation { self.show(here) }
+            self.updateRibbon(animated: true)
+        }
+    }
+
+    /// A page is about to turn: the ribbon leaves it until the turn has landed.
+    private func turnBegan() {
+        turnWatch?.cancel()
+        isTurning = true
+        updateRibbon(animated: false)
+    }
+
+    /// Shows the ribbon again, if the spread it lands on holds the marker, once every turn has landed.
+    private func watchTurnLanding() {
+        guard let turns = session?.turns else { return }
+        turnWatch?.cancel()
+        turnWatch = Task { [weak self] in
+            await turns.landed()
+            guard !Task.isCancelled, let self else { return }
+            self.isTurning = false
+            self.updateRibbon(animated: true)
+        }
+    }
+
+    private func updateRibbon(animated: Bool) {
+        let on = !isTurning && session?.book.isBookOpen == true && session?.book.currentLocation?.isMarked == true
+        toolbarModel.isMarked = session?.book.currentLocation?.isMarked == true
+        guard on != isRibbonOn else { return }
+        isRibbonOn = on
+        fade(ribbon, to: on ? 1 : 0, animated: animated)
+    }
+
     // MARK: For tests
 
     var location: ReaderLocation? { session?.book.currentLocation }
@@ -1117,6 +1242,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     func pressHighlightBar() { highlightBar.press() }
     var highlightBarMode: HighlightBar.Mode? { highlightBar.isHidden ? nil : highlightBar.mode }
     var contentsEntries: [TOCEntry] { contents.entries }
+    var marker: Marker? { bookMarker }
+    var isRibbonShown: Bool { isRibbonOn }
+    var noticeText: String { notice.stringValue }
 
     /// Returns once the contents have been read and the restyles and jumps under way are done.
     func settled() async {
@@ -1125,6 +1253,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         await restyling?.value
         await jumping?.value
         await restyling?.value
+        await marking?.value
     }
 
     // MARK: Settings and layout
@@ -1272,6 +1401,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             session.curl.frame = layout.frame
         }
         spine.frame = layout.frame
+        ribbon.frame = MarkerRibbon.frame(in: layout.frame)
         spine.isHidden = layout.columns != 2 || (session == nil && placeholderBookID == nil)
         placeholder.frame = layout.frame
         if isContentsShown {
@@ -1328,6 +1458,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         highlightBar.setTheme(theme)
         recolorHighlights()
         pageField.setTheme(theme)
+        ribbon.color = Self.ribbonColor(theme)
         session?.turns.pageColor = colors.page.cgColor
         session?.curl.spineColor = layout.columns == 2 ? colors.spine.cgColor : nil
         CATransaction.begin()

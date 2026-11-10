@@ -59,6 +59,7 @@ struct ReadmeApp: App {
                     Divider()
                     item(.toggleTOC)
                     item(.toggleHighlights)
+                    item(.toggleMarker)
                     item(.showLibrary)
                     Divider()
                     item(.toggleFullscreen)
@@ -67,6 +68,7 @@ struct ReadmeApp: App {
                     item(.goToStart)
                     item(.goToEnd)
                     item(.goToPage)
+                    item(.goToMarker)
                 }
             }
     }
@@ -98,7 +100,12 @@ private struct CommandItem: View {
             .keyboardShortcut(
                 KeyEquivalent(Character(command.shortcut.key)),
                 modifiers: ReadmeApp.modifiers(command.shortcut.modifiers))
-            .disabled(state.isShowingLibrary && command != .showLibrary && command != .toggleFullscreen)
+            .disabled(isDisabled)
+    }
+
+    private var isDisabled: Bool {
+        if state.isShowingLibrary && command != .showLibrary && command != .toggleFullscreen { return true }
+        return command == .goToMarker && !state.hasMarker
     }
 }
 

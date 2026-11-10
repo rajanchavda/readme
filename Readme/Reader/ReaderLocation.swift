@@ -16,6 +16,24 @@ struct ReaderLocation: Codable, Sendable, Equatable {
     /// page printed in a paper edition.
     var page: Int
     var pageCount: Int
+    /// Whether the visible spread holds the book's reading marker. Places saved before there were
+    /// markers have none, and read as unmarked.
+    var isMarked: Bool = false
+}
+
+extension ReaderLocation {
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        cfi = try values.decode(String.self, forKey: .cfi)
+        fraction = try values.decode(Double.self, forKey: .fraction)
+        chapterTitle = try values.decodeIfPresent(String.self, forKey: .chapterTitle)
+        chapterMinutesLeft = try values.decode(Double.self, forKey: .chapterMinutesLeft)
+        isAtStart = try values.decode(Bool.self, forKey: .isAtStart)
+        isAtEnd = try values.decode(Bool.self, forKey: .isAtEnd)
+        page = try values.decode(Int.self, forKey: .page)
+        pageCount = try values.decode(Int.self, forKey: .pageCount)
+        isMarked = try values.decodeIfPresent(Bool.self, forKey: .isMarked) ?? false
+    }
 }
 
 /// One line of a book's table of contents. `level` is 0 at the top.

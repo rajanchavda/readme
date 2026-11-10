@@ -164,8 +164,10 @@ final class BookWebView: NSView {
         currentLocation = location
         if !highlightCFIs.isEmpty { await setHighlights(highlightCFIs, color: highlightColor) }
         guard generation == openGeneration else { throw BookWebViewError.superseded }
+        if let markerCFI { await setMarker(markerCFI) }
+        guard generation == openGeneration else { throw BookWebViewError.superseded }
         if bounds.size != sizeAtOpen { scheduleRelayout() }
-        return location
+        return currentLocation ?? location
     }
 
     /// A required part of the design. WebKit won't run in a sandboxed app without the
@@ -277,6 +279,28 @@ final class BookWebView: NSView {
         guard isOpen else { return }
         _ = try? await call(
             "await readmeBridge.setHighlights(cfis, color)", arguments: ["cfis": cfis, "color": color], as: Bool.self)
+    }
+
+    /// The reading marker, as the page keeps it: a point at the start of the spread it was set on.
+    /// Kept here so a book opened later has it too.
+    private(set) var markerCFI: String?
+
+    private struct MarkerReply: Decodable, Sendable {
+        var cfi: String?
+        var isMarked: Bool
+    }
+
+    /// Sets the reading marker at the start of `cfi`, or takes it away with nil, and answers with the
+    /// point kept. `currentLocation` says at once whether the spread on show holds it.
+    @discardableResult
+    func setMarker(_ cfi: String?) async -> String? {
+        markerCFI = cfi
+        guard let reply = try? await call(
+            "return readmeBridge.setMarker(cfi)", arguments: ["cfi": cfi ?? NSNull()], as: MarkerReply.self)
+        else { return cfi }
+        markerCFI = reply.cfi
+        if isOpen { currentLocation?.isMarked = reply.isMarked }
+        return reply.cfi
     }
 
     func addHighlight(_ cfi: String) async {

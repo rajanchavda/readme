@@ -53,6 +53,8 @@ final class ReadMarker {
 @MainActor
 final class AppState: ObservableObject {
     @Published var isShowingLibrary = false
+    /// Whether the open book has a reading marker to go to.
+    @Published var hasMarker = false
 }
 
 /// The app's one window and what it shows: the library, or a book. It decides where launching goes,
@@ -95,6 +97,7 @@ final class AppCoordinator {
         reader.onShowLibrary = { [weak self] in self?.showLibrary() }
         reader.onRead = { [weak self] id, location in self?.marker.read(id: id, location: location) }
         reader.onShowingLibraryChange = { [weak self] showing in self?.state.isShowingLibrary = showing }
+        reader.onMarkerChange = { [weak self] has in self?.state.hasMarker = has }
         library.onRemove = { [weak self] id in
             guard let self else { return }
             // One still waiting to open checks the shelf itself, and mustn't close the book open now.
