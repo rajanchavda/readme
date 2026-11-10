@@ -14,6 +14,15 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(ReaderCommand.goToStart.shortcut == KeyShortcut(key(NSUpArrowFunctionKey), [.command]))
         #expect(ReaderCommand.goToEnd.shortcut == KeyShortcut(key(NSDownArrowFunctionKey), [.command]))
         #expect(ReaderCommand.goToPage.shortcut == KeyShortcut("g", [.command]))
+        #expect(ReaderCommand.toggleMarker.shortcut == KeyShortcut("d", [.command]))
+        #expect(ReaderCommand.goToMarker.shortcut == KeyShortcut("d", [.command, .shift]))
+    }
+
+    @Test func noTwoCommandsShareAShortcut() {
+        let shortcuts = ReaderCommand.allCases.map(\.shortcut)
+        for (index, shortcut) in shortcuts.enumerated() {
+            #expect(!shortcuts[(index + 1)...].contains(shortcut))
+        }
     }
 
     @Test func eachShortcutMapsToItsCommand() {

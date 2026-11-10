@@ -13,6 +13,8 @@ final class LibraryStore: ObservableObject {
     private let positions: PositionStore
     /// What the reader marked in each book.
     let highlights: HighlightStore
+    /// The page the reader marked in each book.
+    let markers: MarkerStore
     /// The picture of the spread each book was left on, for launching straight back into it.
     let spreads: LastSpreadCache
     private let now: () -> Date
@@ -26,14 +28,15 @@ final class LibraryStore: ObservableObject {
 
     /// The app's own, in its Application Support folder.
     static let standard = LibraryStore(
-        directory: URL.applicationSupportDirectory, positions: .standard, highlights: .standard)
+        directory: URL.applicationSupportDirectory, positions: .standard, highlights: .standard, markers: .standard)
 
     /// Places are kept in `directory/Positions` unless `positions` says otherwise, which is where
     /// `PositionStore.standard` keeps them when `directory` is the Application Support folder.
     init(directory: URL, positions: PositionStore? = nil, highlights: HighlightStore? = nil,
-         now: @escaping () -> Date = Date.init) {
+         markers: MarkerStore? = nil, now: @escaping () -> Date = Date.init) {
         self.directory = directory
         self.highlights = highlights ?? HighlightStore(directory: directory.appendingPathComponent("Highlights", isDirectory: true))
+        self.markers = markers ?? MarkerStore(directory: directory.appendingPathComponent("Markers", isDirectory: true))
         self.positions = positions ?? PositionStore(directory: directory.appendingPathComponent("Positions", isDirectory: true))
         self.now = now
         spreads = LastSpreadCache(directory: directory.appendingPathComponent("LastSpreads", isDirectory: true))
@@ -81,7 +84,7 @@ final class LibraryStore: ObservableObject {
     /// is gone too.
     var beforeDeleting: (() async -> Void)?
 
-    /// Takes the book out, and deletes its copy, its cover, its saved place, its highlights and its last spread.
+    /// Takes the book out, and deletes its copy, its cover, its saved place, its highlights, its marker and its last spread.
     func remove(id: String) {
         guard let book = book(id: id) else { return }
         books.removeAll { $0.id == id }
@@ -91,7 +94,7 @@ final class LibraryStore: ObservableObject {
         let copy = fileURL(for: book)
         let cover = coverURL(for: book)
         let previous = removing
-        removing = Task { [positions, highlights, spreads] in
+        removing = Task { [positions, highlights, markers, spreads] in
             await previous?.value
             await waitForWrites?()
             await Task.detached {
@@ -100,11 +103,12 @@ final class LibraryStore: ObservableObject {
             }.value
             await positions.remove(bookID: id)
             await highlights.remove(bookID: id)
+            await markers.remove(bookID: id)
             await spreads.remove(bookID: id)
         }
     }
 
-    /// Returns once the copies, covers, saved places and last spreads of every book removed so far are gone.
+    /// Returns once the copies, covers, saved places, highlights, markers and last spreads of every book removed so far are gone.
     func removed() async {
         await removing?.value
     }

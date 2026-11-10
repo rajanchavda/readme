@@ -14,6 +14,8 @@ final class ReaderToolbarModel {
     var timeLeft: String?
     var isAwake = false
     var isFullscreen = false
+    /// Whether the spread on show holds the reading marker.
+    var isMarked = false
 
     @ObservationIgnored var onSettingsChange: ((ReaderSettings) -> Void)?
     @ObservationIgnored var onCommand: ((ReaderCommand) -> Void)?
@@ -61,6 +63,9 @@ struct ReaderToolbar: View {
                     .opacity(0.7)
                     .padding(.horizontal, 9)
             }
+            iconButton(
+                model.isMarked ? "bookmark.fill" : "bookmark",
+                help: model.isMarked ? "Remove the marker" : "Mark this page", command: .toggleMarker)
             iconButton("list.bullet", help: "Contents", command: .toggleTOC)
             iconButton("books.vertical", help: "Library", command: .showLibrary)
             iconButton(

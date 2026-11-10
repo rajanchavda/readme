@@ -32,6 +32,10 @@ Notes, sync, a store, collections and tags, dictionary, reading stats, MOBI and 
 
 Select words and a small bar floats by them with one button, Highlight; over a highlight already there, it says Remove. There is one colour and no notes. Highlights are anchored by the CFI of their range, kept per book in `Application Support/Highlights/<bookID>.json`, and drawn by foliate's overlay, including in the page curl's snapshots. ⌘⇧H (Go menu: Highlights) opens a sidebar like the contents with the book's highlights in reading order: Return or a click goes there, Delete removes one.
 
+## Reading marker (added after v1)
+
+A deliberate, visible "I stopped here", apart from the place the book keeps by itself. There is one a book, and it marks a spread: ⌘D (View menu: Mark This Page, or the bookmark button in the toolbar) sets it on the spread on show, moving it if it was elsewhere, and ⌘D again on that spread takes it away. While the spread that holds it is on show, a small ribbon in the theme's muted red hangs from the top of the right-hand page; it leaves the page while pages turn. The marker is the CFI of the point the spread starts at, kept in `Application Support/Markers/<bookID>.json`, so it stays on the right spread whatever the font or window size. The book still opens at the last position; if the marker is elsewhere, a quiet notice says so, and ⌘⇧D (Go menu: Go to Marker) goes there. Removing the book from the library removes its marker.
+
 ## Anti-goals
 
 Any of these would make v1 a failure even if every feature works:

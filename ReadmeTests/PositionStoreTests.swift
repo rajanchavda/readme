@@ -44,6 +44,21 @@ private let here = ReaderLocation(
         #expect(await PositionStore(directory: folder).location(bookID: "book") == nil)
     }
 
+    /// Places saved before the reading marker existed have no `isMarked`, and still load.
+    @Test func placeSavedWithoutMarkedFlagLoads() async throws {
+        let folder = try positionsFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = PositionStore(directory: folder)
+        await store.save(here, bookID: "book")
+        let file = try #require(FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        json["isMarked"] = nil
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        let loaded = await store.location(bookID: "book")
+        #expect(loaded == here)
+        #expect(loaded?.isMarked == false)
+    }
+
     @Test func theLatestSaveWins() async throws {
         let folder = try positionsFolder()
         defer { try? FileManager.default.removeItem(at: folder) }

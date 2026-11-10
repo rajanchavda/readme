@@ -3,6 +3,7 @@
 import { makeBook } from './foliate/view.js'
 import { SectionProgress } from './foliate/progress.js'
 import { Overlayer } from './foliate/overlayer.js'
+import { collapse, compare } from './foliate/epubcfi.js'
 
 const COMMAND_MS = 15000
 const SECTION_MS = 10000
@@ -24,6 +25,8 @@ let latest = null // the last `relocate` detail from foliate
 let relocations = 0
 let busy = false // true during a command, so its in-between stops aren't reported
 let lastPostedCFI = null
+// What was last told to the app, so a location is told once, and again if its marking changes.
+let lastPostedKey = null
 // Where the reader is: the place they last went to, which a layout change shows again and leaves as
 // it was. The spread it then lands on usually starts a little before it, so going back to that
 // spread's start instead would creep back a page with each change.
@@ -37,6 +40,24 @@ let queue = Promise.resolve()
 // The highlights drawn on the book, by CFI, and the colour they're drawn in.
 const highlights = new Set()
 let highlightColor = '#f2c744'
+// The reading marker: a point CFI at the start of the spread the reader marked, or null.
+let marker = null
+
+// Whether the visible spread holds the marker: it's at or after the spread's start, and before its
+// end, which is where the next spread starts. A spread with nothing in it to span, such as a lone
+// image, holds a marker at its start, and the last one holds any after it.
+const holdsMarker = () => {
+    if (!marker || !latest?.cfi) return false
+    try {
+        const start = collapse(latest.cfi)
+        const end = collapse(latest.cfi, true)
+        if (compare(marker, start) < 0) return false
+        return compare(marker, end) < 0 || compare(start, end) === 0 || !!view?.renderer?.atEnd
+    } catch (error) {
+        console.warn(error)
+        return false
+    }
+}
 
 const withTimeout = (promise, ms, label) => {
     let timer
@@ -92,13 +113,17 @@ const location = () => {
         // font or window, which the reader sees as pages. `current` is the one the spread starts in.
         page: Math.max(1, Math.trunc(finite(latest.location?.current)) + 1),
         pageCount: Math.max(1, Math.trunc(finite(latest.location?.total))),
+        isMarked: holdsMarker(),
     }
 }
 
+const postKey = current => `${current.cfi}|${current.isMarked}`
+
 const post = () => {
     const current = location()
-    if (!current || current.cfi === lastPostedCFI) return
+    if (!current || postKey(current) === lastPostedKey) return
     lastPostedCFI = current.cfi
+    lastPostedKey = postKey(current)
     globalThis.webkit?.messageHandlers?.readme?.postMessage(
         JSON.stringify({ type: 'relocate', location: current }))
 }
@@ -603,6 +628,18 @@ globalThis.readmeBridge = {
         // The old ones are redrawn too, for the new colour.
         for (const cfi of removed) await view.deleteAnnotation({ value: cfi }).catch(error => console.warn(error))
         for (const cfi of cfis) await view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
+    },
+    // Sets the reading marker at the start of `cfi`, or takes it away with null, and answers with the
+    // point kept and whether the spread on show now holds it. That's the app's to note, so it isn't
+    // told again as a move.
+    setMarker: cfi => {
+        marker = cfi ? collapse(cfi) : null
+        const current = location()
+        if (current) {
+            lastPostedCFI = current.cfi
+            lastPostedKey = postKey(current)
+        }
+        return { cfi: marker, isMarked: current?.isMarked ?? false }
     },
     addHighlight: async cfi => {
         highlights.add(cfi)
