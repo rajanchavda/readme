@@ -16,6 +16,12 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(ReaderCommand.goToPage.shortcut == KeyShortcut("g", [.command]))
         #expect(ReaderCommand.toggleMarker.shortcut == KeyShortcut("d", [.command]))
         #expect(ReaderCommand.goToMarker.shortcut == KeyShortcut("d", [.command, .shift]))
+        #expect(ReaderCommand.find.shortcut == KeyShortcut("f", [.command]))
+    }
+
+    @Test func commandFFinds() {
+        #expect(ReaderCommand(key: "f", modifiers: [.command]) == .find)
+        #expect(ReaderCommand.find.title == "Find…")
     }
 
     @Test func noTwoCommandsShareAShortcut() {

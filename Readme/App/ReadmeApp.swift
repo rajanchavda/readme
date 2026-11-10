@@ -68,6 +68,7 @@ struct ReadmeApp: App {
                     item(.goToStart)
                     item(.goToEnd)
                     item(.goToPage)
+                    item(.find)
                     item(.goToMarker)
                 }
             }

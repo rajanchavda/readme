@@ -779,8 +779,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         case .goToMarker:
             guard let marker = bookMarker else { return }
             jump { await $0.go(toCFI: marker.cfi) }
+        case .find:
+            showSearch()
         }
     }
+
+    // MARK: Search
+
+    private func showSearch() {}
 
     private func handle(_ event: NSEvent) -> Bool {
         guard let window, event.window === window, window.attachedSheet == nil, !isShowingLibrary,
