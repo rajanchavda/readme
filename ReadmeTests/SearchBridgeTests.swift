@@ -84,6 +84,30 @@ private func fixture(_ name: String) throws -> URL {
         #expect(view.currentLocation == before)
     }
 
+    /// In a book of one long chapter, each match's page is counted from where it is in the chapter.
+    @Test func pagesRiseThroughALongChapter() async throws {
+        try await open("big-chapter.epub")
+        let outcome = try #require(await view.search("harbour", limit: 500))
+        let pages = outcome.matches.map(\.page)
+        #expect(outcome.matches.count == 500)
+        #expect(pages == pages.sorted())
+        #expect(try #require(pages.last) > 2 * (try #require(pages.first)))
+        let match = try #require(outcome.matches.last)
+        let landed = try #require(await view.go(toCFI: match.cfi))
+        #expect(landed.page <= match.page)
+        #expect(match.page - landed.page <= 3)
+    }
+
+    /// Highlighting the words that are glowing keeps the highlight, rather than letting the glow fade it away.
+    @Test func highlightingTheGlowingWordsKeepsTheHighlight() async throws {
+        try await open("search.epub")
+        let match = try #require(await view.search("elena", limit: 500)?.matches.first)
+        _ = await view.go(toCFI: match.cfi)
+        await view.flash(match.cfi)
+        await view.addHighlight(match.cfi)
+        #expect(try await view.call("return readmeBridge.flashing()", as: String.self) == nil)
+    }
+
     @Test func flashFadesAndLeavesNoHighlight() async throws {
         try await open("search.epub")
         let match = try #require(await view.search("elena", limit: 500)?.matches.first)

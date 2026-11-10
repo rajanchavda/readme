@@ -315,6 +315,32 @@ const fractionInSection = range => {
     return Math.min(1, before.toString().length / total)
 }
 
+// The same share as `fractionInSection`, for many ranges of one document in reading order, as search
+// finds them. It counts the text before each as it goes, rather than again from the top for each,
+// which in a long chapter with many matches would take seconds.
+const sectionCounter = doc => {
+    const body = doc.body
+    if (!body) return fractionInSection
+    const total = body.textContent.length || 1
+    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+    let node = null
+    let before = 0
+    let lost = false
+    return range => {
+        const target = range.startContainer
+        if (lost || target.nodeType !== Node.TEXT_NODE) return fractionInSection(range)
+        while (node !== target) {
+            if (node) before += node.data.length
+            node = walker.nextNode()
+            if (!node) {
+                lost = true
+                return fractionInSection(range)
+            }
+        }
+        return Math.min(1, (before + range.startOffset) / total)
+    }
+}
+
 // Search: the readable sections' text, ignoring case and accents. Each match comes with the page
 // it's on, worked out like foliate's own locations, so it doesn't depend on the layout. A newer
 // search stops an older one between sections. It never moves the book or marks the page.
@@ -331,6 +357,7 @@ const search = async (query, limit) => {
         if (section.linear === 'no' || !section.createDocument) continue
         const doc = await section.createDocument()
         if (generation !== searchGeneration) return cancelled
+        const shareOf = sectionCounter(doc)
         for (const { range, excerpt } of matcher(doc, query)) {
             if (matches.length >= limit) return { matches, isCapped: true, isCancelled: false }
             matches.push({
@@ -338,7 +365,7 @@ const search = async (query, limit) => {
                 pre: excerpt.pre,
                 match: excerpt.match,
                 post: excerpt.post,
-                page: progress.getProgress(index, fractionInSection(range)).location.current + 1,
+                page: progress.getProgress(index, shareOf(range)).location.current + 1,
                 chapter: view.getProgressOf(index, range).tocItem?.label?.trim() || null,
             })
         }
@@ -351,6 +378,14 @@ const FLASH_MS = 2000
 const FLASH_FADE_MS = 600
 let flashing = null
 let flashTimer = null
+
+// A highlight made on the glowing words takes over from the glow, which would otherwise fade it and
+// then take it away.
+const stopFlashing = cfi => {
+    if (cfi !== flashing) return
+    clearTimeout(flashTimer)
+    flashing = null
+}
 
 const flash = cfi => {
     clearTimeout(flashTimer)
@@ -713,6 +748,7 @@ globalThis.readmeBridge = {
         const removed = [...highlights].filter(cfi => !cfis.includes(cfi))
         highlights.clear()
         for (const cfi of cfis) highlights.add(cfi)
+        if (highlights.has(flashing)) stopFlashing(flashing)
         highlightColor = color
         // The old ones are redrawn too, for the new colour.
         for (const cfi of removed) await view.deleteAnnotation({ value: cfi }).catch(error => console.warn(error))
@@ -731,6 +767,7 @@ globalThis.readmeBridge = {
         return { cfi: marker, isMarked: current?.isMarked ?? false }
     },
     addHighlight: async cfi => {
+        stopFlashing(cfi)
         highlights.add(cfi)
         await view.addAnnotation({ value: cfi })
     },

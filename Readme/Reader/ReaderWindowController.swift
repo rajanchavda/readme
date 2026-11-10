@@ -297,7 +297,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             guard let self, let window = self.window, !self.isShowingLibrary else { return event }
             let route = ScrollRoute(
                 isOurWindow: event.window === window, hasSheet: window.attachedSheet != nil,
-                contents: self.contentsPlace(of: event))
+                contents: self.scrollPlace(at: self.desk.convert(event.locationInWindow, from: nil)))
             switch route {
             case .passOn:
                 return event
@@ -1079,9 +1079,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         NSRect(x: shown ? 0 : -TOCSidebar.width, y: 0, width: TOCSidebar.width, height: desk.bounds.height)
     }
 
-    private func contentsPlace(of event: NSEvent) -> ScrollRoute.Contents {
+    /// Where an open panel is relative to a point on the desk, for routing scrolling.
+    func scrollPlace(at point: NSPoint) -> ScrollRoute.Contents {
+        // The search box scrolls its own list, and the page behind it never turns.
+        if isSearchShown { return searchBox.frame.contains(point) ? .under : .beside }
         guard isContentsShown || isHighlightsShown else { return .closed }
-        let point = desk.convert(event.locationInWindow, from: nil)
         return contents.frame.contains(point) || highlightsPanel.frame.contains(point) ? .under : .beside
     }
 
@@ -1361,6 +1363,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     var marker: Marker? { bookMarker }
     var isRibbonShown: Bool { isRibbonOn }
     var noticeText: String { notice.stringValue }
+    var searchBoxFrame: NSRect { searchBox.frame }
 
     /// Returns once the contents have been read and the restyles and jumps under way are done.
     func settled() async {

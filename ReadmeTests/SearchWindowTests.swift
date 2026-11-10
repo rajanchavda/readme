@@ -140,6 +140,21 @@ private func fixture(_ name: String) throws -> URL {
         }
     }
 
+    /// Scrolling over the open box scrolls its list, and scrolling or swiping beside it never turns the page.
+    @Test func scrollingIsTheBoxsWhileItsOpen() async throws {
+        try await withReader("search.epub") { reader, _ in
+            let inside = NSPoint(x: reader.searchBoxFrame.midX, y: reader.searchBoxFrame.midY)
+            #expect(reader.scrollPlace(at: inside) == .closed)
+            reader.perform(.find)
+            await reader.search("the")
+            let frame = reader.searchBoxFrame
+            #expect(reader.scrollPlace(at: NSPoint(x: frame.midX, y: frame.midY)) == .under)
+            #expect(reader.scrollPlace(at: NSPoint(x: frame.minX - 40, y: frame.midY)) == .beside)
+            reader.closeSearch()
+            #expect(reader.scrollPlace(at: NSPoint(x: frame.midX, y: frame.midY)) == .closed)
+        }
+    }
+
     @Test func clickingARowGoesToIt() async throws {
         let frame = NSRect(x: 0, y: 0, width: 600, height: 500)
         let window = NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)

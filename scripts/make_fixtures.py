@@ -266,6 +266,13 @@ def search_book():
     write_epub("search.epub", "Search Fixture Book", chapters)
 
 
+def big_chapter_book():
+    # One very long chapter, as some Gutenberg books have, for search to cross many matches in.
+    rng = random.Random(8)
+    body = f"<h1>The Whole Book</h1>\n{paragraphs(rng, 1500)}"
+    write_epub("big-chapter.epub", "Big Chapter Book", [Chapter("ch1", "The Whole Book", xhtml("The Whole Book", body))])
+
+
 def short_chapters(rng, count=3):
     return [
         Chapter(
@@ -601,6 +608,7 @@ def main():
     late_resources_book()
     long_book()
     search_book()
+    big_chapter_book()
     write_epub("no-cover.epub", "No Cover Book", short_chapters(random.Random(4)))
     broken_chapter_book()
     write_epub("no-toc.epub", "No TOC Book", short_chapters(random.Random(5)), has_toc=False)
