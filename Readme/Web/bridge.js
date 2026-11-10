@@ -300,6 +300,28 @@ const setLayout = (css, columns, width) => {
     fitColumns()
     view.renderer.setStyles?.(css ?? '')
     paintMargins()
+    showPageNumber()
+}
+
+// The page number, dim in the outer corner under the right-hand page, using foliate's own page
+// footer. Being part of the page, it's in the curl's pictures and turns with its page. foliate
+// makes the footer again at every layout, so this is called after each move and restyle.
+const pageNumberCell = () => {
+    const feet = view?.renderer?.feet
+    if (!feet?.length) return null
+    return book?.dir === 'rtl' ? feet[0] : feet[feet.length - 1]
+}
+
+const showPageNumber = () => {
+    const feet = view?.renderer?.feet
+    const cell = pageNumberCell()
+    if (!cell || !latest) return
+    for (const foot of feet) if (foot !== cell) foot.textContent = ''
+    cell.textContent = String(pageNow())
+    const body = currentDocument()?.body
+    if (body) cell.style.color = body.ownerDocument.defaultView.getComputedStyle(body).color
+    cell.style.opacity = '0.35'
+    cell.style.textAlign = 'end'
 }
 
 // Makes a layout change, then goes back to the reader's place, which foliate's own re-rendering
@@ -399,6 +421,7 @@ const open = async (url, cfi, css, columns, width) => {
     view.addEventListener('relocate', ({ detail }) => {
         latest = detail
         relocations++
+        showPageNumber()
         if (busy) return
         // foliate re-rendering, usually mid-resize, so wait to see where it ends up.
         if (detail.reason === 'anchor') scheduleRelayout()
@@ -650,6 +673,11 @@ globalThis.readmeBridge = {
         await view.deleteAnnotation({ value: cfi })
     },
     clearSelection: () => view.deselect(),
+    // The page number as drawn, for tests.
+    pageLabel: () => {
+        const cell = pageNumberCell()
+        return cell ? { text: cell.textContent, color: getComputedStyle(cell).color } : null
+    },
     applyStyles: (css, columns, width) => enqueue(() => holdingPlace(() => setLayout(css, columns, width))),
     // Called when Swift resizes the view. The page learns its new size a little later.
     resized: async width => {

@@ -406,6 +406,17 @@ final class BookWebView: NSView {
         return try? await call("return readmeBridge.place()", as: String.self)
     }
 
+    /// The page number in the spread's corner, and its colour, as the page draws it. For tests.
+    struct PageLabel: Decodable, Equatable, Sendable {
+        var text: String
+        var color: String
+    }
+
+    func pageLabel() async -> PageLabel? {
+        guard isOpen else { return nil }
+        return try? await call("return readmeBridge.pageLabel()", as: PageLabel.self)
+    }
+
     // MARK: Library details
 
     /// What the book says about itself, as the library lists it.
