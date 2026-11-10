@@ -4,6 +4,8 @@ import { makeBook } from './foliate/view.js'
 import { SectionProgress } from './foliate/progress.js'
 import { Overlayer } from './foliate/overlayer.js'
 import { collapse, compare } from './foliate/epubcfi.js'
+import { searchMatcher } from './foliate/search.js'
+import { textWalker } from './foliate/text-walker.js'
 
 const COMMAND_MS = 15000
 const SECTION_MS = 10000
@@ -303,6 +305,67 @@ const setLayout = (css, columns, width) => {
     showPageNumber()
 }
 
+// How far through its section the start of `range` is, by its share of the section's text.
+const fractionInSection = range => {
+    const body = range.startContainer.ownerDocument.body
+    const total = body?.textContent.length || 1
+    const before = range.cloneRange()
+    before.selectNodeContents(body)
+    before.setEnd(range.startContainer, range.startOffset)
+    return Math.min(1, before.toString().length / total)
+}
+
+// Search: the readable sections' text, ignoring case and accents. Each match comes with the page
+// it's on, worked out like foliate's own locations, so it doesn't depend on the layout. A newer
+// search stops an older one between sections. It never moves the book or marks the page.
+let searchGeneration = 0
+
+const search = async (query, limit) => {
+    const generation = ++searchGeneration
+    const cancelled = { matches: [], isCapped: false, isCancelled: true }
+    const matcher = searchMatcher(textWalker, {
+        defaultLocale: book.metadata?.language, matchCase: false, matchDiacritics: false, matchWholeWords: false,
+    })
+    const matches = []
+    for (const [index, section] of book.sections.entries()) {
+        if (section.linear === 'no' || !section.createDocument) continue
+        const doc = await section.createDocument()
+        if (generation !== searchGeneration) return cancelled
+        for (const { range, excerpt } of matcher(doc, query)) {
+            if (matches.length >= limit) return { matches, isCapped: true, isCancelled: false }
+            matches.push({
+                cfi: view.getCFI(index, range),
+                pre: excerpt.pre,
+                match: excerpt.match,
+                post: excerpt.post,
+                page: progress.getProgress(index, fractionInSection(range)).location.current + 1,
+                chapter: view.getProgressOf(index, range).tocItem?.label?.trim() || null,
+            })
+        }
+    }
+    return { matches, isCapped: false, isCancelled: false }
+}
+
+// The search match the reader picked, glowing for a moment. See the `draw-annotation` listener.
+const FLASH_MS = 2000
+const FLASH_FADE_MS = 600
+let flashing = null
+let flashTimer = null
+
+const flash = cfi => {
+    clearTimeout(flashTimer)
+    if (flashing) view.deleteAnnotation({ value: flashing }).catch(error => console.warn(error))
+    flashing = null
+    if (highlights.has(cfi)) return
+    flashing = cfi
+    view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
+    flashTimer = setTimeout(() => {
+        if (flashing !== cfi) return
+        flashing = null
+        view.deleteAnnotation({ value: cfi }).catch(error => console.warn(error))
+    }, FLASH_MS)
+}
+
 // The page number, dim in the outer corner under the right-hand page, using foliate's own page
 // footer. Being part of the page, it's in the curl's pictures and turns with its page. foliate
 // makes the footer again at every layout, so this is called after each move and restyle.
@@ -455,12 +518,7 @@ const open = async (url, cfi, css, columns, width) => {
         const fractions = view.getSectionFractions()
         const start = fractions[index] ?? 0
         const end = fractions[index + 1] ?? start
-        const body = range.startContainer.ownerDocument.body
-        const total = body?.textContent.length || 1
-        const before = range.cloneRange()
-        before.selectNodeContents(body)
-        before.setEnd(range.startContainer, range.startOffset)
-        return Math.min(1, start + (end - start) * Math.min(1, before.toString().length / total))
+        return Math.min(1, start + (end - start) * fractionInSection(range))
     }
     view.addEventListener('load', ({ detail: { doc, index } }) => {
         const report = () => {
@@ -492,8 +550,16 @@ const open = async (url, cfi, css, columns, width) => {
             }
         })
     })
-    view.addEventListener('draw-annotation', ({ detail: { draw } }) =>
-        draw(Overlayer.highlight, { color: highlightColor }))
+    view.addEventListener('draw-annotation', ({ detail: { draw, annotation } }) => {
+        if (annotation.value !== flashing) return draw(Overlayer.highlight, { color: highlightColor })
+        // The picked search match: it glows, then fades over its last moments.
+        draw((rects, options) => {
+            const g = Overlayer.highlight(rects, options)
+            g.animate([{ opacity: 0.3 }, { opacity: 0.3, offset: 1 - FLASH_FADE_MS / FLASH_MS }, { opacity: 0 }],
+                { duration: FLASH_MS, fill: 'forwards' })
+            return g
+        }, { color: highlightColor })
+    })
     view.addEventListener('create-overlay', () => {
         for (const cfi of highlights) view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
     })
@@ -673,6 +739,10 @@ globalThis.readmeBridge = {
         await view.deleteAnnotation({ value: cfi })
     },
     clearSelection: () => view.deselect(),
+    search,
+    flash,
+    // The search match glowing now, for tests.
+    flashing: () => flashing,
     // The page number as drawn, for tests.
     pageLabel: () => {
         const cell = pageNumberCell()

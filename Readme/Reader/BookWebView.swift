@@ -406,6 +406,33 @@ final class BookWebView: NSView {
         return try? await call("return readmeBridge.place()", as: String.self)
     }
 
+    // MARK: Search
+
+    private struct SearchReply: Decodable, Sendable {
+        var matches: [SearchMatch]
+        var isCapped: Bool
+        var isCancelled: Bool
+    }
+
+    /// Finds `query` in the book's readable text, ignoring case and accents, up to `limit` matches.
+    /// Nil if a newer search stopped this one, or no book is open. It never moves the book.
+    func search(_ query: String, limit: Int) async -> SearchOutcome? {
+        guard isOpen,
+              let reply = try? await call(
+                "return await readmeBridge.search(query, limit)",
+                arguments: ["query": query, "limit": limit], as: SearchReply.self, timeout: .seconds(120)),
+              !reply.isCancelled
+        else { return nil }
+        return SearchOutcome(matches: reply.matches, isCapped: reply.isCapped)
+    }
+
+    /// Makes the words at `cfi` glow briefly, so the eye finds them. It fades by itself and is never
+    /// one of the reader's highlights.
+    func flash(_ cfi: String) async {
+        guard isOpen else { return }
+        _ = try? await call("readmeBridge.flash(cfi); return true", arguments: ["cfi": cfi], as: Bool.self)
+    }
+
     /// The page number in the spread's corner, and its colour, as the page draws it. For tests.
     struct PageLabel: Decodable, Equatable, Sendable {
         var text: String
