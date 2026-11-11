@@ -39,10 +39,8 @@ jobs:
           fi
           echo "VERSION=$tag_version" >> "$GITHUB_ENV"
 
-      - name: Run tests
-        env:
-          SHARDS: 2
-        run: scripts/test.sh
+      # The tests run on every pull request into main (tests.yml), so a tag on main is already
+      # tested and the release only builds.
 
       # Writes build/Readme-<version>.dmg, its .sha256 and the cask build/readme.rb.
       - name: Package
