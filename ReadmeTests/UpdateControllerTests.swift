@@ -2,14 +2,14 @@ import Foundation
 import Testing
 @testable import Readme
 
-/// What GitHub says, what the reader clicks, and what the controller showed and opened.
+/// What GitHub says, what the reader clicks, and what the controller showed and installed.
 @MainActor
 private final class Scene {
     var latest = "v1.1"
     var online = true
     var clicks: [Int?] = []
     private(set) var shown: [UpdatePrompt] = []
-    private(set) var opened: [URL] = []
+    private(set) var installed: [Release] = []
     private(set) var asked = 0
 
     func click(_ prompt: UpdatePrompt) -> Int? {
@@ -17,7 +17,7 @@ private final class Scene {
         return clicks.isEmpty ? nil : clicks.removeFirst()
     }
 
-    func open(_ url: URL) { opened.append(url) }
+    func install(_ release: Release) { installed.append(release) }
 }
 
 private struct Offline: Error {}
@@ -43,7 +43,7 @@ private struct Offline: Error {}
         return UpdateController(
             checker: checker,
             show: { prompt, _ in scene.click(prompt) },
-            open: { scene.open($0) },
+            install: { scene.install($0) },
             now: { [now] in now })
     }
 
@@ -52,13 +52,13 @@ private struct Offline: Error {}
 
     // MARK: Asking
 
-    @Test func askingShowsANewerVersionAndDownloadOpensItsPage() async {
+    @Test func askingShowsANewerVersionAndUpdateInstallsIt() async {
         defer { clean() }
         scene.latest = "v1.2"
         scene.clicks = [0]
         await controller().checkNow()
         #expect(scene.shown == [.newer(newer, current: AppVersion("1.1")!)])
-        #expect(scene.opened == [Self.page])
+        #expect(scene.installed == [newer])
     }
 
     @Test func notNowRemembersTheVersion() async {
@@ -67,7 +67,7 @@ private struct Offline: Error {}
         scene.clicks = [1]
         let updates = controller()
         await updates.checkNow()
-        #expect(scene.opened.isEmpty)
+        #expect(scene.installed.isEmpty)
         #expect(!updates.checker.shouldShow(newer, automatically: true))
     }
 
@@ -163,11 +163,10 @@ private struct Offline: Error {}
         let prompt = UpdatePrompt.newer(newer, current: AppVersion("1.1")!)
         #expect(prompt.message == "Readme 1.2 is available")
         #expect(prompt.informative == """
-            You have 1.1. Download the new version and drag it into Applications, choosing Replace.
-
-            Installed with Homebrew? Run brew upgrade --cask readme instead.
+            You have 1.1. Readme will quit, install the update and open again. Your place and \
+            notes are saved first.
             """)
-        #expect(prompt.buttons == ["Download", "Not Now"])
+        #expect(prompt.buttons == ["Update and Restart", "Not Now"])
     }
 
     @Test func theOtherAlerts() {

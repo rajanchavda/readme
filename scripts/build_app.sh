@@ -1,6 +1,6 @@
 #!/bin/bash
 # Usage: scripts/build_app.sh
-# Builds build/Readme.app in Release, ad-hoc signed and sandboxed.
+# Builds build/Readme.app in Release, ad-hoc signed and sandboxed, with Readme Updater inside it.
 set -o pipefail
 cd "$(dirname "$0")/.." || exit 1
 
@@ -21,6 +21,11 @@ codesign --verify --strict build/Readme.app || exit $?
 codesign -d --entitlements - --xml build/Readme.app 2>/dev/null \
   | plutil -extract 'com\.apple\.security\.app-sandbox' raw -o - - | grep -qx true || {
   echo "build/Readme.app is not sandboxed" >&2
+  exit 1
+}
+updater="build/Readme.app/Contents/Helpers/Readme Updater.app"
+[ -d "$updater" ] || {
+  echo "build/Readme.app has no Readme Updater" >&2
   exit 1
 }
 [ "$(lipo -archs build/Readme.app/Contents/MacOS/Readme)" = "arm64" ] || {

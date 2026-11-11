@@ -2,8 +2,9 @@
 # Usage: scripts/check_release.sh
 # Checks build/Readme.app, and the copy of it inside build/Readme.dmg, are what can be handed out:
 # signed, sandboxed, arm64 only, for macOS 14, with no debugging entitlement and no network server,
-# with its icon and the notices for what's bundled. Checks the disk image itself, and the notices
-# in the repo. Prints each check and fails if any does.
+# with its icon and the notices for what's bundled, and with Readme Updater inside it: signed, arm64
+# only, the app's version, and with no entitlements at all. Checks the disk image itself, and the
+# notices in the repo. Prints each check and fails if any does.
 cd "$(dirname "$0")/.." || exit 1
 
 app=build/Readme.app
@@ -77,6 +78,29 @@ check_app() {
     && pass "$name: has its icon" || fail "$name: has its icon"
   cmp -s THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md" \
     && pass "$name: carries the third-party notices" || fail "$name: carries the third-party notices"
+  check_updater "$app" "$name"
+}
+
+# Readme Updater runs outside the sandbox, so it must ask for nothing: no entitlements of any kind.
+check_updater() {
+  local app=$1 name=$2
+  local updater="$app/Contents/Helpers/Readme Updater.app"
+  if [ ! -d "$updater" ]; then
+    fail "$name: holds Readme Updater"
+    return
+  fi
+  pass "$name: holds Readme Updater"
+  check "$name: Readme Updater's signature is valid" codesign --verify --strict "$updater"
+  [ -z "$(codesign -d --entitlements - --xml "$updater" 2>/dev/null)" ] \
+    && pass "$name: Readme Updater has no entitlements" || fail "$name: Readme Updater has no entitlements"
+  [ "$(lipo -archs "$updater/Contents/MacOS/Readme Updater" 2>/dev/null)" = arm64 ] \
+    && pass "$name: Readme Updater is arm64 only" || fail "$name: Readme Updater is arm64 only"
+  local version updater_version
+  version=$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist" 2>/dev/null)
+  updater_version=$(plutil -extract CFBundleShortVersionString raw -o - "$updater/Contents/Info.plist" 2>/dev/null)
+  [ -n "$version" ] && [ "$version" = "$updater_version" ] \
+    && pass "$name: Readme Updater has the app's version" \
+    || fail "$name: Readme Updater has the app's version ($updater_version, app $version)"
 }
 
 if [ -d "$app" ]; then

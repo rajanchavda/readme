@@ -20,9 +20,8 @@ enum UpdatePrompt: Equatable {
         switch self {
         case let .newer(_, current):
             """
-            You have \(current). Download the new version and drag it into Applications, choosing Replace.
-
-            Installed with Homebrew? Run brew upgrade --cask readme instead.
+            You have \(current). Readme will quit, install the update and open again. Your place and \
+            notes are saved first.
             """
         case let .upToDate(current): "You have the latest version, \(current)."
         case .failed: "GitHub couldn't be reached. Check your internet connection and try again."
@@ -36,7 +35,7 @@ enum UpdatePrompt: Equatable {
 
     var buttons: [String] {
         switch self {
-        case .newer: ["Download", "Not Now"]
+        case .newer: ["Update and Restart", "Not Now"]
         case .upToDate, .failed: ["OK"]
         case .askAutomatic: ["Check Automatically", "Don't Check"]
         }
@@ -53,16 +52,16 @@ final class UpdateController {
 
     let checker: UpdateChecker
     private let show: Show
-    private let open: @MainActor (URL) -> Void
+    private let install: @MainActor (Release) -> Void
     private let now: () -> Date
     private var isChecking = false
 
     init(checker: UpdateChecker, show: @escaping Show,
-         open: @escaping @MainActor (URL) -> Void = { NSWorkspace.shared.open($0) },
+         install: @escaping @MainActor (Release) -> Void = SelfUpdate.start,
          now: @escaping () -> Date = Date.init) {
         self.checker = checker
         self.show = show
-        self.open = open
+        self.install = install
         self.now = now
     }
 
@@ -103,7 +102,7 @@ final class UpdateController {
 
     private func offer(_ release: Release, asked: Bool) async {
         switch await show(.newer(release, current: checker.current), asked) {
-        case 0: open(release.page)
+        case 0: install(release)
         case 1: checker.decline(release)
         default: break
         }
@@ -142,6 +141,35 @@ final class UpdateController {
                 return nil
             }
             return response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        }
+    }
+}
+
+/// Hands the update to Readme Updater, which sits inside the app, and quits so it can be replaced.
+/// The updater isn't sandboxed and Readme is, so it's started through Launch Services, which gives
+/// it its own (absent) sandbox instead of Readme's. It's given nothing: it finds the app it's in and
+/// asks GitHub itself. If it can't be started, the release page opens instead.
+@MainActor
+enum SelfUpdate {
+    static var updater: URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Readme Updater.app", isDirectory: true)
+    }
+
+    static func start(_ release: Release) {
+        guard FileManager.default.fileExists(atPath: updater.path) else {
+            NSWorkspace.shared.open(release.page)
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: updater, configuration: configuration) { app, _ in
+            Task { @MainActor in
+                if app == nil {
+                    NSWorkspace.shared.open(release.page)
+                } else {
+                    NSApp.terminate(nil)
+                }
+            }
         }
     }
 }
