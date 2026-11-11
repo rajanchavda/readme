@@ -28,8 +28,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rajanchavda.Readme
         # What people see as the version, and the build number that must rise with every release.
-        MARKETING_VERSION: "1.1"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "1.2"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_ENTITLEMENTS: Readme/Readme.entitlements
         ENABLE_APP_SANDBOX: YES
         GENERATE_INFOPLIST_FILE: YES

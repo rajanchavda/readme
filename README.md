@@ -19,8 +19,10 @@ set in a proper book typeface, with highlights, a page marker and search.
 - **Picks up where you left off.** Your place in every book is remembered.
 - **Export and import.** Take your books, with their highlights, page marker and place, to another
   Mac in one `.readmelibrary` file. Importing never replaces a book you already have.
+- **Update checks.** **Readme > Check for Updates…** tells you when a new version is out. If you
+  agree when asked, it checks once a day on its own.
 - **Private.** No accounts and no tracking. The app is sandboxed, and books, highlights and
-  settings stay on your Mac.
+  settings stay on your Mac. The update check only asks GitHub for the latest version number.
 
 Books with copy protection (DRM) can't be opened.
 

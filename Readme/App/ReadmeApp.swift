@@ -49,6 +49,9 @@ struct ReadmeApp: App {
     var body: some Scene {
         Settings { EmptyView() }
             .commands {
+                CommandGroup(after: .appInfo) {
+                    UpdateMenuItems(updates: appDelegate.updates, delegate: appDelegate)
+                }
                 CommandGroup(replacing: .newItem) {
                     Button("Open…") { appDelegate.chooseBook() }
                         .keyboardShortcut("o")
@@ -105,6 +108,19 @@ private struct LibraryMenuItems: View {
     }
 }
 
+/// Check for Updates… and whether to check on its own, in the Readme menu under About.
+private struct UpdateMenuItems: View {
+    @ObservedObject var updates: UpdateChecker
+    let delegate: AppDelegate
+
+    var body: some View {
+        Button("Check for Updates…") { delegate.checkForUpdates() }
+        Toggle("Check for Updates Automatically", isOn: Binding(
+            get: { updates.automatic == true },
+            set: { updates.automatic = $0 }))
+    }
+}
+
 /// A reader command in the menus. The reading window's own key monitor sees these keys first. The
 /// menu is for finding them, and for clicking. Over the library, only what's about the window is
 /// available.
@@ -131,6 +147,8 @@ private struct CommandItem: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var app: AppCoordinator?
     let state = AppState()
+    let updates = UpdateChecker(defaults: ReaderSettings.store)
+    private var updater: UpdateController?
 
     /// Tests are hosted in the app, and shouldn't have a window in their way.
     private var isTesting: Bool {
@@ -143,7 +161,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if !isTesting { coordinator().launch() }
+        guard !isTesting else { return }
+        coordinator().launch()
+        updateController().run()
     }
 
     /// Books dropped on the Dock icon, or opened from the Finder.
@@ -190,6 +210,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func exportLibrary() {
         guard !isTesting else { return }
         coordinator().exportLibrary()
+    }
+
+    func checkForUpdates() {
+        guard !isTesting else { return }
+        let updater = updateController()
+        Task { await updater.checkNow() }
+    }
+
+    private func updateController() -> UpdateController {
+        if let updater { return updater }
+        let made = UpdateController(checker: updates, show: UpdateController.present(on: coordinator().reader.window))
+        updater = made
+        return made
     }
 
     func perform(_ command: ReaderCommand) {
