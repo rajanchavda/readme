@@ -749,6 +749,22 @@ globalThis.readmeBridge = {
         const location = await navigate(async () => { resolved = !!(await view.goTo(href)) })
         return { resolved, location }
     },
+    // Follows the link at `x`, `y` in the page, if there is one, by clicking it, so it goes the way
+    // any link does. The app asks before an edge click turns the page, as the edges cover links too,
+    // such as the page numbers in a table of contents. Answers whether there was a link.
+    followLinkAt: (x, y) => {
+        for (const { doc } of view?.renderer?.getContents?.() ?? []) {
+            const frame = doc?.defaultView?.frameElement
+            if (!frame) continue
+            const r = frame.getBoundingClientRect()
+            if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue
+            const link = doc.elementFromPoint(x - r.left, y - r.top)?.closest?.('a[href]')
+            if (!link) continue
+            link.click()
+            return true
+        }
+        return false
+    },
     goToPage: page => navigate(() => goToPage(page)),
     goToStart: () => navigate(() => goToEdge(false)),
     goToEnd: () => navigate(() => goToEdge(true)),

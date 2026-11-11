@@ -235,7 +235,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func wire() {
-        desk.onEdgeClick = { [weak self] direction in self?.turn(direction) }
+        desk.onEdgeClick = { [weak self] direction, point in self?.edgeClicked(direction, at: point) }
         desk.onSwipe = { [weak self] signal in
             guard let self, !self.isCovered, let session = self.session else { return }
             // A swipe may turn the page, which is then where the reader wants to stay.
@@ -1004,6 +1004,18 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             break
         }
         return true
+    }
+
+    /// A click on a page's edge follows a link there, such as a page number in the contents, and
+    /// turns the page only if there's none.
+    private func edgeClicked(_ direction: TurnDirection, at point: NSPoint) {
+        guard !isCovered, let book = session?.book else { return }
+        Task { [weak self, weak book] in
+            guard let book else { return }
+            let followed = await book.followLink(at: book.convert(point, from: self?.desk))
+            guard let self, !followed, self.session?.book === book else { return }
+            self.turn(direction)
+        }
     }
 
     func turn(_ direction: TurnDirection, isRepeat: Bool = false) {
