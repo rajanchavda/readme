@@ -878,9 +878,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         guard let matches = searchOutcome?.matches, matches.indices.contains(index) else { return }
         let match = matches[index]
         searchSelection = index
+        let glow = Self.glowColor(theme)
         jump { book in
             let landed = await book.go(toCFI: match.cfi)
-            await book.flash(match.cfi)
+            await book.flash(match.cfi, color: glow)
             return landed
         }
     }
@@ -1097,6 +1098,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         case .paper: "#f2c744"
         case .sepia: "#4f9fd0"
         case .night: "#d9a63a"
+        }
+    }
+
+    /// The colour a picked search match glows in, which no highlight has, so the glow is never taken
+    /// for one: blue where highlights are yellow, and a warm orange where they're blue.
+    static func glowColor(_ theme: Theme) -> String {
+        switch theme {
+        case .paper: "#3d8fd1"
+        case .sepia: "#e0703c"
+        case .night: "#5aa9e6"
         }
     }
 
@@ -1393,7 +1404,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         places.place(showing: session?.book.currentLocation?.cfi)
     }
 
-    private var theme: Theme {
+    var theme: Theme {
         let isDark = desk.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         return settings.resolvedTheme(systemIsDark: isDark)
     }

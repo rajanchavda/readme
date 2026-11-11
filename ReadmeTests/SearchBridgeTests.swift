@@ -103,16 +103,36 @@ private func fixture(_ name: String) throws -> URL {
         try await open("search.epub")
         let match = try #require(await view.search("elena", limit: 500)?.matches.first)
         _ = await view.go(toCFI: match.cfi)
-        await view.flash(match.cfi)
+        await view.flash(match.cfi, color: "#4f9fd0")
         await view.addHighlight(match.cfi)
         #expect(try await view.call("return readmeBridge.flashing()", as: String.self) == nil)
+    }
+
+    /// The glow is drawn in the colour it's given, and blinks: it brightens and dims more than once
+    /// before it fades away.
+    @Test func theGlowBlinksInItsOwnColour() async throws {
+        try await open("search.epub")
+        let match = try #require(await view.search("elena", limit: 500)?.matches.first)
+        _ = await view.go(toCFI: match.cfi)
+        await view.flash(match.cfi, color: "#4f9fd0")
+        struct Drawn: Decodable { var fill: String; var opacities: [Double] }
+        let drawn = try #require(try await view.call("""
+            for (let i = 0; i < 50 && !readmeBridge.flashDrawn(); i++) await new Promise(r => setTimeout(r, 20))
+            return readmeBridge.flashDrawn()
+            """, as: Drawn.self))
+        #expect(drawn.fill == "#4f9fd0")
+        let peaks = drawn.opacities.indices.dropFirst().dropLast().filter {
+            drawn.opacities[$0] > drawn.opacities[$0 - 1] && drawn.opacities[$0] > drawn.opacities[$0 + 1]
+        }
+        #expect(peaks.count >= 2)
+        #expect(drawn.opacities.last == 0)
     }
 
     @Test func flashFadesAndLeavesNoHighlight() async throws {
         try await open("search.epub")
         let match = try #require(await view.search("elena", limit: 500)?.matches.first)
         _ = await view.go(toCFI: match.cfi)
-        await view.flash(match.cfi)
+        await view.flash(match.cfi, color: "#4f9fd0")
         #expect(try await view.call("return readmeBridge.flashing()", as: String.self) == match.cfi)
         try await Task.sleep(for: .milliseconds(2500))
         #expect(try await view.call("return readmeBridge.flashing()", as: String.self) == nil)

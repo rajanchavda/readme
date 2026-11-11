@@ -373,10 +373,18 @@ const search = async (query, limit) => {
     return { matches, isCapped: false, isCancelled: false }
 }
 
-// The search match the reader picked, glowing for a moment. See the `draw-annotation` listener.
+// The search match the reader picked, blinking for a moment in its own colour, which no highlight
+// has. See the `draw-annotation` listener.
 const FLASH_MS = 2000
-const FLASH_FADE_MS = 600
+// How strongly it shows over the moment: three blinks between dim and strong, then a fade.
+const FLASH_OPACITIES = [
+    { opacity: 0.12, offset: 0 }, { opacity: 0.55, offset: 0.1 }, { opacity: 0.12, offset: 0.2 },
+    { opacity: 0.55, offset: 0.3 }, { opacity: 0.12, offset: 0.4 }, { opacity: 0.55, offset: 0.5 },
+    { opacity: 0.4, offset: 0.7 }, { opacity: 0, offset: 1 },
+]
 let flashing = null
+let flashColor = null
+let flashGroup = null
 let flashTimer = null
 
 // A highlight made on the glowing words takes over from the glow, which would otherwise fade it and
@@ -387,12 +395,14 @@ const stopFlashing = cfi => {
     flashing = null
 }
 
-const flash = cfi => {
+const flash = (cfi, color) => {
     clearTimeout(flashTimer)
     if (flashing) view.deleteAnnotation({ value: flashing }).catch(error => console.warn(error))
     flashing = null
+    flashGroup = null
     if (highlights.has(cfi)) return
     flashing = cfi
+    flashColor = color
     view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
     flashTimer = setTimeout(() => {
         if (flashing !== cfi) return
@@ -587,13 +597,13 @@ const open = async (url, cfi, css, columns, width) => {
     })
     view.addEventListener('draw-annotation', ({ detail: { draw, annotation } }) => {
         if (annotation.value !== flashing) return draw(Overlayer.highlight, { color: highlightColor })
-        // The picked search match: it glows, then fades over its last moments.
+        // The picked search match: it blinks, then fades.
         draw((rects, options) => {
             const g = Overlayer.highlight(rects, options)
-            g.animate([{ opacity: 0.3 }, { opacity: 0.3, offset: 1 - FLASH_FADE_MS / FLASH_MS }, { opacity: 0 }],
-                { duration: FLASH_MS, fill: 'forwards' })
+            g.animate(FLASH_OPACITIES, { duration: FLASH_MS, fill: 'forwards' })
+            flashGroup = g
             return g
-        }, { color: highlightColor })
+        }, { color: flashColor })
     })
     view.addEventListener('create-overlay', () => {
         for (const cfi of highlights) view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
@@ -780,6 +790,11 @@ globalThis.readmeBridge = {
     flash,
     // The search match glowing now, for tests.
     flashing: () => flashing,
+    // How the glow was drawn: its colour and the opacities it goes through. For tests.
+    flashDrawn: () => flashing && flashGroup?.isConnected ? {
+        fill: flashGroup.getAttribute('fill'),
+        opacities: flashGroup.getAnimations()[0]?.effect.getKeyframes().map(k => Number(k.opacity)) ?? [],
+    } : null,
     // The page number as drawn, for tests.
     pageLabel: () => {
         const cell = pageNumberCell()

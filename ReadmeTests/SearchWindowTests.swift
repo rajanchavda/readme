@@ -106,6 +106,14 @@ private func fixture(_ name: String) throws -> URL {
         }
     }
 
+    /// The glow on a picked match is never the colour of the reader's own highlights, in any theme.
+    @Test func theGlowIsNeverTheHighlightColour() {
+        for theme in [Theme.paper, .sepia, .night] {
+            #expect(ReaderWindowController.glowColor(theme).lowercased()
+                    != ReaderWindowController.highlightColor(theme).lowercased())
+        }
+    }
+
     @Test func oneLetterSearchesNothing() async throws {
         try await withReader("search.epub") { reader, _ in
             reader.perform(.find)
@@ -178,6 +186,11 @@ private func fixture(_ name: String) throws -> URL {
             #expect(reader.searchSelection == 3)
             let book = try #require(reader.book)
             #expect(try await book.call("return readmeBridge.flashing()", as: String.self) == match.cfi)
+            let fill = try await book.call("""
+                for (let i = 0; i < 50 && !readmeBridge.flashDrawn(); i++) await new Promise(r => setTimeout(r, 20))
+                return readmeBridge.flashDrawn()?.fill ?? null
+                """, as: String.self)
+            #expect(fill == ReaderWindowController.glowColor(reader.theme))
             let landed = try #require(reader.location)
             #expect(landed.page <= match.page)
             #expect(match.page - landed.page <= 3)

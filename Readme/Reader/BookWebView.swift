@@ -426,11 +426,12 @@ final class BookWebView: NSView {
         return SearchOutcome(matches: reply.matches, isCapped: reply.isCapped)
     }
 
-    /// Makes the words at `cfi` glow briefly, so the eye finds them. It fades by itself and is never
-    /// one of the reader's highlights.
-    func flash(_ cfi: String) async {
+    /// Makes the words at `cfi` blink in `color` for a moment, so the eye finds them. It fades by
+    /// itself and is never one of the reader's highlights.
+    func flash(_ cfi: String, color: String) async {
         guard isOpen else { return }
-        _ = try? await call("readmeBridge.flash(cfi); return true", arguments: ["cfi": cfi], as: Bool.self)
+        _ = try? await call(
+            "readmeBridge.flash(cfi, color); return true", arguments: ["cfi": cfi, "color": color], as: Bool.self)
     }
 
     /// The page number in the spread's corner, and its colour, as the page draws it. For tests.
