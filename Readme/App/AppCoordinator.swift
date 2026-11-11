@@ -86,6 +86,10 @@ final class AppCoordinator {
     let selection = ShelfSelection()
     let exporter: LibraryExporter
     let libraryImporter: LibraryImporter
+    /// The books an import under way is combining into, which mustn't be opened until it's done.
+    private(set) var combiningIDs: Set<String> = []
+    /// Opens waiting for that import to finish.
+    private var waitingForCombine: [CheckedContinuation<Void, Never>] = []
     private var watchingBooks: AnyCancellable?
     private let positions: PositionStore
     private lazy var marker = ReadMarker { [weak library] id, location in
@@ -204,6 +208,10 @@ final class AppCoordinator {
         }
         openingID = book.id
         defer { if openingID == book.id { openingID = nil } }
+        // Opened now, it would come up on its old place and write that over what the import brings.
+        if combiningIDs.contains(book.id) {
+            await withCheckedContinuation { waitingForCombine.append($0) }
+        }
         marker.flush()
         await reader.open(book, at: cfi)
     }
@@ -303,8 +311,13 @@ final class AppCoordinator {
                 await reader.placesKept()
                 reader.closeBook()
             }
+            if choice == .combine { combiningIDs = Set(prepared.existingIDs) }
             drops.setWorking(ShelfDrops.workingLine("Importing", prepared.bundle.manifest.bookIDs.count))
             let summary = await libraryImporter.run(prepared, choice: choice)
+            combiningIDs = []
+            let waiting = waitingForCombine
+            waitingForCombine = []
+            for open in waiting { open.resume() }
             drops.setWorking(nil)
             drops.say(summary.line)
         }

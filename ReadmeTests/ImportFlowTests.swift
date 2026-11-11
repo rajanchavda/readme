@@ -86,6 +86,36 @@ private func scratchDefaults() -> UserDefaults {
         #expect(await library.highlights.highlights(bookID: book.id) == [mark])
     }
 
+    /// A book being combined that's opened from the shelf mid-import waits for the import, so it opens
+    /// on the imported place and never writes its old one over it.
+    @Test func openingABookBeingCombinedWaitsForTheImport() async throws {
+        defer { clean() }
+        let book = try await coordinator.importer.importBook(from: exportFixture("long.epub"))
+        // A real place 60% in, as the other Mac would have saved it; then this Mac is back at the start.
+        await coordinator.open(book)
+        let reader = coordinator.reader
+        let pages = try #require(reader.location?.pageCount)
+        #expect(reader.goToPage(typed: String(pages * 6 / 10)))
+        await reader.settled()
+        let far = try #require(reader.location)
+        #expect(far.fraction >= 0.5)
+        await reader.placesKept()
+        reader.closeBook()
+        await positions.save(bundlePlace(0), bookID: book.id)
+        // Many new books first, so the import is still running when the shelf is clicked.
+        try await writeBundle(["search.epub", "spreads.epub", "no-cover.epub", "long.epub"], position: far)
+        let importing = Task { await coordinator.importBundles([url], answer: .combine) }
+        while !coordinator.combiningIDs.contains(book.id) { await Task.yield() }
+        await coordinator.open(book)
+        await importing.value
+        // Reading on from wherever it opened is what writes the reader's place.
+        coordinator.reader.showBook(animated: false)
+        coordinator.reader.turn(.forward)
+        await coordinator.reader.settled()
+        await coordinator.prepareToQuit()
+        #expect(try #require(await positions.location(bookID: book.id)).fraction >= 0.5)
+    }
+
     @Test func dropsAreSplitByKind() {
         let book = URL(fileURLWithPath: "/x/a.epub")
         let bundle = URL(fileURLWithPath: "/x/b.readmelibrary")

@@ -64,6 +64,20 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: storeB.coverURL(for: book).path))
     }
 
+    /// The title and author the shelf showed on the other Mac, not the file's own or its staged name.
+    @Test func newBooksKeepTheirShelfTitle() async throws {
+        defer { clean() }
+        let epub = try exportFixture("no-cover.epub")
+        let id = try await BookID.of(epub)
+        try LibraryBundle.write([
+            BundleItem(id: id, info: BundledBook(title: "Shelf Title", author: "Shelf Author", addedAt: bundleDate(1), lastReadAt: nil),
+                       epub: epub, highlights: [], marker: nil, position: nil),
+        ], to: url, exportedAt: bundleDate(1))
+        _ = await importerB.run(try await importerB.prepare(url), choice: .keepMine)
+        #expect(storeB.book(id: id)?.title == "Shelf Title")
+        #expect(storeB.book(id: id)?.author == "Shelf Author")
+    }
+
     @Test func keepMineLeavesExistingBooksAlone() async throws {
         defer { clean() }
         let id = try await exportFromA()

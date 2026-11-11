@@ -137,6 +137,14 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
+    /// The title and author the shelf shows, as another Mac's shelf showed them.
+    func setDetails(id: String, title: String, author: String?) {
+        guard let index = books.firstIndex(where: { $0.id == id }) else { return }
+        books[index].title = title
+        books[index].author = author
+        save()
+    }
+
     func fileURL(for book: Book) -> URL {
         booksDirectory.appendingPathComponent(book.fileName, isDirectory: false)
     }

@@ -111,6 +111,8 @@ struct LibraryImporter {
         } catch {
             return false
         }
+        // Named as the shelf showed it there, not by the file or the staged copy's name.
+        store.setDetails(id: id, title: contents.info.title, author: contents.info.author)
         store.applyImported(id: id, addedAt: contents.info.addedAt, lastReadAt: contents.info.lastReadAt, location: contents.position)
         await store.highlights.merge(contents.highlights, bookID: id)
         if let marker = contents.marker { await store.markers.setIfNone(marker, bookID: id) }
