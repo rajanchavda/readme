@@ -24,8 +24,9 @@ Settings > Secrets and variables > Actions.
 Pushing a tag `v<version>` runs `.github/workflows/release.yml`, which:
 
 1. checks the tag matches `MARKETING_VERSION` in `project.yml`,
-2. runs `scripts/release.sh` and `scripts/check_release.sh` (the tests already ran on the pull
-   request, in `.github/workflows/tests.yml`),
+2. runs `scripts/release.sh` and `scripts/check_release.sh`. It doesn't run the tests: run
+   `scripts/test.sh` locally, or the Tests workflow on GitHub (Actions > Tests > Run workflow, or
+   the `run-tests` label on a pull request), before tagging,
 3. creates the GitHub release with `Readme-<version>.dmg` and its `.sha256`,
 4. copies the generated `build/readme.rb` to `Casks/readme.rb` in `homebrew-tap` and pushes it.
 

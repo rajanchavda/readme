@@ -1,9 +1,12 @@
 name: Tests
 
+# Runs only when asked, never on its own:
+#   - Actions tab > Tests > "Run workflow", choosing the branch to test, or
+#   - adding the label "run-tests" to a pull request (remove and add it again to rerun).
 on:
+  workflow_dispatch:
   pull_request:
-    branches:
-      - main
+    types: [labeled]
 
 concurrency:
   group: tests-${{ github.ref }}
@@ -12,6 +15,7 @@ concurrency:
 jobs:
   test:
     name: Build and Test
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-tests'
     runs-on: macos-latest
     permissions:
       contents: read
