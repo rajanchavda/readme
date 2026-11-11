@@ -243,7 +243,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             session.turns.follow(signal)
         }
         // The open contents and the scrim beside them take every click, so one beside them closes them.
-        desk.chrome = [contents, highlightsPanel, contentsScrim, pageField, toolbar, highlightBar, searchScrim, searchBox]
+        // The first that takes a click has it, so the search box comes before the scrim around it.
+        desk.chrome = [contents, highlightsPanel, contentsScrim, pageField, toolbar, highlightBar, searchBox, searchScrim]
         contents.onChoose = { [weak self] entry in self?.choose(entry) }
         contentsScrim.onClick = { [weak self] in
             self?.closeContents()
@@ -1364,6 +1365,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     var isRibbonShown: Bool { isRibbonOn }
     var noticeText: String { notice.stringValue }
     var searchBoxFrame: NSRect { searchBox.frame }
+    /// Where a row of the search box's list is, in the window's coordinates.
+    func searchRowPoint(_ row: Int) -> NSPoint { searchBox.convert(searchBox.rowCenter(row), to: nil) }
 
     /// Returns once the contents have been read and the restyles and jumps under way are done.
     func settled() async {
