@@ -4,6 +4,8 @@ import { makeBook } from './foliate/view.js'
 import { SectionProgress } from './foliate/progress.js'
 import { Overlayer } from './foliate/overlayer.js'
 import { collapse, compare } from './foliate/epubcfi.js'
+import { searchMatcher } from './foliate/search.js'
+import { textWalker } from './foliate/text-walker.js'
 
 const COMMAND_MS = 15000
 const SECTION_MS = 10000
@@ -300,6 +302,134 @@ const setLayout = (css, columns, width) => {
     fitColumns()
     view.renderer.setStyles?.(css ?? '')
     paintMargins()
+    showPageNumber()
+}
+
+// How far through its section the start of `range` is, by its share of the section's text.
+const fractionInSection = range => {
+    const body = range.startContainer.ownerDocument.body
+    const total = body?.textContent.length || 1
+    const before = range.cloneRange()
+    before.selectNodeContents(body)
+    before.setEnd(range.startContainer, range.startOffset)
+    return Math.min(1, before.toString().length / total)
+}
+
+// The same share as `fractionInSection`, for many ranges of one document in reading order, as search
+// finds them. It counts the text before each as it goes, rather than again from the top for each,
+// which in a long chapter with many matches would take seconds.
+const sectionCounter = doc => {
+    const body = doc.body
+    if (!body) return fractionInSection
+    const total = body.textContent.length || 1
+    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+    let node = null
+    let before = 0
+    let lost = false
+    return range => {
+        const target = range.startContainer
+        if (lost || target.nodeType !== Node.TEXT_NODE) return fractionInSection(range)
+        while (node !== target) {
+            if (node) before += node.data.length
+            node = walker.nextNode()
+            if (!node) {
+                lost = true
+                return fractionInSection(range)
+            }
+        }
+        return Math.min(1, (before + range.startOffset) / total)
+    }
+}
+
+// Search: the readable sections' text, ignoring case and accents. Each match comes with the page
+// it's on, worked out like foliate's own locations, so it doesn't depend on the layout. A newer
+// search stops an older one between sections. It never moves the book or marks the page.
+let searchGeneration = 0
+
+const search = async (query, limit) => {
+    const generation = ++searchGeneration
+    const cancelled = { matches: [], isCapped: false, isCancelled: true }
+    const matcher = searchMatcher(textWalker, {
+        defaultLocale: book.metadata?.language, matchCase: false, matchDiacritics: false, matchWholeWords: false,
+    })
+    const matches = []
+    for (const [index, section] of book.sections.entries()) {
+        if (section.linear === 'no' || !section.createDocument) continue
+        const doc = await section.createDocument()
+        if (generation !== searchGeneration) return cancelled
+        const shareOf = sectionCounter(doc)
+        for (const { range, excerpt } of matcher(doc, query)) {
+            if (matches.length >= limit) return { matches, isCapped: true, isCancelled: false }
+            matches.push({
+                cfi: view.getCFI(index, range),
+                pre: excerpt.pre,
+                match: excerpt.match,
+                post: excerpt.post,
+                page: progress.getProgress(index, shareOf(range)).location.current + 1,
+                chapter: view.getProgressOf(index, range).tocItem?.label?.trim() || null,
+            })
+        }
+    }
+    return { matches, isCapped: false, isCancelled: false }
+}
+
+// The search match the reader picked, blinking for a moment in its own colour, which no highlight
+// has. See the `draw-annotation` listener.
+const FLASH_MS = 2000
+// How strongly it shows over the moment: three blinks between dim and strong, then a fade.
+const FLASH_OPACITIES = [
+    { opacity: 0.12, offset: 0 }, { opacity: 0.55, offset: 0.1 }, { opacity: 0.12, offset: 0.2 },
+    { opacity: 0.55, offset: 0.3 }, { opacity: 0.12, offset: 0.4 }, { opacity: 0.55, offset: 0.5 },
+    { opacity: 0.4, offset: 0.7 }, { opacity: 0, offset: 1 },
+]
+let flashing = null
+let flashColor = null
+let flashGroup = null
+let flashTimer = null
+
+// A highlight made on the glowing words takes over from the glow, which would otherwise fade it and
+// then take it away.
+const stopFlashing = cfi => {
+    if (cfi !== flashing) return
+    clearTimeout(flashTimer)
+    flashing = null
+}
+
+const flash = (cfi, color) => {
+    clearTimeout(flashTimer)
+    if (flashing) view.deleteAnnotation({ value: flashing }).catch(error => console.warn(error))
+    flashing = null
+    flashGroup = null
+    if (highlights.has(cfi)) return
+    flashing = cfi
+    flashColor = color
+    view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
+    flashTimer = setTimeout(() => {
+        if (flashing !== cfi) return
+        flashing = null
+        view.deleteAnnotation({ value: cfi }).catch(error => console.warn(error))
+    }, FLASH_MS)
+}
+
+// The page number, dim in the outer corner under the right-hand page, using foliate's own page
+// footer. Being part of the page, it's in the curl's pictures and turns with its page. foliate
+// makes the footer again at every layout, so this is called after each move and restyle.
+const pageNumberCell = () => {
+    const feet = view?.renderer?.feet
+    if (!feet?.length) return null
+    return book?.dir === 'rtl' ? feet[0] : feet[feet.length - 1]
+}
+
+const showPageNumber = () => {
+    const feet = view?.renderer?.feet
+    const cell = pageNumberCell()
+    if (!cell || !latest) return
+    for (const foot of feet) if (foot !== cell) foot.textContent = ''
+    cell.textContent = String(pageNow())
+    const body = currentDocument()?.body
+    if (body) cell.style.color = body.ownerDocument.defaultView.getComputedStyle(body).color
+    cell.style.opacity = '0.35'
+    cell.style.textAlign = 'end'
 }
 
 // Makes a layout change, then goes back to the reader's place, which foliate's own re-rendering
@@ -399,6 +529,7 @@ const open = async (url, cfi, css, columns, width) => {
     view.addEventListener('relocate', ({ detail }) => {
         latest = detail
         relocations++
+        showPageNumber()
         if (busy) return
         // foliate re-rendering, usually mid-resize, so wait to see where it ends up.
         if (detail.reason === 'anchor') scheduleRelayout()
@@ -432,12 +563,7 @@ const open = async (url, cfi, css, columns, width) => {
         const fractions = view.getSectionFractions()
         const start = fractions[index] ?? 0
         const end = fractions[index + 1] ?? start
-        const body = range.startContainer.ownerDocument.body
-        const total = body?.textContent.length || 1
-        const before = range.cloneRange()
-        before.selectNodeContents(body)
-        before.setEnd(range.startContainer, range.startOffset)
-        return Math.min(1, start + (end - start) * Math.min(1, before.toString().length / total))
+        return Math.min(1, start + (end - start) * fractionInSection(range))
     }
     view.addEventListener('load', ({ detail: { doc, index } }) => {
         const report = () => {
@@ -469,8 +595,16 @@ const open = async (url, cfi, css, columns, width) => {
             }
         })
     })
-    view.addEventListener('draw-annotation', ({ detail: { draw } }) =>
-        draw(Overlayer.highlight, { color: highlightColor }))
+    view.addEventListener('draw-annotation', ({ detail: { draw, annotation } }) => {
+        if (annotation.value !== flashing) return draw(Overlayer.highlight, { color: highlightColor })
+        // The picked search match: it blinks, then fades.
+        draw((rects, options) => {
+            const g = Overlayer.highlight(rects, options)
+            g.animate(FLASH_OPACITIES, { duration: FLASH_MS, fill: 'forwards' })
+            flashGroup = g
+            return g
+        }, { color: flashColor })
+    })
     view.addEventListener('create-overlay', () => {
         for (const cfi of highlights) view.addAnnotation({ value: cfi }).catch(error => console.warn(error))
     })
@@ -624,6 +758,7 @@ globalThis.readmeBridge = {
         const removed = [...highlights].filter(cfi => !cfis.includes(cfi))
         highlights.clear()
         for (const cfi of cfis) highlights.add(cfi)
+        if (highlights.has(flashing)) stopFlashing(flashing)
         highlightColor = color
         // The old ones are redrawn too, for the new colour.
         for (const cfi of removed) await view.deleteAnnotation({ value: cfi }).catch(error => console.warn(error))
@@ -642,6 +777,7 @@ globalThis.readmeBridge = {
         return { cfi: marker, isMarked: current?.isMarked ?? false }
     },
     addHighlight: async cfi => {
+        stopFlashing(cfi)
         highlights.add(cfi)
         await view.addAnnotation({ value: cfi })
     },
@@ -650,6 +786,20 @@ globalThis.readmeBridge = {
         await view.deleteAnnotation({ value: cfi })
     },
     clearSelection: () => view.deselect(),
+    search,
+    flash,
+    // The search match glowing now, for tests.
+    flashing: () => flashing,
+    // How the glow was drawn: its colour and the opacities it goes through. For tests.
+    flashDrawn: () => flashing && flashGroup?.isConnected ? {
+        fill: flashGroup.getAttribute('fill'),
+        opacities: flashGroup.getAnimations()[0]?.effect.getKeyframes().map(k => Number(k.opacity)) ?? [],
+    } : null,
+    // The page number as drawn, for tests.
+    pageLabel: () => {
+        const cell = pageNumberCell()
+        return cell ? { text: cell.textContent, color: getComputedStyle(cell).color } : null
+    },
     applyStyles: (css, columns, width) => enqueue(() => holdingPlace(() => setLayout(css, columns, width))),
     // Called when Swift resizes the view. The page learns its new size a little later.
     resized: async width => {

@@ -86,12 +86,13 @@ def png(width=120, height=180, rgb=(90, 60, 40)):
 
 
 class Chapter:
-    def __init__(self, ident, title, content, subsections=(), in_zip=True):
+    def __init__(self, ident, title, content, subsections=(), in_zip=True, linear=True):
         self.ident = ident
         self.title = title
         self.content = content
         self.subsections = subsections  # (title, fragment) pairs nested under the chapter
         self.in_zip = in_zip  # False: named in the manifest but missing from the zip
+        self.linear = linear  # False: linear="no" in the spine, as endnotes often are
 
     @property
     def href(self):
@@ -109,7 +110,7 @@ def nav_document(chapters):
             nested = f"<ol>{links}</ol>"
         return f'<li><a href="{chapter.href}">{chapter.title}</a>{nested}</li>'
 
-    items = "\n".join(item(chapter) for chapter in chapters)
+    items = "\n".join(item(chapter) for chapter in chapters if chapter.linear)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <head><title>Contents</title></head>
@@ -134,7 +135,9 @@ def package(title, chapters, has_toc, has_cover, extra_manifest):
             '<item id="cover" href="cover.png" media-type="image/png" properties="cover-image"/>'
         )
     manifest.extend(extra_manifest)
-    spine = "\n".join(f'<itemref idref="{c.ident}"/>' for c in chapters)
+    spine = "\n".join(
+        f'<itemref idref="{c.ident}"' + ("" if c.linear else ' linear="no"') + "/>" for c in chapters
+    )
     manifest_xml = "\n".join(manifest)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
@@ -235,6 +238,39 @@ def long_book():
             body += f"\n{paragraphs(rng, 20)}"
         chapters.append(Chapter(f"ch{number}", title, xhtml(title, body), subsections))
     write_epub("long.epub", "Long Fixture Book", chapters, has_cover=True)
+
+
+def search_book():
+    # Known words among the filler: "Elena" three times in the readable chapters and once in the
+    # non-linear notes, "Café" once, and "Zanzibar" only in the notes.
+    rng = random.Random(7)
+
+    def chapter(ident, title, lines, linear=True):
+        body = f"<h1>{title}</h1>\n" + "\n".join(
+            f"{paragraphs(rng, 4)}\n<p>{line}</p>" for line in lines
+        ) + f"\n{paragraphs(rng, 4)}"
+        return Chapter(ident, title, xhtml(title, body), linear=linear)
+
+    chapters = [
+        chapter("ch1", "The Harbour", [
+            "The girl they called Elena stood at the rail.",
+            "Elena had never seen the sea so still.",
+        ]),
+        chapter("ch2", "The Letter", [
+            "They met at the Café Lumière before the bells.",
+            "When Elena came down the stairs she found the letter.",
+        ]),
+        chapter("ch3", "The Road", ["Nobody in the village remembered the road."]),
+        chapter("notes", "Notes", ["Elena is a name from Zanzibar."], linear=False),
+    ]
+    write_epub("search.epub", "Search Fixture Book", chapters)
+
+
+def big_chapter_book():
+    # One very long chapter, as some Gutenberg books have, for search to cross many matches in.
+    rng = random.Random(8)
+    body = f"<h1>The Whole Book</h1>\n{paragraphs(rng, 1500)}"
+    write_epub("big-chapter.epub", "Big Chapter Book", [Chapter("ch1", "The Whole Book", xhtml("The Whole Book", body))])
 
 
 def short_chapters(rng, count=3):
@@ -571,6 +607,8 @@ def main():
     spreads_book()
     late_resources_book()
     long_book()
+    search_book()
+    big_chapter_book()
     write_epub("no-cover.epub", "No Cover Book", short_chapters(random.Random(4)))
     broken_chapter_book()
     write_epub("no-toc.epub", "No TOC Book", short_chapters(random.Random(5)), has_toc=False)

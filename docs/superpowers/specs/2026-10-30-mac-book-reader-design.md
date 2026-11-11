@@ -26,7 +26,7 @@ The app is designed around four moments.
 
 ## Non-goals for v1
 
-Notes, sync, a store, collections and tags, dictionary, reading stats, MOBI and PDF, cloud accounts, search. Each adds interface, and interface is what makes a reader feel cluttered.
+Notes, sync, a store, collections and tags, dictionary, reading stats, MOBI and PDF, cloud accounts. Each adds interface, and interface is what makes a reader feel cluttered.
 
 ## Highlights (added after v1)
 
@@ -35,6 +35,14 @@ Select words and a small bar floats by them with one button, Highlight; over a h
 ## Reading marker (added after v1)
 
 A deliberate, visible "I stopped here", apart from the place the book keeps by itself. There is one a book, and it marks a spread: ⌘D (View menu: Mark This Page, or the bookmark button in the toolbar) sets it on the spread on show, moving it if it was elsewhere, and ⌘D again on that spread takes it away. While the spread that holds it is on show, a small ribbon in the theme's muted red hangs from the top of the right-hand page; it leaves the page while pages turn. The marker is the CFI of the point the spread starts at, kept in `Application Support/Markers/<bookID>.json`, so it stays on the right spread whatever the font or window size. The book still opens at the last position; if the marker is elsewhere, a quiet notice says so, and ⌘⇧D (Go menu: Go to Marker) goes there. Removing the book from the library removes its marker.
+
+## Page number (added after v1)
+
+One dim number in the bottom outer corner of each spread, at about a third of the text colour: the page the spread starts on, the same page ⌘G shows. A page is a fixed run of text, so with large text it can stay the same for a turn or two, and in two columns it can skip. It's drawn in foliate's page footer, so it's part of the page and turns with the curl.
+
+## Search (added after v1)
+
+For finding something already read. ⌘F (Go menu: Find…) opens a small floating box near the top of the book, which dims a little behind it. Typing searches the book's readable text, ignoring case and accents, from two characters on, and lists up to 500 matches in book order, each with the words around it and its page and chapter. Return or a click closes the box and goes there, and the matched words glow for two seconds and fade; Esc closes it without moving. ⌘F again brings back the last search while the book is open. Search never touches the reading marker: to come back afterwards, mark the page first. Endnotes and other non-linear sections aren't searched. Design: `docs/superpowers/specs/2026-11-10-search-and-page-numbers-design.md`.
 
 ## Anti-goals
 

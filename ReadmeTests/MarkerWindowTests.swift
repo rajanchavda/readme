@@ -20,8 +20,8 @@ private func fixture(_ name: String) throws -> URL {
     }
 
     @Test func toggleMarksThenUnmarks() async throws {
-        let saved = UserDefaults.standard.data(forKey: ReaderSettings.key)
-        defer { UserDefaults.standard.set(saved, forKey: ReaderSettings.key) }
+        let saved = ReaderSettings.store.data(forKey: ReaderSettings.key)
+        defer { ReaderSettings.store.set(saved, forKey: ReaderSettings.key) }
         let folder = try positionsFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let reader = reader(in: folder)
@@ -46,8 +46,8 @@ private func fixture(_ name: String) throws -> URL {
     }
 
     @Test func goToMarkerComesBackAndReopeningOffersIt() async throws {
-        let saved = UserDefaults.standard.data(forKey: ReaderSettings.key)
-        defer { UserDefaults.standard.set(saved, forKey: ReaderSettings.key) }
+        let saved = ReaderSettings.store.data(forKey: ReaderSettings.key)
+        defer { ReaderSettings.store.set(saved, forKey: ReaderSettings.key) }
         let folder = try positionsFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let url = try fixture("long.epub")

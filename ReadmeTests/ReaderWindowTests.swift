@@ -46,7 +46,8 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
     @Test func onlyPlainFTogglesFullscreen() {
         #expect(action("f") == .command(.toggleFullscreen))
         #expect(action("F", [.shift]) == nil)
-        #expect(action("f", [.command]) == nil)
+        // ⌘F is Find, not fullscreen.
+        #expect(action("f", [.command]) == .command(.find))
         #expect(action("f", [.control, .command]) == .command(.toggleFullscreen))
     }
 
