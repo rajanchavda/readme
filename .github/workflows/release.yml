@@ -39,10 +39,8 @@ jobs:
           fi
           echo "VERSION=$tag_version" >> "$GITHUB_ENV"
 
-      - name: Run tests
-        env:
-          SHARDS: 2
-        run: scripts/test.sh
+      # No tests here, to keep releases quick: run them before tagging, locally with
+      # scripts/test.sh or on GitHub with the Tests workflow (tests.yml), which runs only when asked.
 
       # Writes build/Readme-<version>.dmg, its .sha256 and the cask build/readme.rb.
       - name: Package
