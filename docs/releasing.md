@@ -14,9 +14,11 @@ Their books, reading places and settings are kept, because they live outside the
 5. Check it: `scripts/check_release.sh`. Quit Readme and eject any Readme disk first, or the check stops.
 6. Commit, then mark the release with a tag and push both:
    `git tag v1.1` and `git push origin v1.1`, after the usual `git push`.
-7. Run `scripts/release.sh`. It makes `build/Readme-<version>.dmg`, a checksum and the Homebrew cask `build/readme.rb`.
-8. Upload the DMG and checksum to a GitHub release for the tag, then update the tap. The steps are in `docs/homebrew.md`.
-   Testers without Homebrew can still be sent the DMG directly.
+   The tag must match `MARKETING_VERSION`.
+7. The tag starts the Release workflow on GitHub. It builds the DMG, publishes it as the GitHub release
+   for the tag and updates the Homebrew cask. Watch it under the repo's **Actions** tab; details,
+   and the steps to do it by hand, are in `docs/homebrew.md`.
+   Testers without Homebrew can still be sent the DMG from the release page.
 
 ## What testers do
 

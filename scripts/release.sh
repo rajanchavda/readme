@@ -51,4 +51,4 @@ echo "File     $dmg"
 echo "SHA-256  $sha"
 echo "Cask     build/readme.rb"
 echo
-echo "Next: see docs/releasing.md (upload the DMG to the v$version release, then update the tap)."
+echo "Pushing tag v$version releases this automatically; to do it by hand, see docs/homebrew.md."
