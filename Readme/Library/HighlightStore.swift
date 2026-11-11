@@ -56,6 +56,20 @@ actor HighlightStore {
         write(all, bookID: bookID)
     }
 
+    /// Adds those that are new here: neither their `id` nor their passage is marked already. Nothing
+    /// already here changes. Returns how many were added.
+    @discardableResult
+    func merge(_ incoming: [Highlight], bookID: String) -> Int {
+        var all = highlights(bookID: bookID)
+        let before = all.count
+        for highlight in incoming where !all.contains(where: { $0.id == highlight.id || $0.cfi == highlight.cfi }) {
+            all.append(highlight)
+        }
+        guard all.count > before else { return 0 }
+        write(all, bookID: bookID)
+        return all.count - before
+    }
+
     func remove(id: UUID, bookID: String) {
         let all = highlights(bookID: bookID)
         let kept = all.filter { $0.id != id }

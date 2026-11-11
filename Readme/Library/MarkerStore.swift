@@ -53,6 +53,14 @@ actor MarkerStore {
         }
     }
 
+    /// Sets it only if the book has no marker yet. Returns whether it did.
+    @discardableResult
+    func setIfNone(_ marker: Marker, bookID: String) -> Bool {
+        guard self.marker(bookID: bookID) == nil else { return false }
+        set(marker, bookID: bookID)
+        return true
+    }
+
     func remove(bookID: String) {
         try? FileManager.default.removeItem(at: file(for: bookID))
     }

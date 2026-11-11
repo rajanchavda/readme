@@ -10,7 +10,8 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var books: [Book] = []
 
     private let directory: URL
-    private let positions: PositionStore
+    /// Where the reader left each book.
+    let positions: PositionStore
     /// What the reader marked in each book.
     let highlights: HighlightStore
     /// The page the reader marked in each book.
@@ -118,6 +119,21 @@ final class LibraryStore: ObservableObject {
         books[index].lastReadAt = now()
         books[index].chapterTitle = location.chapterTitle
         books[index].chapterMinutesLeft = location.chapterMinutesLeft
+        save()
+    }
+
+    /// What an imported bundle says about a book: when it was added, if given; the later of the two
+    /// read dates; and, with `location`, the chapter the shelf shows. A book not here is left alone.
+    func applyImported(id: String, addedAt: Date?, lastReadAt: Date?, location: ReaderLocation?) {
+        guard let index = books.firstIndex(where: { $0.id == id }) else { return }
+        if let addedAt { books[index].addedAt = addedAt }
+        if let lastReadAt, books[index].lastReadAt.map({ lastReadAt > $0 }) ?? true {
+            books[index].lastReadAt = lastReadAt
+        }
+        if let location {
+            books[index].chapterTitle = location.chapterTitle
+            books[index].chapterMinutesLeft = location.chapterMinutesLeft
+        }
         save()
     }
 
