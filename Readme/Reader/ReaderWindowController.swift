@@ -101,6 +101,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private(set) var searchQuery = ""
     private(set) var searchOutcome: SearchOutcome?
     private(set) var searchSelection: Int?
+    private let shortcutsPanel = ShortcutsPanel(
+        frame: NSRect(x: 0, y: 0, width: ShortcutsPanel.width, height: ShortcutsPanel.preferredHeight))
+    /// Dims the book behind the shortcuts, and closes them when clicked.
+    private let shortcutsScrim = ContentsScrim()
+    private(set) var isShortcutsShown = false
 
     private let defaults: UserDefaults
     /// Where each book was left. Without one, books open at their start and nothing is kept.
@@ -204,7 +209,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         ])
         searchScrim.wantsLayer = true
         searchScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.12).cgColor
-        for view in [pageField, contentsScrim, contents, highlightsPanel, highlightBar, searchScrim, searchBox] as [NSView] {
+        shortcutsScrim.wantsLayer = true
+        shortcutsScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.2).cgColor
+        for view in [
+            pageField, contentsScrim, contents, highlightsPanel, highlightBar, searchScrim, searchBox, shortcutsScrim,
+            shortcutsPanel,
+        ] as [NSView] {
             view.isHidden = true
             desk.addSubview(view)
         }
@@ -231,6 +241,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             // A swipe may turn the page, which is then where the reader wants to stay.
             switch signal {
             case .start:
+                self.closeShortcuts()
                 self.places.turned()
                 self.turnBegan()
             case .release, .abandon:
@@ -244,7 +255,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         }
         // The open contents and the scrim beside them take every click, so one beside them closes them.
         // The first that takes a click has it, so the search box comes before the scrim around it.
-        desk.chrome = [contents, highlightsPanel, contentsScrim, pageField, toolbar, highlightBar, searchBox, searchScrim]
+        desk.chrome = [
+            shortcutsPanel, shortcutsScrim, contents, highlightsPanel, contentsScrim, pageField, toolbar, highlightBar,
+            searchBox, searchScrim,
+        ]
         contents.onChoose = { [weak self] entry in self?.choose(entry) }
         contentsScrim.onClick = { [weak self] in
             self?.closeContents()
@@ -256,6 +270,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         pageField.onGo = { [weak self] typed in self?.goToPage(typed: typed) ?? false }
         pageField.onClose = { [weak self] in self?.closePageField() }
         searchScrim.onClick = { [weak self] in self?.closeSearch() }
+        shortcutsScrim.onClick = { [weak self] in self?.closeShortcuts() }
         searchBox.onQuery = { [weak self] query in
             guard let self else { return }
             Task { await self.search(query) }
@@ -562,6 +577,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         closeContents()
         closePageField()
         closeSearch()
+        closeShortcuts()
         desk.abandonSwipe()
         sleep()
         if let window, window.firstResponder !== window { window.makeFirstResponder(nil) }
@@ -779,6 +795,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     func perform(_ command: ReaderCommand) {
         // Over the library, only what's about the window does anything.
         if isShowingLibrary && command != .toggleFullscreen && command != .showLibrary { return }
+        // The shortcuts are put away once one is used.
+        if command != .showShortcuts { closeShortcuts() }
         switch command {
         case .biggerText, .smallerText:
             var changed = settings
@@ -805,7 +823,62 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             jump { await $0.go(toCFI: marker.cfi) }
         case .find:
             showSearch()
+        case .showShortcuts:
+            if isShortcutsShown { closeShortcuts() } else { showShortcuts() }
         }
+    }
+
+    // MARK: Shortcuts
+
+    /// Shows every shortcut over the book, with whatever else was open over it put away.
+    private func showShortcuts() {
+        closeContents()
+        closeHighlights()
+        closePageField()
+        closeSearch()
+        hideHighlightBar()
+        shortcutsPanel.setTheme(theme)
+        if !isShortcutsShown {
+            shortcutsPanel.alphaValue = 0
+            shortcutsScrim.alphaValue = 0
+        }
+        isShortcutsShown = true
+        shortcutsScrim.isHidden = false
+        shortcutsPanel.isHidden = false
+        placeShortcuts()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            shortcutsPanel.animator().alphaValue = 1
+            shortcutsScrim.animator().alphaValue = 1
+        }
+    }
+
+    func closeShortcuts() {
+        guard isShortcutsShown else { return }
+        isShortcutsShown = false
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.motion
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            shortcutsPanel.animator().alphaValue = 0
+            shortcutsScrim.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.isShortcutsShown else { return }
+                self.shortcutsPanel.isHidden = true
+                self.shortcutsScrim.isHidden = true
+            }
+        })
+    }
+
+    /// In the middle of the window.
+    private func placeShortcuts() {
+        let height = ShortcutsPanel.preferredHeight
+        shortcutsPanel.frame = NSRect(
+            x: ((desk.bounds.width - ShortcutsPanel.width) / 2).rounded(),
+            y: ((desk.bounds.height - height) / 2).rounded(),
+            width: ShortcutsPanel.width, height: height)
+        shortcutsScrim.frame = desk.bounds
     }
 
     // MARK: Search
@@ -897,6 +970,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func handle(_ event: NSEvent) -> Bool {
+        // Esc puts the shortcuts away, and any other key does what it does once they're gone.
+        if isShortcutsShown, event.window === window, event.keyCode == 53 {
+            closeShortcuts()
+            return true
+        }
         guard let window, event.window === window, window.attachedSheet == nil, !isShowingLibrary,
               let action = KeyAction.of(
                 key: event.charactersIgnoringModifiers ?? "", keyCode: event.keyCode, modifiers: event.modifierFlags,
@@ -910,6 +988,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             }
             return false
         }
+        if isShortcutsShown, action != .command(.showShortcuts), action != .ignore { closeShortcuts() }
         switch action {
         case let .command(command):
             perform(command)
@@ -1548,6 +1627,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         hideHighlightBar()
         // Below the toolbar, where it would be if it were awake.
         if isSearchShown { placeSearchBox() }
+        if isShortcutsShown { placeShortcuts() }
         pageField.frame = NSRect(
             x: ((desk.bounds.width - GoToPageField.size.width) / 2).rounded(),
             y: desk.bounds.height - 52 - GoToPageField.size.height,

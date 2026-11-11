@@ -71,6 +71,9 @@ struct ReadmeApp: App {
                     item(.find)
                     item(.goToMarker)
                 }
+                CommandGroup(replacing: .help) {
+                    item(.showShortcuts)
+                }
             }
     }
 
