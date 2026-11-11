@@ -29,7 +29,15 @@ The steps are in `docs/install.md` (System Settings > Privacy & Security > **Ope
 ## Later
 
 An Apple developer account (paid yearly) removes that message by signing and notarising the app.
-It is also needed before the app can install updates itself, which would use Sparkle. For now,
-**Check for Updates…** asks GitHub's API for the latest release (drafts and prereleases are skipped)
-and, if it's newer than the running version, opens the release page for the reader to download it.
-So the tag and `MARKETING_VERSION` must agree, as the release workflow already checks.
+
+## How the app updates itself
+
+It doesn't need the developer account. **Check for Updates…** asks GitHub's API for the latest release
+(drafts and prereleases are skipped). **Update and Restart** starts Readme Updater
+(`Readme.app/Contents/Helpers/Readme Updater.app`, built from `Updater/` and `Shared/`) and quits.
+The updater isn't sandboxed and takes no instructions from Readme. It looks up the release itself,
+then either runs `brew upgrade --cask readme` (when Homebrew installed the copy in Applications) or
+downloads `Readme-<version>.dmg`, checks it against the `.sha256` beside it, checks the app inside
+is signed and has the expected identifier and version, and swaps it in. Any failure leaves the old
+app in place. So every release needs the DMG and its `.sha256` attached, as `release.yml` does,
+and the tag and `MARKETING_VERSION` must agree.

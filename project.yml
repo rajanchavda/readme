@@ -11,6 +11,10 @@ settings:
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
+    # What people see as the version, and the build number that must rise with every release.
+    # Readme and its updater share them.
+    MARKETING_VERSION: "1.3"
+    CURRENT_PROJECT_VERSION: "4"
 targets:
   Readme:
     type: application
@@ -24,12 +28,19 @@ targets:
       # The licences of what's bundled travel with the app.
       - path: THIRD_PARTY_NOTICES.md
         buildPhase: resources
+      # Release and install code the updater uses too, compiled here so the tests can reach it.
+      - path: Shared
+    # The updater lives inside the app, in Contents/Helpers.
+    dependencies:
+      - target: ReadmeUpdater
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rajanchavda.Readme
-        # What people see as the version, and the build number that must rise with every release.
-        MARKETING_VERSION: "1.2"
-        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_ENTITLEMENTS: Readme/Readme.entitlements
         ENABLE_APP_SANDBOX: YES
         GENERATE_INFOPLIST_FILE: YES
@@ -60,6 +71,27 @@ targets:
             UTTypeConformsTo: [public.data, public.archive]
             UTTypeTagSpecification:
               public.filename-extension: [readmelibrary]
+  # Installs updates. It isn't sandboxed, because it has to replace Readme.app and may run brew;
+  # Readme itself stays sandboxed and only starts it. It takes no instructions from Readme.
+  ReadmeUpdater:
+    type: application
+    platform: macOS
+    sources:
+      - path: Updater
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rajanchavda.Readme.Updater
+        PRODUCT_NAME: Readme Updater
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Readme Updater
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        ENABLE_APP_SANDBOX: NO
+        SKIP_INSTALL: YES
+      configs:
+        Release:
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
   ReadmeTests:
     type: bundle.unit-test
     platform: macOS
