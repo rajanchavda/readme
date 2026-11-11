@@ -5,6 +5,9 @@ struct LibraryView: View {
     @ObservedObject var library: LibraryStore
     let importer: BookImporter
     let onOpen: (Book) -> Void
+    /// The books picked out on the shelf, and what exporting them does.
+    @ObservedObject var selection: ShelfSelection
+    let onExport: ([Book]) -> Void
 
     @StateObject private var drops: ShelfDrops
     @State private var targeted = false
@@ -16,10 +19,15 @@ struct LibraryView: View {
     }
 
     /// With notices the app can add to, as it does when a book on the shelf won't open.
-    init(library: LibraryStore, importer: BookImporter, drops: ShelfDrops, onOpen: @escaping (Book) -> Void) {
+    init(
+        library: LibraryStore, importer: BookImporter, drops: ShelfDrops, selection: ShelfSelection = ShelfSelection(),
+        onOpen: @escaping (Book) -> Void, onExport: @escaping ([Book]) -> Void = { _ in }
+    ) {
         self.library = library
         self.importer = importer
         self.onOpen = onOpen
+        self.selection = selection
+        self.onExport = onExport
         _drops = StateObject(wrappedValue: drops)
     }
 
@@ -28,6 +36,8 @@ struct LibraryView: View {
         self.library = library
         self.importer = importer
         self.onOpen = onOpen
+        selection = ShelfSelection()
+        onExport = { _ in }
         let drops = ShelfDrops(importAll: { await importer.importAll($0) })
         if !previewing.isEmpty { drops.showForPreview(previewing) }
         _drops = StateObject(wrappedValue: drops)
@@ -39,10 +49,12 @@ struct LibraryView: View {
             // the window's edge. The scroll view is made that much wider and the excess is clipped away.
             ScrollView(.vertical) {
                 Shelves(
-                    library: library, size: geometry.size, animation: settle, onOpen: onOpen,
-                    onRemove: { library.remove(id: $0.id) }
+                    library: library, size: geometry.size, animation: settle, selection: selection, onOpen: onOpen,
+                    onRemove: { library.remove(id: $0.id) }, onExport: onExport
                 )
                 .frame(minHeight: geometry.size.height, alignment: .top)
+                // A click on the shelf itself, not on a book, puts the selection down.
+                .background(Color.clear.contentShape(Rectangle()).onTapGesture { selection.clear() })
             }
             .scrollIndicators(.hidden)
             .frame(width: geometry.size.width + scrollerWidth, alignment: .leading)
@@ -96,20 +108,26 @@ private struct Shelves: View {
     @ObservedObject var library: LibraryStore
     let size: CGSize
     let animation: Animation?
+    let selection: ShelfSelection
     let onOpen: (Book) -> Void
     let onRemove: (Book) -> Void
+    let onExport: ([Book]) -> Void
 
     var body: some View {
         let rows = ShelfLayout.rows(library.others, width: size.width)
         let empties = max(0, ShelfLayout.emptyRowCount(height: size.height) - rows.count)
         LazyVStack(spacing: ShelfLayout.shelfGap) {
-            CurrentBookShelf(book: library.current, library: library, onOpen: onOpen, onRemove: onRemove)
+            CurrentBookShelf(
+                book: library.current, library: library, onOpen: onOpen, onRemove: onRemove, selection: selection,
+                onExport: onExport)
             // Keyed by the book each shelf starts with, so a lazy stack notices shelves that appear or
             // change after it first showed.
             ForEach(rows.map(ShelfRowBooks.init)) { row in
                 ShelfRow {
                     ForEach(row.books) { book in
-                        ShelfBook(book: book, width: 112, library: library, onOpen: onOpen, onRemove: onRemove)
+                        ShelfBook(
+                            book: book, width: 112, library: library, selection: selection, onOpen: onOpen,
+                            onRemove: onRemove, onExport: onExport)
                             .transition(.opacity.combined(with: .offset(y: -14)))
                     }
                 }

@@ -7,11 +7,15 @@ struct CurrentBookShelf: View {
     let library: LibraryStore
     let onOpen: (Book) -> Void
     let onRemove: (Book) -> Void
+    let selection: ShelfSelection
+    let onExport: ([Book]) -> Void
 
     var body: some View {
         ShelfRow(height: ShelfLayout.ledgeHeight, gap: 28) {
             if let book {
-                ShelfBook(book: book, width: 150, library: library, extraShadow: true, onOpen: onOpen, onRemove: onRemove)
+                ShelfBook(
+                    book: book, width: 150, library: library, extraShadow: true, selection: selection,
+                    onOpen: onOpen, onRemove: onRemove, onExport: onExport)
                     .id(book.id)
                     .transition(.opacity)
                 info(book)
