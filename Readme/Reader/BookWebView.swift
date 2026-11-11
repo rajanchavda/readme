@@ -313,6 +313,17 @@ final class BookWebView: NSView {
         _ = try? await call("await readmeBridge.removeHighlight(cfi)", arguments: ["cfi": cfi], as: Bool.self)
     }
 
+    /// Follows the link at `point`, in this view's coordinates, if there's one there. True if there was.
+    func followLink(at point: NSPoint) async -> Bool {
+        let local = webView.convert(point, from: self)
+        let y = webView.isFlipped ? local.y : webView.bounds.height - local.y
+        let followed = try? await call(
+            "return readmeBridge.followLinkAt(x, y)",
+            arguments: ["x": Double(local.x), "y": Double(y)],
+            as: Bool.self)
+        return followed ?? false
+    }
+
     func clearSelection() async {
         _ = try? await call("readmeBridge.clearSelection()", as: Bool.self)
     }

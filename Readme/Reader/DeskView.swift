@@ -33,7 +33,8 @@ enum ScrollRoute: Equatable {
 final class DeskView: NSView {
     private static let edgeShare: CGFloat = 0.2
 
-    var onEdgeClick: ((TurnDirection) -> Void)?
+    /// A click on a page's edge, which way it would turn and where it was, in the desk's coordinates.
+    var onEdgeClick: ((TurnDirection, NSPoint) -> Void)?
     var onSwipe: ((SwipeSignal) -> Void)?
     /// Where the mouse is, in the desk's coordinates.
     var onMouseMoved: ((NSPoint) -> Void)?
@@ -80,8 +81,9 @@ final class DeskView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard let direction = turn(at: convert(event.locationInWindow, from: nil)) else { return }
-        onEdgeClick?(direction)
+        let point = convert(event.locationInWindow, from: nil)
+        guard let direction = turn(at: point) else { return }
+        onEdgeClick?(direction, point)
     }
 
     override func mouseMoved(with event: NSEvent) {
