@@ -50,6 +50,19 @@ final class ReadMarker {
     }
 }
 
+/// The question an import asks when some of its books are here already.
+enum ImportQuestion {
+    static func message(existing: Int, total: Int) -> String {
+        if total == 1 { return "This book is already in your library." }
+        return existing == 1
+            ? "1 of these books is already in your library."
+            : "\(existing) of these books are already in your library."
+    }
+
+    static let informative = "Keep Mine leaves your copy as it is. Combine adds the highlights you don't have and keeps whichever reading place is further along. Your copy of the book is never replaced."
+    static let buttons = ["Keep Mine", "Combine", "Cancel"]
+}
+
 /// What the menus show as available.
 @MainActor
 final class AppState: ObservableObject {
@@ -72,6 +85,7 @@ final class AppCoordinator {
     /// The books picked out on the shelf.
     let selection = ShelfSelection()
     let exporter: LibraryExporter
+    let libraryImporter: LibraryImporter
     private var watchingBooks: AnyCancellable?
     private let positions: PositionStore
     private lazy var marker = ReadMarker { [weak library] id, location in
@@ -93,6 +107,7 @@ final class AppCoordinator {
         self.importer = importer
         drops = ShelfDrops(importAll: { await importer.importAll($0) })
         exporter = LibraryExporter(store: library)
+        libraryImporter = LibraryImporter(store: library, importer: importer)
         reader = ReaderWindowController(defaults: defaults, positions: positions, library: library)
         let shelf = NSHostingView(rootView: LibraryView(
             library: library, importer: importer, drops: drops, selection: selection,
@@ -103,6 +118,10 @@ final class AppCoordinator {
             onExport: { [weak self] books in
                 guard let self else { return }
                 Task { await self.export(books) }
+            },
+            onBundles: { [weak self] urls in
+                guard let self else { return }
+                Task { await self.importBundles(urls) }
             }))
         shelf.sizingOptions = []
         reader.setLibrary(shelf)
@@ -215,7 +234,11 @@ final class AppCoordinator {
             reader.showLibrary(animated: false)
         }
         reader.show()
-        Task { await importAndOpen(urls) }
+        let (books, bundles) = LibraryView.split(urls)
+        Task {
+            if !bundles.isEmpty { await importBundles(bundles) }
+            if !books.isEmpty { await importAndOpen(books) }
+        }
     }
 
     private func importAndOpen(_ urls: [URL]) async {
@@ -236,6 +259,54 @@ final class AppCoordinator {
                 await open(book)
                 return
             }
+        }
+    }
+
+    /// Asks for library bundles and imports them.
+    func chooseBundle() {
+        showWindow()
+        reader.showLibrary()
+        reader.chooseBundle { [weak self] urls in
+            guard let self else { return }
+            Task { await self.importBundles(urls) }
+        }
+    }
+
+    /// Imports each bundle in turn, over the library. If some of a bundle's books are here already,
+    /// the reader is asked what to do with them, unless `answer` is given; its `.some(nil)` is Cancel.
+    /// A book open in the reader that's about to be combined is closed first, so nothing it still holds
+    /// is written over what the import brings, and it opens next on the place the import left.
+    func importBundles(_ urls: [URL], answer: ImportChoice?? = nil) async {
+        for url in urls {
+            showLibrary()
+            let prepared: PreparedImport
+            do {
+                prepared = try await libraryImporter.prepare(url)
+            } catch {
+                drops.say(error.message)
+                continue
+            }
+            var choice = ImportChoice.keepMine
+            if !prepared.existingIDs.isEmpty {
+                let asked: ImportChoice?
+                if let answer {
+                    asked = answer
+                } else {
+                    asked = await reader.askImportChoice(
+                        existing: prepared.existingIDs.count, total: prepared.bundle.manifest.bookIDs.count)
+                }
+                guard let asked else { continue }
+                choice = asked
+            }
+            if choice == .combine, let open = reader.currentRecordID, prepared.existingIDs.contains(open) {
+                marker.flush()
+                await reader.placesKept()
+                reader.closeBook()
+            }
+            drops.setWorking(ShelfDrops.workingLine("Importing", prepared.bundle.manifest.bookIDs.count))
+            let summary = await libraryImporter.run(prepared, choice: choice)
+            drops.setWorking(nil)
+            drops.say(summary.line)
         }
     }
 

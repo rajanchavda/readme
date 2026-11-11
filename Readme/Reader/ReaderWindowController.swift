@@ -348,6 +348,34 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Asks for one or more library bundles in a sheet, and hands them to `chosen`.
+    func chooseBundle(_ chosen: @escaping ([URL]) -> Void) {
+        guard let window, window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.readmeLibrary]
+        panel.allowsMultipleSelection = true
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, !panel.urls.isEmpty else { return }
+            chosen(panel.urls)
+        }
+    }
+
+    /// Asks what to do with the books of an import that are here already: Keep Mine, Combine, or
+    /// Cancel, which is nil.
+    func askImportChoice(existing: Int, total: Int) async -> ImportChoice? {
+        guard let window, window.attachedSheet == nil else { return nil }
+        let alert = NSAlert()
+        alert.messageText = ImportQuestion.message(existing: existing, total: total)
+        alert.informativeText = ImportQuestion.informative
+        for title in ImportQuestion.buttons { alert.addButton(withTitle: title) }
+        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        switch await alert.beginSheetModal(for: window) {
+        case .alertFirstButtonReturn: return .keepMine
+        case .alertSecondButtonReturn: return .combine
+        default: return nil
+        }
+    }
+
     /// Asks where to save an export, in a sheet. Nil if the reader cancels, or a sheet is up already.
     func chooseExportDestination(suggestedName: String) async -> URL? {
         guard let window, window.attachedSheet == nil else { return nil }

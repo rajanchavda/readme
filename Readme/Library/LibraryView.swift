@@ -8,6 +8,8 @@ struct LibraryView: View {
     /// The books picked out on the shelf, and what exporting them does.
     @ObservedObject var selection: ShelfSelection
     let onExport: ([Book]) -> Void
+    /// Library bundles dropped on the shelf, which are imported rather than added as books.
+    let onBundles: ([URL]) -> Void
 
     @StateObject private var drops: ShelfDrops
     @State private var targeted = false
@@ -21,13 +23,15 @@ struct LibraryView: View {
     /// With notices the app can add to, as it does when a book on the shelf won't open.
     init(
         library: LibraryStore, importer: BookImporter, drops: ShelfDrops, selection: ShelfSelection = ShelfSelection(),
-        onOpen: @escaping (Book) -> Void, onExport: @escaping ([Book]) -> Void = { _ in }
+        onOpen: @escaping (Book) -> Void, onExport: @escaping ([Book]) -> Void = { _ in },
+        onBundles: @escaping ([URL]) -> Void = { _ in }
     ) {
         self.library = library
         self.importer = importer
         self.onOpen = onOpen
         self.selection = selection
         self.onExport = onExport
+        self.onBundles = onBundles
         _drops = StateObject(wrappedValue: drops)
     }
 
@@ -38,6 +42,7 @@ struct LibraryView: View {
         self.onOpen = onOpen
         selection = ShelfSelection()
         onExport = { _ in }
+        onBundles = { _ in }
         let drops = ShelfDrops(importAll: { await importer.importAll($0) })
         if !previewing.isEmpty { drops.showForPreview(previewing) }
         _drops = StateObject(wrappedValue: drops)
@@ -81,12 +86,20 @@ struct LibraryView: View {
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
             guard !files.isEmpty else { return false }
-            Task { await drops.add(files) }
+            let (books, bundles) = Self.split(files)
+            if !bundles.isEmpty { onBundles(bundles) }
+            if !books.isEmpty { Task { await drops.add(books) } }
             return true
         } isTargeted: { targeted = $0 }
         .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
             scrollerWidth = Self.reservedScrollerWidth()
         }
+    }
+
+    /// Library bundles apart from everything else, which is taken for books.
+    static func split(_ urls: [URL]) -> (books: [URL], bundles: [URL]) {
+        let isBundle = { (url: URL) in url.pathExtension.lowercased() == "readmelibrary" }
+        return (urls.filter { !isBundle($0) }, urls.filter(isBundle))
     }
 
     private var settle: Animation? { reduceMotion ? nil : ShelfStyle.settle }

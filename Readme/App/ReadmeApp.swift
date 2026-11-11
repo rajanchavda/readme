@@ -184,7 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func importBundle() {
         guard !isTesting else { return }
-        coordinator().showWindow()
+        coordinator().chooseBundle()
     }
 
     func exportLibrary() {

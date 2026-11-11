@@ -17,6 +17,8 @@ set in a proper book typeface, with highlights, a page marker and search.
 - **Search.** Find any word or phrase in the book, and go straight to a result.
 - **Contents and Go to Page.** Jump to a chapter or a page number.
 - **Picks up where you left off.** Your place in every book is remembered.
+- **Export and import.** Take your books, with their highlights, page marker and place, to another
+  Mac in one `.readmelibrary` file. Importing never replaces a book you already have.
 - **Private.** No accounts and no tracking. The app is sandboxed, and books, highlights and
   settings stay on your Mac.
 
