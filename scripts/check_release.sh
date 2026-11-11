@@ -54,7 +54,7 @@ check_app() {
     [ "$(entitlement 'com\.apple\.security\.app-sandbox')" = true ] \
       && pass "$name: the sandbox is on" || fail "$name: the sandbox is on"
     [ "$(entitlement 'com\.apple\.security\.network\.client')" = true ] \
-      && pass "$name: network.client is on, for the web view" || fail "$name: network.client is on, for the web view"
+      && pass "$name: network.client is on, for the web view and update checks" || fail "$name: network.client is on, for the web view and update checks"
     [ -z "$(entitlement 'com\.apple\.security\.network\.server')" ] \
       && pass "$name: no network.server" || fail "$name: no network.server"
     local network

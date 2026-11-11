@@ -29,5 +29,7 @@ The steps are in `docs/install.md` (System Settings > Privacy & Security > **Ope
 ## Later
 
 An Apple developer account (paid yearly) removes that message by signing and notarising the app.
-It is also needed before the app can update itself, which would use Sparkle: the app checks a web address
-for a newer DMG and offers to install it.
+It is also needed before the app can install updates itself, which would use Sparkle. For now,
+**Check for Updates…** asks GitHub's API for the latest release (drafts and prereleases are skipped)
+and, if it's newer than the running version, opens the release page for the reader to download it.
+So the tag and `MARKETING_VERSION` must agree, as the release workflow already checks.
