@@ -298,8 +298,8 @@ private func fixture(_ name: String) throws -> URL {
 @Suite(.serialized, .timeLimit(.minutes(5))) struct ReaderJumpTests {
     /// The font change's restyle was asked for first, but the jump is the newer place.
     @Test func aRestyleUnderwayDoesNotUndoAJump() async throws {
-        let saved = UserDefaults.standard.data(forKey: ReaderSettings.key)
-        defer { UserDefaults.standard.set(saved, forKey: ReaderSettings.key) }
+        let saved = ReaderSettings.store.data(forKey: ReaderSettings.key)
+        defer { ReaderSettings.store.set(saved, forKey: ReaderSettings.key) }
         let reader = ReaderWindowController()
         defer { reader.window?.close() }
         await reader.open(try fixture("long.epub"), at: nil)

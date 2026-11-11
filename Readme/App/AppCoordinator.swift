@@ -77,7 +77,7 @@ final class AppCoordinator {
     let state: AppState
 
     init(
-        library: LibraryStore, positions: PositionStore, defaults: UserDefaults = .standard, state: AppState = AppState()
+        library: LibraryStore, positions: PositionStore, defaults: UserDefaults = ReaderSettings.store, state: AppState = AppState()
     ) {
         self.state = state
         self.library = library

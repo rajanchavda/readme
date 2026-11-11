@@ -144,7 +144,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var areTrafficLightsShown = true
 
     /// Library books are opened from `library`, and it keeps their last spreads.
-    init(defaults: UserDefaults = .standard, positions: PositionStore? = nil, library: LibraryStore? = nil) {
+    init(defaults: UserDefaults = ReaderSettings.store, positions: PositionStore? = nil, library: LibraryStore? = nil) {
         self.defaults = defaults
         self.positions = positions
         self.library = library

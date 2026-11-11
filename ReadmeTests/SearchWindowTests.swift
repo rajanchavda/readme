@@ -23,8 +23,8 @@ private func fixture(_ name: String) throws -> URL {
     private func withReader(
         _ name: String, _ body: @MainActor (ReaderWindowController, URL) async throws -> Void
     ) async throws {
-        let saved = UserDefaults.standard.data(forKey: ReaderSettings.key)
-        defer { UserDefaults.standard.set(saved, forKey: ReaderSettings.key) }
+        let saved = ReaderSettings.store.data(forKey: ReaderSettings.key)
+        defer { ReaderSettings.store.set(saved, forKey: ReaderSettings.key) }
         let folder = try positionsFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let reader = reader(in: folder)

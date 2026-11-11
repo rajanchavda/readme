@@ -27,14 +27,25 @@ struct ReaderSettings: Codable, Equatable {
 
     static let key = "readerSettings"
 
+    /// Where the settings are kept. Tests run in several copies of the app at once, so each copy
+    /// keeps its own and none changes the settings under another, or the reader's real ones.
+    /// `UserDefaults` is safe to share between threads, though it isn't marked so.
+    nonisolated(unsafe) static let store: UserDefaults = {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["XCTestConfigurationFilePath"] != nil else { return .standard }
+        let name = "com.rajanchavda.Readme.tests.\(environment["README_TEST_SHARD"] ?? "0")"
+        UserDefaults.standard.removePersistentDomain(forName: name)
+        return UserDefaults(suiteName: name) ?? .standard
+    }()
+
     /// What was saved, or the defaults if nothing was or it can't be read.
-    static func load(_ defaults: UserDefaults = .standard) -> Self {
+    static func load(_ defaults: UserDefaults = store) -> Self {
         guard let data = defaults.data(forKey: key),
               let settings = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
         return settings
     }
 
-    func save(_ defaults: UserDefaults = .standard) {
+    func save(_ defaults: UserDefaults = store) {
         guard let data = try? JSONEncoder().encode(self) else { return }
         defaults.set(data, forKey: Self.key)
     }
