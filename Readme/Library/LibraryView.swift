@@ -70,12 +70,13 @@ struct LibraryView: View {
                 .animation(.easeOut(duration: 0.15), value: targeted)
         }
         .overlay(alignment: .bottom) {
-            NoticeView(lines: drops.lines, adding: drops.adding)
+            NoticeView(lines: drops.lines, adding: drops.adding, working: drops.working)
                 .padding(.bottom, 40)
                 .allowsHitTesting(false)
         }
         .animation(.easeOut(duration: 0.25), value: drops.lines)
         .animation(.easeOut(duration: 0.25), value: drops.adding)
+        .animation(.easeOut(duration: 0.25), value: drops.working)
         .environment(\.colorScheme, .dark)
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
@@ -146,16 +147,21 @@ private struct Shelves: View {
 private struct NoticeView: View {
     let lines: [String]
     let adding: Int
+    var working: String?
 
     var body: some View {
-        if !lines.isEmpty || adding > 0 {
+        if !lines.isEmpty || adding > 0 || working != nil {
             VStack(spacing: 4) {
                 ForEach(lines, id: \.self) { line in
                     Text(line)
                         .font(ShelfStyle.body(16, italic: true))
                         .foregroundStyle(ShelfStyle.text)
                 }
-                if adding > 0 {
+                if let working {
+                    Text(working)
+                        .font(ShelfStyle.body(15, italic: true))
+                        .foregroundStyle(ShelfStyle.muted)
+                } else if adding > 0 {
                     Text(ShelfDrops.progressLine(adding))
                         .font(ShelfStyle.body(15, italic: true))
                         .foregroundStyle(ShelfStyle.muted)

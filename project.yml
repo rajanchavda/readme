@@ -49,6 +49,17 @@ targets:
             CFBundleTypeRole: Viewer
             LSHandlerRank: Default
             LSItemContentTypes: [org.idpf.epub-container]
+          - CFBundleTypeName: Readme Library
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.rajanchavda.Readme.library]
+        # A .readmelibrary file: books and their notes, exported to take to another Mac.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.rajanchavda.Readme.library
+            UTTypeDescription: Readme Library
+            UTTypeConformsTo: [public.data, public.archive]
+            UTTypeTagSpecification:
+              public.filename-extension: [readmelibrary]
   ReadmeTests:
     type: bundle.unit-test
     platform: macOS

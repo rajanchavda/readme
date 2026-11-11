@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Tells the library where the reader is, so the shelf's "Continue reading" and the next launch are
@@ -55,6 +56,8 @@ final class AppState: ObservableObject {
     @Published var isShowingLibrary = false
     /// Whether the open book has a reading marker to go to.
     @Published var hasMarker = false
+    /// Whether there's anything on the shelf to export.
+    @Published var hasBooks = false
 }
 
 /// The app's one window and what it shows: the library, or a book. It decides where launching goes,
@@ -66,6 +69,10 @@ final class AppCoordinator {
     let importer: BookImporter
     let drops: ShelfDrops
     let reader: ReaderWindowController
+    /// The books picked out on the shelf.
+    let selection = ShelfSelection()
+    let exporter: LibraryExporter
+    private var watchingBooks: AnyCancellable?
     private let positions: PositionStore
     private lazy var marker = ReadMarker { [weak library] id, location in
         library?.markRead(id: id, location: location)
@@ -85,12 +92,17 @@ final class AppCoordinator {
         let importer = BookImporter(store: library)
         self.importer = importer
         drops = ShelfDrops(importAll: { await importer.importAll($0) })
+        exporter = LibraryExporter(store: library)
         reader = ReaderWindowController(defaults: defaults, positions: positions, library: library)
         let shelf = NSHostingView(rootView: LibraryView(
-            library: library, importer: importer, drops: drops,
+            library: library, importer: importer, drops: drops, selection: selection,
             onOpen: { [weak self] book in
                 guard let self else { return }
                 Task { await self.open(book) }
+            },
+            onExport: { [weak self] books in
+                guard let self else { return }
+                Task { await self.export(books) }
             }))
         shelf.sizingOptions = []
         reader.setLibrary(shelf)
@@ -98,6 +110,9 @@ final class AppCoordinator {
         reader.onRead = { [weak self] id, location in self?.marker.read(id: id, location: location) }
         reader.onShowingLibraryChange = { [weak self] showing in self?.state.isShowingLibrary = showing }
         reader.onMarkerChange = { [weak self] has in self?.state.hasMarker = has }
+        reader.onLibraryEscape = { [weak self] in self?.selection.clear() }
+        state.hasBooks = !library.books.isEmpty
+        watchingBooks = library.$books.sink { [weak state] books in state?.hasBooks = !books.isEmpty }
         library.onRemove = { [weak self] id in
             guard let self else { return }
             // One still waiting to open checks the shelf itself, and mustn't close the book open now.
@@ -222,6 +237,35 @@ final class AppCoordinator {
                 return
             }
         }
+    }
+
+    /// Exports every book on the shelf.
+    func exportLibrary() {
+        showWindow()
+        reader.showLibrary()
+        Task { await export(library.books) }
+    }
+
+    /// Asks where to save `books`, unless `destination` is given, and writes them there. How it went
+    /// is said on the shelf.
+    func export(_ books: [Book], destination: URL? = nil) async {
+        guard !books.isEmpty else { return }
+        let name = books.count == 1 ? books[0].title : "Readme Library"
+        var chosen = destination
+        if chosen == nil { chosen = await reader.chooseExportDestination(suggestedName: name) }
+        guard let url = chosen else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        drops.setWorking(ShelfDrops.workingLine("Exporting", books.count))
+        do {
+            let summary = try await exporter.export(books, to: url)
+            drops.setWorking(nil)
+            drops.say(summary.line)
+        } catch {
+            drops.setWorking(nil)
+            drops.say(error.message)
+        }
+        selection.clear()
     }
 
     /// The reader's place, the library and the last spread, all written. The app waits for this as
