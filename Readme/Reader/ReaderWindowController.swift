@@ -33,6 +33,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     var onRead: ((_ bookID: String, ReaderLocation) -> Void)?
     /// Hears that a library book couldn't be opened, as when its file is no longer a book.
     var onOpenFailed: ((Book) -> Void)?
+    /// Esc pressed over the library, which puts down the books picked out on the shelf.
+    var onLibraryEscape: (() -> Void)?
     /// Hears whether the open book has a reading marker, for the menu.
     var onMarkerChange: ((Bool) -> Void)?
     /// Hears the library being shown, or put away.
@@ -344,6 +346,45 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             guard response == .OK, !panel.urls.isEmpty else { return }
             chosen(panel.urls)
         }
+    }
+
+    /// Asks for one or more library bundles in a sheet, and hands them to `chosen`.
+    func chooseBundle(_ chosen: @escaping ([URL]) -> Void) {
+        guard let window, window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.readmeLibrary]
+        panel.allowsMultipleSelection = true
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, !panel.urls.isEmpty else { return }
+            chosen(panel.urls)
+        }
+    }
+
+    /// Asks what to do with the books of an import that are here already: Keep Mine, Combine, or
+    /// Cancel, which is nil.
+    func askImportChoice(existing: Int, total: Int) async -> ImportChoice? {
+        guard let window, window.attachedSheet == nil else { return nil }
+        let alert = NSAlert()
+        alert.messageText = ImportQuestion.message(existing: existing, total: total)
+        alert.informativeText = ImportQuestion.informative
+        for title in ImportQuestion.buttons { alert.addButton(withTitle: title) }
+        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        switch await alert.beginSheetModal(for: window) {
+        case .alertFirstButtonReturn: return .keepMine
+        case .alertSecondButtonReturn: return .combine
+        default: return nil
+        }
+    }
+
+    /// Asks where to save an export, in a sheet. Nil if the reader cancels, or a sheet is up already.
+    func chooseExportDestination(suggestedName: String) async -> URL? {
+        guard let window, window.attachedSheet == nil else { return nil }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.readmeLibrary]
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        let response = await panel.beginSheetModal(for: window)
+        return response == .OK ? panel.url : nil
     }
 
     /// The library book that's open, whether or not the library is over it.
@@ -984,6 +1025,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             // Esc puts the bar away.
             if event.keyCode == 53, !highlightBar.isHidden, event.window === window {
                 hideHighlightBar()
+                return true
+            }
+            if event.keyCode == 53, isShowingLibrary, event.window === window, window?.attachedSheet == nil,
+               let onLibraryEscape {
+                onLibraryEscape()
                 return true
             }
             return false

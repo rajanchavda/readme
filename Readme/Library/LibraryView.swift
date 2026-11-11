@@ -5,6 +5,11 @@ struct LibraryView: View {
     @ObservedObject var library: LibraryStore
     let importer: BookImporter
     let onOpen: (Book) -> Void
+    /// The books picked out on the shelf, and what exporting them does.
+    @ObservedObject var selection: ShelfSelection
+    let onExport: ([Book]) -> Void
+    /// Library bundles dropped on the shelf, which are imported rather than added as books.
+    let onBundles: ([URL]) -> Void
 
     @StateObject private var drops: ShelfDrops
     @State private var targeted = false
@@ -16,10 +21,17 @@ struct LibraryView: View {
     }
 
     /// With notices the app can add to, as it does when a book on the shelf won't open.
-    init(library: LibraryStore, importer: BookImporter, drops: ShelfDrops, onOpen: @escaping (Book) -> Void) {
+    init(
+        library: LibraryStore, importer: BookImporter, drops: ShelfDrops, selection: ShelfSelection = ShelfSelection(),
+        onOpen: @escaping (Book) -> Void, onExport: @escaping ([Book]) -> Void = { _ in },
+        onBundles: @escaping ([URL]) -> Void = { _ in }
+    ) {
         self.library = library
         self.importer = importer
         self.onOpen = onOpen
+        self.selection = selection
+        self.onExport = onExport
+        self.onBundles = onBundles
         _drops = StateObject(wrappedValue: drops)
     }
 
@@ -28,6 +40,9 @@ struct LibraryView: View {
         self.library = library
         self.importer = importer
         self.onOpen = onOpen
+        selection = ShelfSelection()
+        onExport = { _ in }
+        onBundles = { _ in }
         let drops = ShelfDrops(importAll: { await importer.importAll($0) })
         if !previewing.isEmpty { drops.showForPreview(previewing) }
         _drops = StateObject(wrappedValue: drops)
@@ -39,10 +54,12 @@ struct LibraryView: View {
             // the window's edge. The scroll view is made that much wider and the excess is clipped away.
             ScrollView(.vertical) {
                 Shelves(
-                    library: library, size: geometry.size, animation: settle, onOpen: onOpen,
-                    onRemove: { library.remove(id: $0.id) }
+                    library: library, size: geometry.size, animation: settle, selection: selection, onOpen: onOpen,
+                    onRemove: { library.remove(id: $0.id) }, onExport: onExport
                 )
                 .frame(minHeight: geometry.size.height, alignment: .top)
+                // A click on the shelf itself, not on a book, puts the selection down.
+                .background(Color.clear.contentShape(Rectangle()).onTapGesture { selection.clear() })
             }
             .scrollIndicators(.hidden)
             .frame(width: geometry.size.width + scrollerWidth, alignment: .leading)
@@ -58,22 +75,31 @@ struct LibraryView: View {
                 .animation(.easeOut(duration: 0.15), value: targeted)
         }
         .overlay(alignment: .bottom) {
-            NoticeView(lines: drops.lines, adding: drops.adding)
+            NoticeView(lines: drops.lines, adding: drops.adding, working: drops.working)
                 .padding(.bottom, 40)
                 .allowsHitTesting(false)
         }
         .animation(.easeOut(duration: 0.25), value: drops.lines)
         .animation(.easeOut(duration: 0.25), value: drops.adding)
+        .animation(.easeOut(duration: 0.25), value: drops.working)
         .environment(\.colorScheme, .dark)
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
             guard !files.isEmpty else { return false }
-            Task { await drops.add(files) }
+            let (books, bundles) = Self.split(files)
+            if !bundles.isEmpty { onBundles(bundles) }
+            if !books.isEmpty { Task { await drops.add(books) } }
             return true
         } isTargeted: { targeted = $0 }
         .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
             scrollerWidth = Self.reservedScrollerWidth()
         }
+    }
+
+    /// Library bundles apart from everything else, which is taken for books.
+    static func split(_ urls: [URL]) -> (books: [URL], bundles: [URL]) {
+        let isBundle = { (url: URL) in url.pathExtension.lowercased() == "readmelibrary" }
+        return (urls.filter { !isBundle($0) }, urls.filter(isBundle))
     }
 
     private var settle: Animation? { reduceMotion ? nil : ShelfStyle.settle }
@@ -96,20 +122,26 @@ private struct Shelves: View {
     @ObservedObject var library: LibraryStore
     let size: CGSize
     let animation: Animation?
+    let selection: ShelfSelection
     let onOpen: (Book) -> Void
     let onRemove: (Book) -> Void
+    let onExport: ([Book]) -> Void
 
     var body: some View {
         let rows = ShelfLayout.rows(library.others, width: size.width)
         let empties = max(0, ShelfLayout.emptyRowCount(height: size.height) - rows.count)
         LazyVStack(spacing: ShelfLayout.shelfGap) {
-            CurrentBookShelf(book: library.current, library: library, onOpen: onOpen, onRemove: onRemove)
+            CurrentBookShelf(
+                book: library.current, library: library, onOpen: onOpen, onRemove: onRemove, selection: selection,
+                onExport: onExport)
             // Keyed by the book each shelf starts with, so a lazy stack notices shelves that appear or
             // change after it first showed.
             ForEach(rows.map(ShelfRowBooks.init)) { row in
                 ShelfRow {
                     ForEach(row.books) { book in
-                        ShelfBook(book: book, width: 112, library: library, onOpen: onOpen, onRemove: onRemove)
+                        ShelfBook(
+                            book: book, width: 112, library: library, selection: selection, onOpen: onOpen,
+                            onRemove: onRemove, onExport: onExport)
                             .transition(.opacity.combined(with: .offset(y: -14)))
                     }
                 }
@@ -128,16 +160,21 @@ private struct Shelves: View {
 private struct NoticeView: View {
     let lines: [String]
     let adding: Int
+    var working: String?
 
     var body: some View {
-        if !lines.isEmpty || adding > 0 {
+        if !lines.isEmpty || adding > 0 || working != nil {
             VStack(spacing: 4) {
                 ForEach(lines, id: \.self) { line in
                     Text(line)
                         .font(ShelfStyle.body(16, italic: true))
                         .foregroundStyle(ShelfStyle.text)
                 }
-                if adding > 0 {
+                if let working {
+                    Text(working)
+                        .font(ShelfStyle.body(15, italic: true))
+                        .foregroundStyle(ShelfStyle.muted)
+                } else if adding > 0 {
                     Text(ShelfDrops.progressLine(adding))
                         .font(ShelfStyle.body(15, italic: true))
                         .foregroundStyle(ShelfStyle.muted)

@@ -10,6 +10,10 @@ final class ShelfDrops: ObservableObject {
     @Published private(set) var notice: [ImportError] = []
     /// How many files are still being added, once that has taken long enough to be worth saying.
     @Published private(set) var adding = 0
+    /// A line of its own, such as how an export went, shown and faded like a failure.
+    @Published private(set) var message: String?
+    /// What's under way, such as an export, said while it lasts.
+    @Published private(set) var working: String?
     private var pending = 0
     private var fading: Task<Void, Never>?
 
@@ -54,17 +58,37 @@ final class ShelfDrops: ObservableObject {
     func show(_ failures: [ImportError]) {
         guard !failures.isEmpty else { return }
         for error in failures where !notice.contains(error) { notice.append(error) }
+        fade()
+    }
+
+    /// Shows `line`, replacing the one shown before, and fades it with any failures showing.
+    func say(_ line: String) {
+        message = line
+        fade()
+    }
+
+    func setWorking(_ line: String?) {
+        working = line
+    }
+
+    /// "Exporting 12 books…", or "…1 book…".
+    static func workingLine(_ verb: String, _ count: Int) -> String {
+        count == 1 ? "\(verb) 1 book…" : "\(verb) \(count) books…"
+    }
+
+    private func fade() {
         fading?.cancel()
         let duration = noticeDuration
         fading = Task { [weak self] in
             try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
             self?.notice = []
+            self?.message = nil
         }
     }
 
-    /// The line for each kind that's showing.
-    var lines: [String] { notice.map(Self.message(for:)) }
+    /// The line for each kind that's showing, then the message, if there is one.
+    var lines: [String] { notice.map(Self.message(for:)) + [message].compactMap { $0 } }
 
     static func message(for error: ImportError) -> String {
         switch error {

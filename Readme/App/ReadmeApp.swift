@@ -52,6 +52,8 @@ struct ReadmeApp: App {
                 CommandGroup(replacing: .newItem) {
                     Button("Open…") { appDelegate.chooseBook() }
                         .keyboardShortcut("o")
+                    Divider()
+                    LibraryMenuItems(state: appDelegate.state, delegate: appDelegate)
                 }
                 CommandGroup(after: .toolbar) {
                     item(.biggerText)
@@ -88,6 +90,18 @@ struct ReadmeApp: App {
         if flags.contains(.option) { modifiers.insert(.option) }
         if flags.contains(.shift) { modifiers.insert(.shift) }
         return modifiers
+    }
+}
+
+/// Import… and Export Library…, in the File menu. Export needs a book on the shelf.
+private struct LibraryMenuItems: View {
+    @ObservedObject var state: AppState
+    let delegate: AppDelegate
+
+    var body: some View {
+        Button("Import…") { delegate.importBundle() }
+        Button("Export Library…") { delegate.exportLibrary() }
+            .disabled(!state.hasBooks)
     }
 }
 
@@ -166,6 +180,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func chooseBook() {
         guard !isTesting else { return }
         coordinator().chooseBook()
+    }
+
+    func importBundle() {
+        guard !isTesting else { return }
+        coordinator().chooseBundle()
+    }
+
+    func exportLibrary() {
+        guard !isTesting else { return }
+        coordinator().exportLibrary()
     }
 
     func perform(_ command: ReaderCommand) {

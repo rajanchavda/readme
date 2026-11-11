@@ -28,8 +28,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rajanchavda.Readme
         # What people see as the version, and the build number that must rise with every release.
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "2"
         CODE_SIGN_ENTITLEMENTS: Readme/Readme.entitlements
         ENABLE_APP_SANDBOX: YES
         GENERATE_INFOPLIST_FILE: YES
@@ -49,6 +49,17 @@ targets:
             CFBundleTypeRole: Viewer
             LSHandlerRank: Default
             LSItemContentTypes: [org.idpf.epub-container]
+          - CFBundleTypeName: Readme Library
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.rajanchavda.Readme.library]
+        # A .readmelibrary file: books and their notes, exported to take to another Mac.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.rajanchavda.Readme.library
+            UTTypeDescription: Readme Library
+            UTTypeConformsTo: [public.data, public.archive]
+            UTTypeTagSpecification:
+              public.filename-extension: [readmelibrary]
   ReadmeTests:
     type: bundle.unit-test
     platform: macOS

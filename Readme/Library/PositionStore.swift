@@ -52,6 +52,15 @@ actor PositionStore {
     }
 }
 
+/// How an imported place is weighed against the one already here.
+enum ImportMerge {
+    /// Whether `incoming` is further into the book than `existing`, or there's no place here at all.
+    static func isFurther(_ incoming: ReaderLocation, than existing: ReaderLocation?) -> Bool {
+        guard let existing else { return true }
+        return incoming.fraction > existing.fraction
+    }
+}
+
 /// Writes places to a store one at a time, off the main thread, so a reader turning pages quickly
 /// never waits on the disk. Of a book's places waiting, only the newest is written.
 @MainActor

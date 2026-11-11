@@ -54,28 +54,46 @@ struct ShelfRow<Content: View>: View {
     }
 }
 
-/// A cover that lifts a little under the pointer and opens its book when clicked.
+/// A cover that lifts a little under the pointer and opens its book when clicked. ⌘- and Shift-clicks
+/// pick it out instead, and a picked-out cover has a ring round it.
 struct ShelfBook: View {
     let book: Book
     let width: CGFloat
     let library: LibraryStore
     var extraShadow = false
+    @ObservedObject var selection: ShelfSelection
     let onOpen: (Book) -> Void
     let onRemove: (Book) -> Void
+    let onExport: ([Book]) -> Void
 
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// The books as the shelf shows them.
+    private var order: [String] {
+        ([library.current].compactMap { $0 } + library.others).map(\.id)
+    }
+
     var body: some View {
-        Button { onOpen(book) } label: {
+        Button {
+            if selection.click(book.id, modifiers: NSEvent.modifierFlags, order: order) == .open { onOpen(book) }
+        } label: {
             BookCoverView(book: book, width: width, library: library)
                 .shadow(color: .black.opacity(extraShadow ? 0.3 : 0), radius: 12, x: 0, y: 8)
+                .overlay {
+                    if selection.ids.contains(book.id) {
+                        RoundedRectangle(cornerRadius: 3).strokeBorder(Color.accentColor, lineWidth: 3)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .offset(y: hovering ? -8 : 0)
         .animation(reduceMotion ? nil : ShelfStyle.lift, value: hovering)
         .onHover { hovering = $0 }
         .contextMenu {
+            Button(selection.menuTitle(rightClicked: book.id)) {
+                onExport(selection.targets(rightClicked: book.id, order: order).compactMap(library.book(id:)))
+            }
             Button("Remove", role: .destructive) { onRemove(book) }
         }
         .accessibilityLabel([book.title, book.author].compactMap { $0 }.joined(separator: ", "))

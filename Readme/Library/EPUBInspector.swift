@@ -120,6 +120,9 @@ struct ZipArchive {
         entries[name] != nil
     }
 
+    /// Every entry's name, in no particular order.
+    var names: [String] { Array(entries.keys) }
+
     /// The end record: the last place its signature is followed by a comment that runs exactly to
     /// the end of the file. A comment may hold the signature itself, so a match that doesn't fit isn't one.
     private static func endRecord(in tail: Data) -> Data? {
