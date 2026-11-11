@@ -17,6 +17,20 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(ReaderCommand.toggleMarker.shortcut == KeyShortcut("d", [.command]))
         #expect(ReaderCommand.goToMarker.shortcut == KeyShortcut("d", [.command, .shift]))
         #expect(ReaderCommand.find.shortcut == KeyShortcut("f", [.command]))
+        #expect(ReaderCommand.showShortcuts.shortcut == KeyShortcut("/", [.command]))
+    }
+
+    /// ? is Shift-/ on most layouts, and typed without Shift on some.
+    @Test func questionMarkShowsTheShortcuts() {
+        #expect(ReaderCommand(key: "?", modifiers: [.shift]) == .showShortcuts)
+        #expect(ReaderCommand(key: "?", modifiers: []) == .showShortcuts)
+        #expect(ReaderCommand(key: "?", modifiers: [.option, .shift]) == nil)
+        #expect(ReaderCommand(key: "/", modifiers: []) == nil)
+        #expect(KeyAction.of(
+            key: "?", keyCode: 44, modifiers: [.shift], isRepeat: false, isFullscreen: false, isTyping: false)
+            == .command(.showShortcuts))
+        #expect(KeyAction.of(
+            key: "?", keyCode: 44, modifiers: [.shift], isRepeat: false, isFullscreen: false, isTyping: true) == nil)
     }
 
     @Test func commandFFinds() {

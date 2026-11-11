@@ -114,6 +114,28 @@ private func fixture(_ name: String) throws -> URL {
         }
     }
 
+    /// ? shows the shortcuts and shows them away again, and using a shortcut puts them away.
+    @Test func shortcutsToggleAndGiveWayToACommand() async throws {
+        try await withReader("search.epub") { reader, _ in
+            let before = reader.location
+            reader.perform(.showShortcuts)
+            #expect(reader.isShortcutsShown)
+            reader.perform(.showShortcuts)
+            #expect(!reader.isShortcutsShown)
+            reader.perform(.showShortcuts)
+            reader.perform(.find)
+            #expect(!reader.isShortcutsShown)
+            #expect(reader.isSearchShown)
+            reader.perform(.showShortcuts)
+            #expect(reader.isShortcutsShown)
+            #expect(!reader.isSearchShown)
+            reader.closeShortcuts()
+            await reader.settled()
+            #expect(!reader.isShortcutsShown)
+            #expect(reader.location == before)
+        }
+    }
+
     @Test func oneLetterSearchesNothing() async throws {
         try await withReader("search.epub") { reader, _ in
             reader.perform(.find)

@@ -20,7 +20,7 @@ struct KeyShortcut: Equatable {
 /// What the reader can ask of the window, besides turning pages. Each has a menu item and a key.
 enum ReaderCommand: CaseIterable {
     case biggerText, smallerText, toggleTOC, toggleHighlights, toggleMarker, toggleFullscreen, showLibrary, goToStart, goToEnd,
-        goToPage, goToMarker, find
+        goToPage, goToMarker, find, showShortcuts
 
     static let fontSizes = 12.0...40.0
     static let fontSizeStep = 2.0
@@ -39,6 +39,7 @@ enum ReaderCommand: CaseIterable {
         case .goToPage: KeyShortcut("g", [.command])
         case .goToMarker: KeyShortcut("d", [.command, .shift])
         case .find: KeyShortcut("f", [.command])
+        case .showShortcuts: KeyShortcut("/", [.command])
         }
     }
 
@@ -56,11 +57,12 @@ enum ReaderCommand: CaseIterable {
         case .goToPage: "Go to Page…"
         case .goToMarker: "Go to Marker"
         case .find: "Find…"
+        case .showShortcuts: "Keyboard Shortcuts"
         }
     }
 
     /// The command a key press asks for, if any: a shortcut, or one of the plain keys that stand in
-    /// for one. Home and End go to the start and end, and F toggles fullscreen.
+    /// for one. Home and End go to the start and end, F toggles fullscreen, and ? shows the shortcuts.
     init?(key: String, modifiers: NSEvent.ModifierFlags) {
         var modifiers = modifiers.intersection(KeyShortcut.relevantModifiers)
         var key = key
@@ -71,6 +73,11 @@ enum ReaderCommand: CaseIterable {
         }
         if let command = Self.allCases.first(where: { $0.shortcut == KeyShortcut(key, modifiers) }) {
             self = command
+            return
+        }
+        // ? is typed with Shift on most layouts, and without it on some.
+        if key == "?", modifiers.subtracting(.shift).isEmpty {
+            self = .showShortcuts
             return
         }
         guard modifiers.isEmpty else { return nil }
