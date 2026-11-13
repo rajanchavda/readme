@@ -48,6 +48,8 @@ public sealed class BookWebView
 
     public ReaderLocation? CurrentLocation { get; private set; }
     public bool IsOpen { get; private set; }
+    /// <summary>The file last opened, which the spread cache's layout names.</summary>
+    public string? File { get; private set; }
     public string Css { get; private set; } = "";
     public int Columns { get; private set; } = 2;
     public double? ColumnWidth { get; private set; }
@@ -159,7 +161,7 @@ public sealed class BookWebView
         CurrentLocation = null;
         // A new page has none drawn.
         HighlightCfis = [];
-        if (!File.Exists(file)) throw new BookWebViewException("The book's file can't be read");
+        if (!System.IO.File.Exists(file)) throw new BookWebViewException("The book's file can't be read");
         await LoadReaderAsync();
         if (generation != _openGeneration) throw new OperationCanceledException();
         var url = _scheme.Serve(file);
@@ -175,6 +177,7 @@ public sealed class BookWebView
         if (generation != _openGeneration) throw new OperationCanceledException();
         var location = Location(reply) ?? throw new BookWebViewException("The book has no pages");
         IsOpen = true;
+        File = file;
         CurrentLocation = location;
         return location;
     }
@@ -450,6 +453,17 @@ public sealed class BookWebView
     {
         if (!IsOpen) return;
         try { await CallAsync($"document.querySelector('foliate-view')?.renderer?.toggleAttribute('animated', {Js(on)})"); }
+        catch (Exception error) when (error is BookWebViewException or TimeoutException) { }
+    }
+
+    /// <summary>
+    /// Returns after two of the page's animation frames, by which its last change has been drawn: the
+    /// turn coordinator waits for this before taking the curl off a landed page.
+    /// </summary>
+    public async Task FramesAsync()
+    {
+        if (_core == null) return;
+        try { await CallAsync("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))", TimeSpan.FromSeconds(1)); }
         catch (Exception error) when (error is BookWebViewException or TimeoutException) { }
     }
 

@@ -578,6 +578,8 @@ public sealed partial class ReaderView
             _highlightsPanel.Focus();
         }
         RememberSpread();
+        // The pictures the curl turns show the highlights as they were.
+        RefreshSpreads();
     }
 
     /// <summary>The reader changed theme: the highlights are redrawn in its colour.</summary>
@@ -586,7 +588,12 @@ public sealed partial class ReaderView
         if (!_book.IsOpen || _bookHighlights.Count == 0) return;
         var color = ToolColors.Highlight(Theme);
         if (color == _book.HighlightColor) return;
-        _ = _book.SetHighlightsAsync(_book.HighlightCfis, color);
+        _ = Recolor();
+        async Task Recolor()
+        {
+            await _book.SetHighlightsAsync(_book.HighlightCfis, color);
+            RefreshSpreads();
+        }
     }
 
     void ToggleHighlights()
@@ -638,7 +645,7 @@ public sealed partial class ReaderView
         async Task Run()
         {
             try { await previous; } catch (Exception) { }
-            try { await _turning; } catch (Exception) { }
+            try { await _turns.LandedAsync(); } catch (Exception) { }
             if (opened != _openGeneration) return;
             if (_book.CurrentLocation?.IsMarked == true)
             {

@@ -64,7 +64,6 @@ public sealed partial class ReaderView
     bool _isResizeOwnChange;
     bool _isCovered;
     int _turnsInFlight;
-    Task _turning = Task.CompletedTask;
     CancellationTokenSource? _noticeFading;
 
     /// <summary>The library book open, once it's opened.</summary>
@@ -106,6 +105,7 @@ public sealed partial class ReaderView
         _root.Children.Add(_desk);
         _root.Children.Add(_progress);
         _root.Children.Add(_notice);
+        BuildCurl();
         BuildTools();
 
         _root.SizeChanged += (_, _) => Resized();
@@ -163,6 +163,7 @@ public sealed partial class ReaderView
         _isOpening = false;
         _spreadWanted = false;
         _book.Unload();
+        CloseCurl();
         ResetTools();
         SleepToolbar();
         Record = null;
@@ -316,7 +317,8 @@ public sealed partial class ReaderView
             var opened = _places.Take(place);
             TitleChanged?.Invoke(record?.Title ?? System.IO.Path.GetFileNameWithoutExtension(file));
             Show(location);
-            await _book.SetSlideAsync(AnimationsOn);
+            // The curl turns the pages, or with less motion a crossfade, so foliate's own slide stays off.
+            await _book.SetSlideAsync(false);
             await _book.SettleAsync();
             if (!Current()) return false;
             _isOpening = false;
@@ -334,6 +336,7 @@ public sealed partial class ReaderView
             _book.Control.Focus(FocusState.Programmatic);
             UpdateRibbon(animated: false);
             MentionMarker();
+            RefreshSpreads();
             return true;
         }
         catch (OperationCanceledException)
@@ -370,7 +373,7 @@ public sealed partial class ReaderView
     /// <summary>Returns once the turns and restyles under way are over and the place is written.</summary>
     public async Task PlacesKeptAsync()
     {
-        try { await _turning; } catch (Exception) { }
+        try { await _turns.LandedAsync(); } catch (Exception) { }
         if (_restyling is { } restyling) await restyling;
         await _writer.WrittenAsync();
     }
@@ -461,37 +464,22 @@ public sealed partial class ReaderView
     }
 
     /// <summary>
-    /// Turns a page. A turn takes about 450 ms in the page (the slide, then settling), so presses
-    /// faster than that would queue without end and the book would trail behind the reader, its
-    /// places kept long after. So one turn may wait behind the one under way, and presses beyond that
-    /// are dropped; a held key's repeats are dropped while any turn is on its way, so letting go
-    /// stops the book at once. Phase 7's rapid-turn handling replaces this with the curl's own.
+    /// Turns a page with the curl, through the turn coordinator: every press counts, a press that
+    /// outruns the pictures changes the page with no curl, and a held key's repeats are dropped while a
+    /// turn lands, so letting go stops the book at once.
     /// </summary>
     public void Turn(TurnDirection direction, bool isRepeat = false)
     {
-        const int MostInFlight = 2;
         if (_isCovered || !_book.IsOpen) return;
-        if (isRepeat ? _turnsInFlight > 0 : _turnsInFlight >= MostInFlight) return;
         _places.Turned();
         HideBar();
-        _turnsInFlight++;
-        TurnBegan();
-        var turn = direction == TurnDirection.Forward ? _book.NextAsync() : _book.PreviousAsync();
-        _turning = Finish(turn);
-        async Task Finish(Task<ReaderLocation?> moving)
-        {
-            try { await moving; }
-            finally
-            {
-                _turnsInFlight--;
-                TurnLanded();
-            }
-        }
+        _turns.Turn(direction, isRepeat);
     }
 
     /// <summary>
-    /// Takes the book somewhere new. A jump counts as a turn when asked for and again when it lands,
-    /// so a restyle won't take the reader back to a place captured before it landed.
+    /// Takes the book somewhere new, after the turns before it have landed, with no curl. A jump counts
+    /// as a turn when asked for and again when it lands, so a restyle won't take the reader back to a
+    /// place captured before it landed.
     /// </summary>
     void Jump(Func<BookWebView, Task<ReaderLocation?>> go)
     {
@@ -499,22 +487,18 @@ public sealed partial class ReaderView
         ClosePanelsForJump();
         HideBar();
         _places.Turned();
-        var before = _turning;
-        _turnsInFlight++;
-        TurnBegan();
-        _turning = Land();
+        if (_turnsInFlight++ == 0) TurnBegan();
+        _ = Land();
         async Task Land()
         {
             try
             {
-                // After the turns before it have landed, so it's the last word.
-                try { await before; } catch (Exception) { }
-                await go(_book);
+                await _turns.JumpAsync(() => go(_book));
                 _places.Turned();
             }
             finally
             {
-                _turnsInFlight--;
+                if (!_turns.IsTurning) _turnsInFlight = 0;
                 TurnLanded();
             }
         }
@@ -588,6 +572,7 @@ public sealed partial class ReaderView
         Log.Write("settled");
         ApplyColors();
         Uncover();
+        RefreshSpreads();
         if (_book.CurrentLocation is { } here)
         {
             Show(here);
@@ -629,6 +614,7 @@ public sealed partial class ReaderView
         Put(_bookHost, frame);
         Put(_cover, frame);
         Put(_placeholder, frame);
+        PlaceCurl(frame);
         if (Math.Abs(_book.Control.Width - frame.Width) > 0.5) _ = ResizedLaterAsync(frame.Width);
         _book.Control.Width = frame.Width;
         _book.Control.Height = frame.Height;

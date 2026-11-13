@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Readme.App.Reader;
+using Readme.Core.Curl;
 using Readme.Core.Library;
 using Readme.Core.Model;
 using Readme.Core.Reader;
@@ -43,6 +44,7 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
             else if (mode == "tools") await ToolsAsync(rest[1]);
             else if (mode == "bundles") await BundlesAsync(rest[1]);
             else if (mode == "instance") await InstanceAsync(rest[1]);
+            else if (mode == "curl") await CurlAsync(rest[1]);
             else await ReadAsync(rest.ElementAtOrDefault(1) ?? throw new ArgumentException("read needs a book"));
         }
         catch (Exception error)
@@ -832,6 +834,169 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
         var copy = Path.Combine(folder, "search book.epub");
         File.Copy(Path.Combine(fixtures, "search.epub"), copy, overwrite: true);
         return await launch(copy);
+    }
+
+    /// <summary>
+    /// The phase 7 "done when": the curl at normal reading pace, pictured mid-turn, then fast presses, a
+    /// held key, touchpad swipes that turn, fall back and flick, a mouse wheel that does nothing, one page
+    /// across, and less motion's crossfade. Each turn's frames, from the UI thread, are recorded.
+    /// </summary>
+    async Task CurlAsync(string book)
+    {
+        reader.Change(new ReaderSettings { Theme = ThemeChoice.Paper });
+        await app.ImportAndOpenAsync([book]);
+        await Task.Delay(800);
+        var curl = reader.CurlForChecks;
+        var cache = reader.SpreadsForChecks;
+        var turns = reader.TurnsForChecks;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var moves = 0;
+        turns.Moving += _ => moves++;
+        await cache.NeighboursReadyAsync();
+        Record("cacheReady", new { seconds = Math.Round(clock.Elapsed.TotalSeconds, 2), spreads = cache.Count });
+
+        async Task<object> Landed()
+        {
+            await turns.LandedAsync();
+            for (var i = 0; i < 100 && curl.IsShowing; i++) await Task.Delay(10);
+            return new { page = reader.Location?.Page, curlOff = !curl.IsShowing };
+        }
+
+        // Normal pace, with pictures mid-turn.
+        var normal = new List<object>();
+        for (var i = 0; i < 6; i++)
+        {
+            await cache.NeighboursReadyAsync();
+            var before = reader.Location?.Page;
+            var ready = cache.Image(SpreadSlot.Next) != null;
+            await Key("ArrowRight", delay: 0);
+            var curled = curl.IsShowing;
+            if (i == 1)
+            {
+                await Task.Delay(110);
+                await Shot("c1-curl-quarter");
+                await Task.Delay(130);
+                await Shot("c2-curl-half");
+                await Task.Delay(120);
+                await Shot("c3-curl-three-quarters");
+            }
+            var landed = await Landed();
+            normal.Add(new { before, ready, curled, landed, frames = curl.LastPlay.Frames, longestMs = Math.Round(curl.LastPlay.LongestMs, 1) });
+            await Task.Delay(700);
+        }
+        Record("normalPace", normal);
+        await Shot("c4-landed");
+
+        // Backward too.
+        await cache.NeighboursReadyAsync();
+        var back = reader.Location?.Page;
+        await Key("ArrowLeft", delay: 0);
+        var backCurled = curl.IsShowing;
+        await Task.Delay(260);
+        await Shot("c5-curl-back-half");
+        Record("backward", new { from = back, backCurled, landed = await Landed() });
+
+        // Fast presses, 120 ms apart: every one counts.
+        await cache.NeighboursReadyAsync();
+        var start = reader.Location?.Page ?? 0;
+        var movesBefore = moves;
+        var curls = 0;
+        for (var i = 0; i < 10; i++)
+        {
+            await Key("ArrowRight", delay: 0);
+            if (curl.IsShowing) curls++;
+            await Task.Delay(120);
+        }
+        var fast = await Landed();
+        Record("fastPresses", new { start, pressed = 10, curls, fast, turned = moves - movesBefore });
+
+        // A held key: a press, then repeats every 33 ms for 2 s, then let go.
+        await cache.NeighboursReadyAsync();
+        start = reader.Location?.Page ?? 0;
+        movesBefore = moves;
+        await Key("ArrowRight", delay: 0);
+        var held = System.Diagnostics.Stopwatch.StartNew();
+        var repeats = 0;
+        while (held.ElapsedMilliseconds < 2000)
+        {
+            await RepeatKey("ArrowRight");
+            repeats++;
+            await Task.Delay(33);
+        }
+        var released = System.Diagnostics.Stopwatch.StartNew();
+        await turns.LandedAsync();
+        var stoppedAfter = released.ElapsedMilliseconds;
+        var heldEnd = await Landed();
+        Record("heldKey", new { start, repeats, heldEnd, turned = moves - movesBefore, stoppedAfterMs = stoppedAfter });
+
+        // Touchpad swipes, as Windows sends them: small deltas every 8 ms, then a pause.
+        async Task<object> Swipe(double total, int steps, string? shot = null)
+        {
+            await cache.NeighboursReadyAsync();
+            var from = reader.Location?.Page;
+            for (var i = 0; i < steps; i++)
+            {
+                reader.WheelForChecks(total / steps, 0);
+                await Task.Delay(8);
+                if (shot != null && i == steps / 2) await Shot(shot);
+            }
+            var heldProgress = curl.Progress;
+            var showing = curl.IsShowing;
+            await Task.Delay(300);
+            var result = await Landed();
+            return new { from, showing, heldProgress = Math.Round(heldProgress, 2), result };
+        }
+        var width = reader.Book.Control.Width / 2;
+        Record("swipeSlowForward", await Swipe(width * 0.8, 40, "c6-swipe-held"));
+        Record("swipeShortFallsBack", await Swipe(width * 0.25, 30));
+        Record("swipeBackward", await Swipe(-width * 0.7, 35));
+        Record("swipeFlick", await Swipe(width * 0.3, 6));
+        // A mouse wheel's notches.
+        var wheelFrom = reader.Location?.Page;
+        foreach (var delta in new[] { 120.0, 120, -240 }) { reader.WheelForChecks(delta, 0); await Task.Delay(40); }
+        reader.WheelForChecks(0, 120);
+        await Task.Delay(500);
+        Record("mouseWheel", new { same = reader.Location?.Page == wheelFrom, curlShown = curl.IsShowing });
+
+        // One page across.
+        Resize(700, 620);
+        await Task.Delay(1800);
+        await cache.NeighboursReadyAsync();
+        var single = reader.Location?.Page;
+        await Key("ArrowRight", delay: 0);
+        var singleCurled = curl.IsShowing;
+        await Task.Delay(200);
+        await Shot("c7-single-page");
+        Record("singlePage", new { columns = reader.Book.Columns, from = single, singleCurled, landed = await Landed() });
+        Resize(1048, 620);
+        await Task.Delay(1800);
+
+        // Night: the pictures follow the look.
+        reader.Change(reader.Settings with { Theme = ThemeChoice.Night });
+        await Task.Delay(1500);
+        await cache.NeighboursReadyAsync();
+        await Key("ArrowRight", delay: 0);
+        await Task.Delay(250);
+        await Shot("c8-night-curl");
+        Record("night", new { landed = await Landed() });
+
+        // A jump, then a turn from where it landed.
+        await Key("End", ctrl: true, delay: 0);
+        await turns.LandedAsync();
+        await Task.Delay(500);
+        var end = reader.Location;
+        await Key("ArrowRight", delay: 300);
+        Record("atTheEnd", new { end?.IsAtEnd, page = end?.Page, after = reader.Location?.Page, curl = curl.IsShowing });
+        long privateBytes;
+        using (var me = System.Diagnostics.Process.GetCurrentProcess()) privateBytes = me.PrivateMemorySize64;
+        Record("memoryMb", privateBytes / (1 << 20));
+    }
+
+    /// <summary>A held key's repeat, as the keyboard sends it while the key stays down.</summary>
+    async Task RepeatKey(string key)
+    {
+        var vk = key == "ArrowRight" ? 39 : 37;
+        await reader.Book.DevToolsAsync("Input.dispatchKeyEvent", new { type = "rawKeyDown", key, code = key, windowsVirtualKeyCode = vk, nativeVirtualKeyCode = vk, autoRepeat = true });
     }
 
     object? Where() => reader.Location is { } l
