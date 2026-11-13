@@ -7,6 +7,7 @@ set in a proper book typeface, with highlights, a page marker and search.
 
 - **Library shelf.** Drag EPUB files onto the shelf, or onto Readme's icon in the Dock. Books
   without a cover get one drawn for them. Readme keeps its own copy of each book.
+  Search the shelf by title or author from the magnifier in its corner, or with ⌘F.
 - **Book-like pages.** Two pages side by side, turned with a page curl from the keyboard or a
   trackpad swipe, with a page number in the corner of each spread.
 - **Your choice of type.** EB Garamond, Literata or New York, with adjustable text size and
