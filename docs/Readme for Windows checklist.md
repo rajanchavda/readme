@@ -12,10 +12,10 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** 7 next, once the first run of the Windows workflow passes. Phases 0 to 6 are done on Windows, apart from the items that need the Mac, GitHub or a hand
+- **Phase:** 8 next. Phases 0 to 7 are done on Windows, apart from the items that need the Mac, GitHub or a hand
 - **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed (phase 2 is on it too)
-- **Last thing done:** phase 6 (Nov 13, 2026): single instance, MSIX packaging with file associations, the Windows workflow. See **Phase 6 findings**. Before that, phases 0 to 5: see their findings
-- **Next step:** run the Windows workflow once from the Actions tab (it has never run on GitHub), then phase 7, the page curl, unless v1 ships first with a slide (the open decision above). Still to try by hand: dragging books and bundles from File Explorer onto the shelf (phases 3 and 5), reduce motion (phase 2), and Narrator over the reading tools (phase 4). On the Mac, still open: run the Swift tests (they now cover two `bridge.js` changes and read the Windows-made bundle), export a bundle into `Fixtures/Golden/` for the Windows tests, and carry bundles both ways between the two apps, which is phase 5's "done when"
+- **Last thing done:** phase 7 (Nov 14, 2026): the page curl. See **Phase 7 findings**. Before that, phases 0 to 6: see their findings
+- **Next step:** phase 8, release. Run the Windows workflow once from the Actions tab (it has never run on GitHub). Still to try by hand: the curl's feel with a real touchpad and keyboard (phase 7), dragging books and bundles from File Explorer onto the shelf (phases 3 and 5), reduce motion (phase 2), and Narrator over the reading tools (phase 4). On the Mac, still open: run the Swift tests (they now cover two `bridge.js` changes and read the Windows-made bundle), export a bundle into `Fixtures/Golden/` for the Windows tests, and carry bundles both ways between the two apps, which is phase 5's "done when"
 - **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites
@@ -34,7 +34,7 @@ Blocking: settle before the phase shown.
 - [x] Mouse wheel: one notch turns a page, or does nothing as on Mac (before phase 2). **Decided Nov 13, 2026: a mouse wheel does nothing, as on Mac.** Only a touchpad swipe turns the page. Windows doesn't label wheel events by device, so phase 2 has to tell the two apart (a notch arrives as a whole multiple of 120 with no horizontal part; touchpad deltas are small and often horizontal), and the spike's one-notch-a-page handling goes
 - [x] Freeze Mac features until Windows reaches parity? (before phase 1). **Decided Nov 13, 2026: soft freeze until phase 6.** No new Mac features; bug fixes allowed, and a fix that touches the shared contract (`Readme/Web/`, store JSON, `.readmelibrary`) lands on Windows in the same PR. New ideas go in `docs/future-todos.md`. Shelf search and pinning (both released Nov 13, v1.4 and v1.5) came before the freeze and are ported: see **Mac features added since the plan**
 - [x] Distribution: Microsoft Store, paid-signed download, or both (before phase 6). **Microsoft Store**, which follows from the packaging decision above
-- [ ] Ship v1 after phase 6 with a slide, or wait for the curl (before phase 6)
+- [x] Ship v1 after phase 6 with a slide, or wait for the curl (before phase 6). **Decided Nov 14, 2026: wait for the curl**, and build phases 7 and 8
 
 ## Mac features added since the plan
 
@@ -246,13 +246,27 @@ Built on Windows, Nov 13, 2026.
 
 ## Phase 7: Page curl
 
-- [ ] `CurlPose.cs`, `SwipeTracker.cs` (end swipe on a pause in deltas), `TurnCoordinator.cs`
-- [ ] `SpreadCache.cs` with a second WebView2
-- [ ] `CurlView.cs` with Composition strips
-- [ ] Frame timing check via `CompositionTarget.Rendering`
-- [ ] Rapid-turn handling
-- [ ] If snapshots are too slow: CSS curl fallback, noted here
-- [ ] **Done when:** curl matches `docs/mockups/open-book-v2.html` and survives held-key rapid turns
+- [x] `CurlPose.cs`, `SwipeTracker.cs` (end swipe on a pause in deltas), `TurnCoordinator.cs`, all in `Readme.Core/Curl`, with `SpreadCache` beside them: the coordinator and cache are generic over the picture type and the views, so their rules are unit-tested against a fake book
+- [x] `SpreadCache.cs` with a second WebView2, an opacity-0 view behind the book
+- [x] `CurlView.cs` with Composition strips
+- [x] Frame timing check via `CompositionTarget.Rendering`: about 33 UI frames a 0.52 s turn. The curl itself runs on the compositor, so the UI thread's frames only show what else it was doing
+- [x] Rapid-turn handling, as on Mac: every press counts, a press that outruns the pictures changes the page with no curl, a held key's repeats are dropped while a turn lands
+- [x] If snapshots are too slow: CSS curl fallback, noted here. **Not needed:** at about 200 ms a picture, the cache stays ahead at reading pace; only fast presses outrun it, which change the page without a curl, as on Mac
+- [x] **Done when:** curl matches `docs/mockups/open-book-v2.html` and survives held-key rapid turns. `--checks <dir> curl <long.epub>` turns at reading pace (every press curls), backward, 10 presses 120 ms apart (all 10 turn, the first few curl), a key held 2 s (it stops 180 ms after letting go), swipes that turn, fall back, go back and flick, a mouse wheel (nothing), one page across, and Night. Pictured mid-turn and checked by eye against the mockup. **The feel is still for a person to judge,** with a real touchpad: swipes were sent as wheel events
+
+Built on Windows, Nov 14, 2026. `dotnet test windows/Readme.slnx` runs 278.
+
+### Phase 7 findings
+
+- **The curl runs on the compositor.** Every strip's angle, each hinge's shade and the cast shadow are expression animations of one progress value in a `CompositionPropertySet`, written out from `CurlPose`'s maths. A press plays a key-frame animation of that value; fingers set it. So the curl keeps its pace while the UI thread is busy moving the page underneath, which on Mac needed the display link and careful timing.
+- **Composition keeps 3D through the tree,** so the strips are a chain of `ContainerVisual`s, each rotated about its left edge, under one perspective matrix about the spine, as Core Animation's transform layers are. Faces hide their backs with `BackfaceVisibility`. Each picture is a whole spread drawn once per face through an inset clip, so nothing is cropped or uploaded twice.
+- **Composition's y runs down, Core Animation's up,** so the Mac's negative angles lift the page towards the reader here too, but only without the sign flip a port would expect. The first try had the page sinking away from the reader.
+- **Strip edges must be hard.** With the default smoothing, every hinge showed a dotted line of the page beneath; `CompositionBorderMode.Hard` on the strips and faces takes it away, as smoothing only the outer edges does on Mac.
+- **The hidden view had no size.** A `WebView2` never given a width has NaN for it, which no "has it changed" comparison catches, so the cache's view laid the book out at 0 by 0 and never reached the reader's place. It's sized on first use now.
+- **foliate's slide is off.** The curl, or for less motion a crossfade, turns the page, as on Mac; with no pictures ready the page just changes. The cache's own view never slides, or a picture could catch a page mid-slide.
+- **The spine's shadow stays on top,** over the curl: it falls on the pages beneath and on the flat of the turning page, as the Mac draws it on its strips, at the cost of lying on a lifted page too.
+- **Swipes come as wheel events** with no beginning or end: a gesture begins after a quiet spell and ends on a 120 ms pause, which includes the touchpad's glide after the fingers lift, so a flick carries on. A mouse wheel's whole 100 or 120 steps along one axis are never a swipe. Fingers going left turn forward, which assumes Windows' default scrolling direction.
+- **Coloured fringes** show on the text of a page seen almost edge-on: the pictures keep ClearType's colour smoothing, which only shows when the page is foreshortened. Flat, the picture matches the page.
 
 ## Phase 8: Release
 
