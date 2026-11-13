@@ -12,10 +12,10 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** 5 next. Phases 0 to 4 are done on Windows, apart from the items that need the Mac or a hand
+- **Phase:** 6 next. Phases 0 to 5 are done on Windows, apart from the items that need the Mac or a hand
 - **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed (phase 2 is on it too)
-- **Last thing done:** phase 4 (Nov 13, 2026): the reading tools. See **Phase 4 findings**. Before that, phases 0 to 3: see their findings
-- **Next step:** phase 5, export and import. Still to try by hand: dragging books from File Explorer onto the shelf (phase 3), reduce motion (phase 2), and Narrator over the reading tools (phase 4). The Mac items left open (Swift tests, which now cover two `bridge.js` changes, and the golden `.readmelibrary`) wait until the Windows app is ready to test against the Mac
+- **Last thing done:** phase 5 (Nov 13, 2026): export and import of `.readmelibrary` bundles. See **Phase 5 findings**. Before that, phases 0 to 4: see their findings
+- **Next step:** phase 6, Windows integration. Still to try by hand: dragging books and bundles from File Explorer onto the shelf (phases 3 and 5), reduce motion (phase 2), and Narrator over the reading tools (phase 4). On the Mac, still open: run the Swift tests (they now cover two `bridge.js` changes and read the Windows-made bundle), export a bundle into `Fixtures/Golden/` for the Windows tests, and carry bundles both ways between the two apps, which is phase 5's "done when"
 - **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites
@@ -201,12 +201,25 @@ Built on Windows, Nov 13, 2026. `Readme.Core` gained `ReadingTools.cs`: `IdleTim
 
 ## Phase 5: Export and import
 
-- [ ] `.readmelibrary` format spec written in `docs/`
-- [ ] `LibraryBundle.cs`, `LibraryExporter.cs`, `LibraryImporter.cs`
-- [ ] Never replace; keep mine or combine; newer format refused whole; size limits match
-- [ ] `pinnedAt` in bundles: a book the import adds keeps its pin; a book already here keeps its own pin state
-- [ ] Shelf Export, including multi-selection
-- [ ] **Done when:** Mac export imports on Windows with highlights, marker and position intact, and the reverse
+- [x] `.readmelibrary` format spec written in `docs/`: [readmelibrary-format.md](readmelibrary-format.md)
+- [x] `LibraryBundle.cs`, `LibraryExporter.cs`, `LibraryImporter.cs`, with the Swift tests ported
+- [x] Never replace; keep mine or combine; newer format refused whole; size limits match. The question is a `ContentDialog`: Enter is Keep Mine, Esc is Cancel
+- [x] `pinnedAt` in bundles: a book the import adds keeps its pin; a book already here keeps its own pin state
+- [x] Shelf Export, including multi-selection. The Mac's File menu items, Import… and Export Library…, are Ctrl+O (which now takes bundles too) and a "…" menu at the top right of the shelf. Dropping a bundle on the shelf imports it
+- [ ] **Done when:** Mac export imports on Windows with highlights, marker and position intact, and the reverse. **Windows side done, the Mac side not yet tried.** `--checks <dir> bundles <fixtures>` exports books read, marked and highlighted, changes the library as another machine's would be, and imports the bundle back through the question, pressing Combine: highlights, marker, further place and pin all come back, and the book reopens on the imported place. The Windows-made golden bundle is read by `GoldenFilesTests.swift` (written, not yet run)
+
+Built on Windows, Nov 13, 2026. `Readme.Core` gained `LibraryBundle.cs`, `LibraryExporter.cs` and `LibraryImporter.cs`, with `LibraryBundleTests.swift`, `LibraryExporterTests.swift` and `LibraryImporterTests.swift` ported: `dotnet test windows/Readme.slnx` runs 231.
+
+### Phase 5 findings
+
+- **The store side was already there.** Phase 1 ported the merge rules (`HighlightStore.Merge`, `MarkerStore.SetIfNone`, `ImportMerge.IsFurther`, `ApplyImported`, `RestorePin`), so this phase is the bundle file and the flow around it.
+- **Books now stream in and out of a bundle.** `ZipWriter.Add(name, file)` reads a file twice, once for its checksum and once into the zip, rather than whole into memory, and `ZipReader.CopyTo` writes an entry out a piece at a time. A .NET array stops just short of 2 GB, so this is what lets a book of the Mac's 2 GB limit through. The entries are byte for byte what the Mac writes.
+- **One key isn't camelCase:** the manifest's `bookIDs`. It's named by hand; the rest follow the naming policy.
+- **A golden bundle now goes the other way too.** `Fixtures/Golden/windows.readmelibrary` is written by `LibraryBundle.Write`, checked byte for byte by `GoldenFilesTests.cs`, and read value by value by a new test in `GoldenFilesTests.swift`. The Mac-made bundle for the Windows tests is still to add.
+- **The Mac's File menu has no Windows home,** so Import… and Export Library… live where a Windows shelf would have them: Ctrl+O and the open dialog take `.epub` and `.readmelibrary` together, and a "…" menu at the top right of the shelf has Open… and Export Library…, which is greyed out on an empty shelf. A bundle given on the command line is imported too, ahead of phase 6's file associations.
+- **Combining waits for nothing to be in the way.** As on Mac, a book that's open and about to be combined is closed first, once its place is written, and opening a book that's being combined waits for the import to finish, so it opens on the place the import left.
+- **A combined book that moves loses its last-spread picture,** as on Mac, so it doesn't flash the old place while opening on the new one.
+- **Done by the self-check rather than by hand:** the Keep Mine / Combine question is answered by pressing its Combine button through its automation peer, and exports are saved to a path given in place of the save dialog's.
 
 ## Phase 6: Windows integration
 
