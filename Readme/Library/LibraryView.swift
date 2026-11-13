@@ -152,7 +152,8 @@ private struct Shelves: View {
         }
         .padding(.bottom, 26)
         .frame(maxWidth: .infinity)
-        .animation(animation, value: library.books.map(\.id))
+        // On the shelf's order too, so a book pinned or unpinned glides to its new place.
+        .animation(animation, value: library.books.map(\.id) + library.others.map(\.id))
     }
 }
 

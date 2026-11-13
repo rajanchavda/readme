@@ -2,7 +2,7 @@
 
 A way to keep chosen books at the front of the shelf, so they don't slide down as other books are read.
 
-Status: spec, not started (Nov 13, 2026).
+Status: built on `feat/pin-to-front` (Nov 13, 2026).
 
 ## Why
 
@@ -24,9 +24,9 @@ There's no limit on pins. If every book is pinned, the shelf is simply in pin or
 
 ## The ribbon
 
-A narrow cloth tab hanging from the top edge of the cover, near the right corner, in the same colour as the reader's place marker (`MarkerRibbon`). It's drawn over the cover, so it works on real and generated covers alike, and it doesn't move when a book lifts on hover.
+A narrow cloth tab hanging from the top edge of the cover, near the right corner, in the same colour as the reader's place marker (`MarkerRibbon`). It's drawn over the cover, so it works on real and generated covers alike, and it lifts with the cover on hover.
 
-VoiceOver: a pinned book's label ends with ", pinned".
+VoiceOver: a pinned book's label ends with ", pinned", and the book has a Pin to Front or Unpin action.
 
 ## Data
 

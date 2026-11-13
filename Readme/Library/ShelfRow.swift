@@ -80,6 +80,17 @@ struct ShelfBook: View {
         } label: {
             BookCoverView(book: book, width: width, library: library)
                 .shadow(color: .black.opacity(extraShadow ? 0.3 : 0), radius: 12, x: 0, y: 8)
+                .overlay(alignment: .topTrailing) {
+                    if book.pinnedAt != nil {
+                        let scale = width / 112
+                        PinRibbon()
+                            .fill(PinRibbon.color)
+                            .frame(width: 10 * scale, height: 26 * scale)
+                            .padding(.trailing, 10 * scale)
+                            .shadow(color: .black.opacity(0.25), radius: 1.5, x: 0, y: 1)
+                            .accessibilityHidden(true)
+                    }
+                }
                 .overlay {
                     if selection.ids.contains(book.id) {
                         RoundedRectangle(cornerRadius: 3).strokeBorder(Color.accentColor, lineWidth: 3)
@@ -94,10 +105,42 @@ struct ShelfBook: View {
             Button(selection.menuTitle(rightClicked: book.id)) {
                 onExport(selection.targets(rightClicked: book.id, order: order).compactMap(library.book(id:)))
             }
+            pinButton
             Button("Remove", role: .destructive) { onRemove(book) }
         }
-        .accessibilityLabel([book.title, book.author].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel(
+            ([book.title, book.author].compactMap { $0 } + (book.pinnedAt != nil ? ["pinned"] : [])).joined(separator: ", "))
         .accessibilityHint("Opens the book")
+        .accessibilityAction(named: book.pinnedAt == nil ? "Pin to Front" : "Unpin") {
+            library.setPinned(ids: [book.id], pinned: book.pinnedAt == nil)
+        }
         .accessibilityAction(named: "Remove") { onRemove(book) }
+    }
+
+    /// Pins or unpins what a right-click here acts on: the selection if this book is in it, else this book.
+    private var pinButton: some View {
+        let targets = selection.targets(rightClicked: book.id, order: order).compactMap(library.book(id:))
+        let allPinned = targets.allSatisfy { $0.pinnedAt != nil }
+        return Button(ShelfSelection.pinMenuTitle(count: targets.count, allPinned: allPinned)) {
+            library.setPinned(ids: targets.map(\.id), pinned: !allPinned)
+        }
+    }
+}
+
+/// The ribbon on a pinned book's cover: a narrow tab hanging from its top edge with a V cut into its
+/// tail, like the reading marker on the page, and in the paper theme's marker colour.
+struct PinRibbon: Shape {
+    static let color = Color(.sRGB, red: 0.69, green: 0.23, blue: 0.20)
+
+    func path(in rect: CGRect) -> Path {
+        let notch = rect.width * 0.45
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY - notch))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
