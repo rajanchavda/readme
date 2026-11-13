@@ -1,7 +1,7 @@
 # Readme
 
-A quiet EPUB reader for the Mac. Books open as a two-page spread that turns with a page curl,
-set in a proper book typeface, with highlights, a page marker and search.
+A quiet EPUB reader for the Mac, and now for Windows. Books open as a two-page spread that turns
+with a page curl, set in a proper book typeface, with highlights, a page marker and search.
 
 ![Reading in Readme with page curl](docs/screenshots/reading-page-turn.png)
 
@@ -83,6 +83,20 @@ click through.
 To check the download, put the `.sha256` file from the release next to the DMG and run
 `shasum -a 256 -c Readme-<version>.dmg.sha256`.
 
+## Windows
+
+Readme for Windows needs Windows 11 (Intel, AMD or ARM). It does everything the Mac app does, with
+Ctrl in place of ⌘, and its library moves between a PC and a Mac in one `.readmelibrary` file.
+
+It's on its way to the Microsoft Store, which will install and update it. Until it's listed there,
+build it from source as `windows/README.md` describes. Installing, first steps and uninstalling are
+in [docs/install-windows.md](docs/install-windows.md).
+
+**Private on Windows too.** No accounts and no tracking. Readme opens only the books you give it,
+keeps its library in `Documents\Readme`, and doesn't go online itself: a book can't load anything
+from the web. The Store app runs as a desktop app with full trust rather than in a sandbox, and
+uninstalling it keeps your library.
+
 ## Keyboard shortcuts
 
 Press **?** (or **⌘/**) while reading to see these in the app.
@@ -123,7 +137,10 @@ Run the tests with `scripts/test.sh`.
 
 - [Installing, step by step](docs/install.md)
 - [Homebrew and the release workflow](docs/homebrew.md)
-- [Releasing an update](docs/releasing.md)
+- [Releasing an update](docs/releasing.md), on Mac and Windows
+- [Installing on Windows](docs/install-windows.md)
+- [Building the Windows app](windows/README.md)
+- [The `.readmelibrary` format](docs/readmelibrary-format.md)
 
 ## Credits
 

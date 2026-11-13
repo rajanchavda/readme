@@ -58,16 +58,17 @@ Add-AppxPackage -Register bin\x64\Release\net10.0-windows10.0.26100.0\win-x64\Ap
 and remove it again with `Get-AppxPackage Readme.Reader | Remove-AppxPackage`. A packaged Readme
 uses the same `Documents\Readme` library as the unpackaged one.
 
+**Releasing:** `scripts/windows-release.ps1` sets the version from `project.yml` and builds both
+packages into `windows/dist`; see `docs/releasing.md`, "Windows", and the listing draft in
+`docs/windows-store-listing.md`.
+
 **Before the first Store upload:** reserve the name in Partner Center and copy its package identity
 (`Identity Name` and `Publisher`) and publisher display name into `Readme.App/Package.appxmanifest`;
-the ones there are placeholders. Keep `Version` in step with the Mac's `MARKETING_VERSION`, with a
-fourth part of 0.
+the ones there are placeholders. `Version` is the release script's to set, from the Mac's
+`MARKETING_VERSION` and `CURRENT_PROJECT_VERSION`, with a fourth part of 0.
 
 ## Privacy, on Windows
 
-For the README when Windows is released (phase 8), in place of the Mac's "sandboxed" line, since a
-Store desktop app runs with full trust rather than in a sandbox:
-
-> **Private.** No accounts and no tracking. Readme opens only the books you give it, keeps its
-> library in `Documents\Readme`, and doesn't go online itself: a book can't load anything from
-> the web. Updates come from the Microsoft Store.
+The README's Windows section says it: a Store desktop app runs with full trust rather than in a
+sandbox, so the Mac's "sandboxed" line doesn't apply. What does: no accounts, no tracking, only the
+books the reader gives it, the library in `Documents\Readme`, and no network from the app itself.
