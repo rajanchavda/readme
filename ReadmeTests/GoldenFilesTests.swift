@@ -80,6 +80,32 @@ private func fixtureURL(_ name: String) throws -> URL {
             chapterMinutesLeft: 6.5, isAtStart: false, isAtEnd: false, page: 210, pageCount: 500, isMarked: true))
     }
 
+    /// A bundle exported by the Windows app (GoldenFilesTests.cs writes it byte for byte).
+    @Test func windowsBundleOpens() async throws {
+        let url = try golden("windows.readmelibrary")
+        let id = try await BookID.of(fixtureURL("no-cover.epub"))
+        let opened = try LibraryBundle.open(url)
+        #expect(opened.manifest == BundleManifest(formatVersion: 1, exportedAt: try iso("2026-11-13T10:00:00Z"), bookIDs: [id]))
+        let contents = try opened.contents(of: id)
+        #expect(contents.info == BundledBook(
+            title: "No Cover, from Windows", author: "Fixture Author", addedAt: try iso("2026-11-13T08:00:00Z"),
+            lastReadAt: try iso("2026-11-13T09:00:00Z"), pinnedAt: try iso("2026-11-13T08:30:00Z")))
+        #expect(contents.highlights == [Highlight(
+            id: try #require(UUID(uuidString: "5B2E8F14-7A3C-4D1E-9F60-2C8B4A7D3E91")), cfi: "epubcfi(/6/4!/4/2,/1:0,/1:9)",
+            text: "Ünïcödé — “quoted”", chapterTitle: "Chapter 1", fraction: 0.25, created: try iso("2026-11-13T09:15:00Z"))])
+        #expect(contents.marker == Marker(
+            cfi: "epubcfi(/6/4!/4/2/1:0)", fraction: 0.25, page: 3, chapterTitle: "Chapter 1",
+            created: try iso("2026-11-13T09:20:00Z")))
+        #expect(contents.position == ReaderLocation(
+            cfi: "epubcfi(/6/4!/4/2/1:0)", fraction: 0.25, chapterTitle: "Chapter 1", chapterMinutesLeft: 2.5,
+            isAtStart: false, isAtEnd: false, page: 3, pageCount: 9, isMarked: true))
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let out = folder.appendingPathComponent("book.epub")
+        try opened.extractEPUB(of: id, to: out)
+        #expect(try await BookID.of(out) == id)
+    }
+
     @Test func bookIDsMatchWindows() async throws {
         let ids = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: golden("ids.json")))
         #expect(ids.count == 3)

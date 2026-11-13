@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Readme.Core.Library;
 using Readme.Core.Model;
 using Readme.Core.Storage;
 
@@ -103,6 +104,67 @@ public sealed class GoldenFilesTests
         var ids = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(Fixtures.Golden("ids.json")))!;
         Assert.AreEqual(3, ids.Count);
         foreach (var (name, id) in ids) Assert.AreEqual(id, await BookId.OfAsync(Fixtures.Of(name)), name);
+    }
+
+    /// <summary>
+    /// What <c>windows.readmelibrary</c> holds: no-cover.epub, pinned, with a highlight, a marker and a
+    /// place. GoldenFilesTests.swift checks the Mac reads the same values from it.
+    /// </summary>
+    static BundleItem WindowsBundleItem(string id) => new(
+        id,
+        new BundledBook
+        {
+            Title = "No Cover, from Windows",
+            Author = "Fixture Author",
+            AddedAt = Iso("2026-11-13T08:00:00Z"),
+            LastReadAt = Iso("2026-11-13T09:00:00Z"),
+            PinnedAt = Iso("2026-11-13T08:30:00Z"),
+        },
+        Fixtures.Of("no-cover.epub"),
+        [new Highlight
+        {
+            Id = Guid.Parse("5B2E8F14-7A3C-4D1E-9F60-2C8B4A7D3E91"),
+            Cfi = "epubcfi(/6/4!/4/2,/1:0,/1:9)",
+            Text = "Ünïcödé — “quoted”",
+            ChapterTitle = "Chapter 1",
+            Fraction = 0.25,
+            Created = Iso("2026-11-13T09:15:00Z"),
+        }],
+        Marker.Create("epubcfi(/6/4!/4/2/1:0)", 0.25, 3, "Chapter 1", Iso("2026-11-13T09:20:00Z")),
+        new ReaderLocation
+        {
+            Cfi = "epubcfi(/6/4!/4/2/1:0)",
+            Fraction = 0.25,
+            ChapterTitle = "Chapter 1",
+            ChapterMinutesLeft = 2.5,
+            IsAtStart = false,
+            IsAtEnd = false,
+            Page = 3,
+            PageCount = 9,
+            IsMarked = true,
+        });
+
+    /// <summary>
+    /// Windows writes the golden bundle byte for byte, and reads it back. Set README_WRITE_GOLDEN to
+    /// the Golden folder to write it afresh, after a deliberate change to the format.
+    /// </summary>
+    [TestMethod]
+    public async Task WindowsBundleIsWrittenAndRead()
+    {
+        using var folder = new TempFolder();
+        var id = await BookId.OfAsync(Fixtures.Of("no-cover.epub"));
+        var written = folder["windows.readmelibrary"];
+        LibraryBundle.Write([WindowsBundleItem(id)], written, Iso("2026-11-13T10:00:00Z"));
+        if (Environment.GetEnvironmentVariable("README_WRITE_GOLDEN") is { Length: > 0 } target)
+            File.Copy(written, Path.Combine(target, "windows.readmelibrary"), overwrite: true);
+        CollectionAssert.AreEqual(File.ReadAllBytes(Fixtures.Golden("windows.readmelibrary")), File.ReadAllBytes(written));
+
+        var opened = LibraryBundle.Open(Fixtures.Golden("windows.readmelibrary"));
+        Assert.AreEqual(new BundleManifest { FormatVersion = 1, ExportedAt = Iso("2026-11-13T10:00:00Z"), BookIds = [id] }, opened.Manifest);
+        var item = WindowsBundleItem(id);
+        Assert.AreEqual(new BundleContents(item.Info, item.Highlights, item.Marker, item.Position), opened.Contents(id));
+        opened.ExtractEpub(id, folder["book.epub"]);
+        Assert.AreEqual(id, await BookId.OfAsync(folder["book.epub"]));
     }
 
     [TestMethod]

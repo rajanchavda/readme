@@ -41,6 +41,15 @@ sealed class AppCoordinator
     readonly ReaderView _reader;
     readonly LibraryView _shelf;
     readonly BookImporter _importer;
+    readonly LibraryExporter _exporter;
+    readonly LibraryImporter _libraryImporter;
+    /// <summary>
+    /// Books a running import is combining into. Opening one waits for it, so the reader starts from
+    /// the place the import leaves, and nothing it writes lands over what the import brought.
+    /// </summary>
+    readonly HashSet<string> _combining = [];
+    TaskCompletionSource? _combined;
+    ContentDialog? _openDialog;
     /// <summary>
     /// The view nobody sees, which import opens each book in: one, made once and kept, since closing a
     /// WebView2 straight after use can crash the app (spike findings). At opacity 0 behind everything,
@@ -59,6 +68,8 @@ sealed class AppCoordinator
         _exit = exit;
         _spreads = new LastSpreadCache(Path.Combine(AppPaths.Library, "LastSpreads"));
         _importer = new BookImporter(_library, DetailsAsync);
+        _exporter = new LibraryExporter(_library);
+        _libraryImporter = new LibraryImporter(_library, _importer, _spreads);
         _reader = new ReaderView(_library, _spreads, ReaderSettings.Load(AppPaths.Settings));
         _shelf = new LibraryView(_library, book => OpenAsync(book), ImportAllAsync, () => _system.AnimationsEnabled);
         _library.Removing += id =>
@@ -81,6 +92,10 @@ sealed class AppCoordinator
         };
         _reader.Intercept = key => _isShowingLibrary ? HandleKey(key) : null;
         _shelf.FocusLeft += () => _content.Focus(FocusState.Programmatic);
+        _shelf.Export = books => ExportAsync(books);
+        _shelf.ImportBundles = paths => ImportBundlesAsync(paths);
+        _shelf.OpenFile = ChooseBookAsync;
+        _shelf.ExportLibrary = () => ExportAsync(_library.Books);
 
         _hidden.Control.Width = 600;
         _hidden.Control.Height = 800;
@@ -133,12 +148,20 @@ sealed class AppCoordinator
     {
         // Books whose copy has gone are taken off the shelf quietly, as on Mac.
         _library.RemoveMissing(File.Exists);
-        var files = _arguments.Where(a => a.EndsWith(".epub", StringComparison.OrdinalIgnoreCase) && File.Exists(a)).ToList();
+        var (files, bundles) = LibraryView.Split(_arguments.Where(a => File.Exists(a)
+            && (a.EndsWith(".epub", StringComparison.OrdinalIgnoreCase) || a.EndsWith(LibraryBundle.Extension, StringComparison.OrdinalIgnoreCase))));
+        if (bundles.Count > 0)
+        {
+            // Straight to the library, not the last book, which would only be replaced.
+            ShowLibrary(animated: false);
+            await ImportBundlesAsync(bundles);
+        }
         if (files.Count > 0)
         {
             await ImportAndOpenAsync(files);
             return;
         }
+        if (bundles.Count > 0) return;
         switch (LaunchRoute.Resolve(_library, _library.Positions.Location, File.Exists))
         {
             case LaunchRoute.Read read:
@@ -325,6 +348,7 @@ sealed class AppCoordinator
     /// </summary>
     public async Task<bool> OpenAsync(Book book, string? cfi = null)
     {
+        while (_combining.Contains(book.Id) && _combined != null) await _combined.Task;
         if (!File.Exists(_library.FilePath(book)))
         {
             _library.RemoveMissing(File.Exists);
@@ -343,14 +367,22 @@ sealed class AppCoordinator
         return opened;
     }
 
+    /// <summary>Ctrl+O: books, or library bundles, which the Mac's File menu has as Open… and Import….</summary>
     async Task ChooseBookAsync()
     {
         var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
         picker.FileTypeFilter.Add(".epub");
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, Win32Interop.GetWindowFromWindowId(_window.AppWindow.Id));
+        picker.FileTypeFilter.Add(LibraryBundle.Extension);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, Hwnd);
         var files = await picker.PickMultipleFilesAsync();
         if (files.Count == 0) return;
-        var paths = files.Select(f => f.Path).ToList();
+        var (paths, bundles) = LibraryView.Split(files.Select(f => f.Path));
+        if (bundles.Count > 0)
+        {
+            ShowLibrary();
+            await ImportBundlesAsync(bundles);
+        }
+        if (paths.Count == 0) return;
         // Several books chosen at once are for the shelf, not for reading one of them.
         if (paths.Count > 1)
         {
@@ -380,6 +412,138 @@ sealed class AppCoordinator
             }
         }
         if (results.FirstOrDefault(r => r.Book != null).Book is { } book) await OpenAsync(book);
+    }
+
+    nint Hwnd => Win32Interop.GetWindowFromWindowId(_window.AppWindow.Id);
+
+    // MARK: Library bundles
+
+    /// <summary>
+    /// Imports each bundle in turn, over the library. If some of a bundle's books are here already,
+    /// the reader is asked what to do with them, unless <paramref name="answer"/> is given (null from it
+    /// is Cancel). A book open in the reader that's about to be combined is closed first, so nothing it
+    /// still holds is written over what the import brings, and it opens next on the place the import left.
+    /// </summary>
+    public async Task ImportBundlesAsync(IReadOnlyList<string> paths, Func<PreparedImport, ImportChoice?>? answer = null)
+    {
+        foreach (var path in paths)
+        {
+            ShowLibrary();
+            PreparedImport prepared;
+            try { prepared = await _libraryImporter.PrepareAsync(path); }
+            catch (BundleException error)
+            {
+                _shelf.Say(error.Message);
+                continue;
+            }
+            var choice = ImportChoice.KeepMine;
+            if (prepared.ExistingIds.Count > 0)
+            {
+                var asked = answer != null
+                    ? answer(prepared)
+                    : await AskImportChoiceAsync(prepared.ExistingIds.Count, prepared.Bundle.Manifest.BookIds.Count);
+                if (asked == null) continue;
+                choice = asked.Value;
+            }
+            if (choice == ImportChoice.Combine && _reader.Record?.Id is { } open && prepared.ExistingIds.Contains(open))
+            {
+                await _reader.PlacesKeptAsync();
+                _reader.CloseBook();
+            }
+            if (choice == ImportChoice.Combine)
+            {
+                _combining.UnionWith(prepared.ExistingIds);
+                _combined = new TaskCompletionSource();
+            }
+            _shelf.SetWorking(LibraryView.WorkingLine("Importing", prepared.Bundle.Manifest.BookIds.Count));
+            ImportSummary summary;
+            try { summary = await _libraryImporter.RunAsync(prepared, choice); }
+            finally
+            {
+                _combining.Clear();
+                _combined?.TrySetResult();
+                _combined = null;
+                _shelf.SetWorking(null);
+            }
+            _shelf.Say(summary.Line);
+        }
+    }
+
+    /// <summary>Keep Mine, Combine, or Cancel, which is null. Enter is Keep Mine, Esc is Cancel.</summary>
+    async Task<ImportChoice?> AskImportChoiceAsync(int existing, int total)
+    {
+        if (_openDialog != null) return null;
+        var dialog = new ContentDialog
+        {
+            Title = ImportQuestion.Message(existing, total),
+            Content = new TextBlock { Text = ImportQuestion.Informative, TextWrapping = TextWrapping.Wrap },
+            PrimaryButtonText = ImportQuestion.Buttons[0],
+            SecondaryButtonText = ImportQuestion.Buttons[1],
+            CloseButtonText = ImportQuestion.Buttons[2],
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = _content.XamlRoot,
+            RequestedTheme = ElementTheme.Dark,
+        };
+        _openDialog = dialog;
+        try
+        {
+            return await dialog.ShowAsync() switch
+            {
+                ContentDialogResult.Primary => ImportChoice.KeepMine,
+                ContentDialogResult.Secondary => ImportChoice.Combine,
+                _ => null,
+            };
+        }
+        finally
+        {
+            _openDialog = null;
+        }
+    }
+
+    /// <summary>For the self-checks: the question showing, if one is.</summary>
+    internal ContentDialog? OpenDialog => _openDialog;
+
+    /// <summary>
+    /// Asks where to save <paramref name="books"/>, unless <paramref name="destination"/> is given, and
+    /// writes them there. How it went is said on the shelf.
+    /// </summary>
+    public async Task ExportAsync(IReadOnlyList<Book> books, string? destination = null)
+    {
+        if (books.Count == 0) return;
+        ShowLibrary();
+        var path = destination ?? await ChooseExportDestinationAsync(books.Count == 1 ? books[0].Title : "Readme Library");
+        if (path == null) return;
+        _shelf.SetWorking(LibraryView.WorkingLine("Exporting", books.Count));
+        try
+        {
+            var summary = await _exporter.ExportAsync(books, path);
+            _shelf.Say(summary.Line);
+        }
+        catch (BundleException error)
+        {
+            _shelf.Say(error.Message);
+        }
+        finally
+        {
+            _shelf.SetWorking(null);
+        }
+    }
+
+    async Task<string?> ChooseExportDestinationAsync(string suggestedName)
+    {
+        var picker = new FileSavePicker { SuggestedStartLocation = PickerLocationId.DocumentsLibrary, SuggestedFileName = SafeFileName(suggestedName) };
+        picker.FileTypeChoices.Add("Readme library", [LibraryBundle.Extension]);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, Hwnd);
+        var file = await picker.PickSaveFileAsync();
+        return file?.Path;
+    }
+
+    /// <summary>A title as a file name: the characters Windows won't have in one become spaces.</summary>
+    internal static string SafeFileName(string title)
+    {
+        var bad = Path.GetInvalidFileNameChars();
+        var name = new string(title.Select(c => bad.Contains(c) ? ' ' : c).ToArray()).Trim().TrimEnd('.').Trim();
+        return string.IsNullOrWhiteSpace(name) ? "Readme Library" : name;
     }
 
     Task<IReadOnlyList<(string Path, Book? Book, ImportError? Error)>> ImportAllAsync(IReadOnlyList<string> paths) =>

@@ -43,6 +43,7 @@ sealed class LibraryView
     readonly TextBlock _noMatch = ShelfStyle.Line("", 16, ShelfStyle.Text, italic: true);
     readonly Border _notice = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(20, 10, 20, 10), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 40), IsHitTestVisible = false, Opacity = 0, Background = ShelfStyle.Brush(ShelfStyle.NoticeBackground), BorderBrush = ShelfStyle.Brush(ShelfStyle.Text, 0.1), BorderThickness = new Thickness(1) };
     readonly StackPanel _noticeLines = new() { Spacing = 4 };
+    readonly Button _moreButton = new() { Content = new FontIcon { Glyph = "", FontSize = 14 }, Padding = new Thickness(8), Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0) };
     readonly Button _searchButton = new() { Content = new FontIcon { Glyph = "", FontSize = 14 }, Padding = new Thickness(8), Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0) };
     readonly TextBox _searchBox = new() { Width = 220, PlaceholderText = "Search the library", Visibility = Visibility.Collapsed };
     readonly List<string> _noticeTexts = [];
@@ -50,10 +51,19 @@ sealed class LibraryView
     CancellationTokenSource? _noticeFading;
     int _pending;
     string? _progress;
+    string? _working;
     double _builtWidth = -1;
 
     public UIElement Root => _root;
     public event Action? FocusLeft;
+
+    /// <summary>Exports these books, asking where (the menu's Export…).</summary>
+    public Func<IReadOnlyList<Book>, Task>? Export { get; set; }
+    /// <summary>Imports these <c>.readmelibrary</c> files (dropped on the shelf).</summary>
+    public Func<IReadOnlyList<string>, Task>? ImportBundles { get; set; }
+    /// <summary>The shelf's own menu: Open… and Export Library….</summary>
+    public Func<Task>? OpenFile { get; set; }
+    public Func<Task>? ExportLibrary { get; set; }
 
     public LibraryView(LibraryStore library, Func<Book, Task> open,
         Func<IReadOnlyList<string>, Task<IReadOnlyList<(string Path, Book? Book, ImportError? Error)>>> importAll, Func<bool> animations)
@@ -223,7 +233,13 @@ sealed class LibraryView
         var pin = new MenuFlyoutItem { Text = ShelfSelection.PinMenuTitle(targets.Count, allPinned) };
         pin.Click += (_, _) => _library.SetPinned(targets.Select(b => b.Id), !allPinned);
         menu.Items.Add(pin);
-        // Export arrives with library bundles (phase 5).
+        var export = new MenuFlyoutItem { Text = _selection.ExportTitle(book.Id) };
+        export.Click += async (_, _) =>
+        {
+            if (Export != null) await Export(targets);
+            _selection.Clear();
+        };
+        menu.Items.Add(export);
         menu.Items.Add(new MenuFlyoutSeparator());
         var remove = new MenuFlyoutItem { Text = targets.Count > 1 ? $"Remove {targets.Count} Books" : "Remove" };
         remove.Click += (_, _) =>
@@ -258,6 +274,12 @@ sealed class LibraryView
         panel.Children.Add(_searchButton);
         panel.Children.Add(_searchBox);
         panel.Children.Add(close);
+        panel.Children.Add(_moreButton);
+        AutomationProperties.SetName(_moreButton, "More");
+        ToolTipService.SetToolTip(_moreButton, "More");
+        var more = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
+        more.Opening += (_, _) => FillMoreMenu(more);
+        _moreButton.Flyout = more;
         _searchButton.Click += (_, _) => OpenSearch();
         close.Click += (_, _) => CloseSearch();
         _searchBox.TextChanged += (_, _) =>
@@ -289,6 +311,26 @@ sealed class LibraryView
 
     Action<bool>? _searchShown;
 
+    /// <summary>What the Mac's File menu has: Open… (books or libraries) and Export Library…, which needs a book on the shelf.</summary>
+    void FillMoreMenu(MenuFlyout menu)
+    {
+        menu.Items.Clear();
+        var open = new MenuFlyoutItem { Text = "Open…", KeyboardAcceleratorTextOverride = "Ctrl+O" };
+        open.Click += async (_, _) => { if (OpenFile != null) await OpenFile(); };
+        menu.Items.Add(open);
+        var export = new MenuFlyoutItem { Text = "Export Library…", IsEnabled = _library.Books.Count > 0 };
+        export.Click += async (_, _) => { if (ExportLibrary != null) await ExportLibrary(); };
+        menu.Items.Add(export);
+    }
+
+    /// <summary>For the self-checks: what the shelf's own menu offers, and whether each is enabled.</summary>
+    internal IReadOnlyList<string> MoreMenu()
+    {
+        var menu = (MenuFlyout)_moreButton.Flyout;
+        FillMoreMenu(menu);
+        return menu.Items.OfType<MenuFlyoutItem>().Select(i => i.IsEnabled ? i.Text : i.Text + " (disabled)").ToList();
+    }
+
     /// <summary>For the self-checks: types into the search field.</summary>
     internal void Type(string query)
     {
@@ -316,6 +358,9 @@ sealed class LibraryView
     {
         foreach (var cover in _covers.Values) cover.ContextFlyout?.Hide();
     }
+
+    /// <summary>For the self-checks: the lines the notice shows now.</summary>
+    internal IReadOnlyList<string> NoticeLines() => _noticeLines.Children.OfType<TextBlock>().Select(b => b.Text).ToList();
 
     /// <summary>For the self-checks: what the shelf shows, in order.</summary>
     internal IReadOnlyList<string> ShownTitles() => _covers.Values.Select(c => c.Book.Title).ToList();
@@ -373,10 +418,28 @@ sealed class LibraryView
         try { items = await e.DataView.GetStorageItemsAsync(); }
         finally { deferral.Complete(); }
         var files = items.OfType<StorageFile>().Select(f => f.Path).Where(p => !string.IsNullOrEmpty(p)).ToList();
-        var bundles = files.Where(p => p.EndsWith(".readmelibrary", StringComparison.OrdinalIgnoreCase)).ToList();
-        if (bundles.Count > 0) Say("Readme libraries can be imported once that arrives (phase 5).");
-        await AddAsync(files.Except(bundles).ToList());
+        var (books, bundles) = Split(files);
+        if (bundles.Count > 0 && ImportBundles != null) await ImportBundles(bundles);
+        await AddAsync(books);
     }
+
+    /// <summary>Books and library bundles apart (LibraryView.split).</summary>
+    public static (IReadOnlyList<string> Books, IReadOnlyList<string> Bundles) Split(IEnumerable<string> paths)
+    {
+        var all = paths.ToList();
+        static bool IsBundle(string path) => path.EndsWith(LibraryBundle.Extension, StringComparison.OrdinalIgnoreCase);
+        return (all.Where(p => !IsBundle(p)).ToList(), all.Where(IsBundle).ToList());
+    }
+
+    /// <summary>"Exporting 12 books…" and the like, shown softly until it's set back to null.</summary>
+    public void SetWorking(string? line)
+    {
+        _working = line;
+        RefreshNotice();
+    }
+
+    /// <summary>"Exporting 12 books…", or "…1 book…".</summary>
+    public static string WorkingLine(string verb, int count) => count == 1 ? $"{verb} 1 book…" : $"{verb} {count} books…";
 
     /// <summary>
     /// Imports the files. What goes wrong is a quiet notice that fades by itself; if it takes a while,
@@ -430,9 +493,10 @@ sealed class LibraryView
     {
         _noticeLines.Children.Clear();
         foreach (var line in _noticeTexts) _noticeLines.Children.Add(Centered(ShelfStyle.Line(line, 16, ShelfStyle.Text, italic: true)));
-        if (_progress != null) _noticeLines.Children.Add(Centered(ShelfStyle.Line(_progress, 15, ShelfStyle.Muted, italic: true)));
+        foreach (var soft in new[] { _working, _progress }.OfType<string>())
+            _noticeLines.Children.Add(Centered(ShelfStyle.Line(soft, 15, ShelfStyle.Muted, italic: true)));
         var shown = _noticeLines.Children.Count > 0;
-        AutomationProperties.SetName(_notice, string.Join(". ", _noticeTexts.Append(_progress ?? "")));
+        AutomationProperties.SetName(_notice, string.Join(". ", _noticeTexts.Append(_working ?? "").Append(_progress ?? "")));
         Fade(_notice, shown ? 1 : 0);
     }
 

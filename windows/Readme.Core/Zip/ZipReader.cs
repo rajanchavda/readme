@@ -88,7 +88,7 @@ public sealed class ZipReader
         if (!_entries.TryGetValue(name, out var entry) || entry.Size > limit || entry.CompressedSize > limit
             || entry.HeaderOffset + 30 + entry.CompressedSize > _length) return null;
         // A .NET array stops just short of 2 GB, where the Mac's Data doesn't; a book that size is
-        // refused here. Bundles (phase 5) should stream book.epub instead of reading it whole.
+        // refused here. A bundle's book.epub is streamed out with CopyTo instead.
         if (entry.Size > Array.MaxLength || entry.CompressedSize > Array.MaxLength) return null;
         try
         {
@@ -127,6 +127,75 @@ public sealed class ZipReader
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Writes the entry to <paramref name="destination"/>, replacing anything there, a piece at a time
+    /// rather than whole, so an entry up to <paramref name="limit"/> bytes goes out whatever its size.
+    /// False, with nothing left at <paramref name="destination"/>, on the same grounds
+    /// <see cref="Data"/> gives null for.
+    /// </summary>
+    public bool CopyTo(string name, string destination, long limit)
+    {
+        if (!_entries.TryGetValue(name, out var entry) || entry.Size > limit || entry.CompressedSize > limit
+            || entry.HeaderOffset + 30 + entry.CompressedSize > _length || entry.Method is not (0 or 8)) return false;
+        var written = false;
+        try
+        {
+            using (var file = File.OpenRead(_path))
+            {
+                file.Seek(entry.HeaderOffset, SeekOrigin.Begin);
+                var header = ReadExactly(file, 30);
+                if (header == null || U32(header, 0) != 0x0403_4b50) return false;
+                long skip = U16(header, 26) + U16(header, 28);
+                if (entry.HeaderOffset + 30 + skip + entry.CompressedSize > _length) return false;
+                file.Seek(entry.HeaderOffset + 30 + skip, SeekOrigin.Begin);
+                using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
+                written = true;
+                using var packed = new Window(file, entry.CompressedSize);
+                using Stream source = entry.Method == 0 ? packed : new DeflateStream(packed, CompressionMode.Decompress);
+                var buffer = new byte[1 << 20];
+                long total = 0;
+                for (int read; (read = source.Read(buffer)) > 0;)
+                {
+                    total += read;
+                    // As on Mac, it must come to exactly the size it declares.
+                    if (total > entry.Size) throw new InvalidDataException();
+                    output.Write(buffer.AsSpan(0, read));
+                }
+                if (total != entry.Size) throw new InvalidDataException();
+            }
+            return true;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            if (written) try { File.Delete(destination); } catch (Exception gone) when (gone is IOException or UnauthorizedAccessException) { }
+            return false;
+        }
+    }
+
+    /// <summary>The next <c>length</c> bytes of a stream, and no more.</summary>
+    sealed class Window(Stream inner, long length) : Stream
+    {
+        long _left = length;
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_left <= 0) return 0;
+            var read = inner.Read(buffer, offset, (int)Math.Min(count, _left));
+            _left -= read;
+            return read;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>

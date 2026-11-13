@@ -11,8 +11,9 @@ Windows. If either app changes one of these formats, the other app's tests fail.
 | `marker.json` | `MarkerStore`, `Marker` | ISO 8601, whole seconds, `Z` |
 | `position.json` | `PositionStore`, `ReaderLocation` | none |
 | `ids.json` | `BookID.of` for three fixtures | none |
+| `windows.readmelibrary` | The **Windows** app's `LibraryBundle.Write`: `no-cover.epub`, pinned, with a highlight, marker and place. See `docs/readmelibrary-format.md` | ISO 8601, whole seconds, `Z` |
 
 Other details both sides keep: nil optionals are left out rather than written as `null`; a UUID is
 written in upper case; Swift writes `/` as `\/`, and both sides read either form.
 
-Still to add: one `.readmelibrary` exported by the Mac app (phase 5).
+Still to add: one `.readmelibrary` exported by the Mac app, for the Windows tests to read.

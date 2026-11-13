@@ -2,7 +2,13 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation.Peers;
+using Microsoft.UI.Xaml.Automation.Provider;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Readme.App.Reader;
+using Readme.Core.Library;
 using Readme.Core.Model;
 using Readme.Core.Reader;
 using Readme.Core.Storage;
@@ -35,6 +41,7 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
             else if (mode == "whole") await WholeBookAsync(rest[1]);
             else if (mode == "shelf") await ShelfAsync(rest[1]);
             else if (mode == "tools") await ToolsAsync(rest[1]);
+            else if (mode == "bundles") await BundlesAsync(rest[1]);
             else await ReadAsync(rest.ElementAtOrDefault(1) ?? throw new ArgumentException("read needs a book"));
         }
         catch (Exception error)
@@ -607,6 +614,170 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
                 """);
             Record("probe", probe.ToString());
         }
+    }
+
+    /// <summary>
+    /// The phase 5 "done when", on one machine: books read, marked and highlighted are exported, the
+    /// library is changed the way another machine's would be, and the bundle is imported back, through
+    /// the Keep Mine / Combine question as a person would answer it. Then the bundle Windows writes for
+    /// the Mac's tests, a newer format refused, and the shelf's menus.
+    /// </summary>
+    async Task BundlesAsync(string fixtures)
+    {
+        string Fixture(string name) => Path.Combine(fixtures, name);
+        reader.Change(new ReaderSettings { Theme = ThemeChoice.Paper });
+        app.ShowLibrary(animated: false);
+        await Task.Delay(800);
+        Record("menuEmpty", app.Shelf.MoreMenu());
+        var results = await app.Shelf.AddAsync(new[] { "long.epub", "search.epub", "no-cover.epub" }.Select(Fixture).ToList());
+        Book ById(string file) => library.Book(results.First(r => Path.GetFileName(r.Path) == file).Book!.Id)!;
+        var longBook = ById("long.epub");
+        var search = ById("search.epub");
+        var noCover = ById("no-cover.epub");
+
+        // Reading long.epub: some pages in, a highlight, a marker.
+        await app.OpenAsync(longBook);
+        await Task.Delay(800);
+        for (var i = 0; i < 6; i++) await Key("ArrowRight", delay: 500);
+        await SelectWordsAsync();
+        await Task.Delay(500);
+        reader.Bar.Press();
+        await Task.Delay(500);
+        await Key("d", ctrl: true, delay: 600);
+        for (var i = 0; i < 2; i++) await Key("ArrowRight", delay: 500);
+        await reader.PlacesKeptAsync();
+        var exportedPlace = library.Positions.Location(longBook.Id);
+        var exportedHighlights = library.Highlights.Highlights(longBook.Id).Select(h => h.Cfi).ToList();
+        var exportedMarker = library.Markers.Marker(longBook.Id);
+        library.SetPinned([search.Id], true);
+        Record("beforeExport", new
+        {
+            place = exportedPlace == null ? null : new { exportedPlace.Page, exportedPlace.Fraction, exportedPlace.Cfi },
+            highlights = exportedHighlights.Count,
+            marker = exportedMarker?.Cfi,
+        });
+        await Key("l", ctrl: true, delay: 1000);
+
+        Record("menuWithBooks", app.Shelf.MoreMenu());
+        Record("bookMenu", app.Shelf.MenuFor(search.Id, show: false));
+        app.Shelf.Click(search.Id, Core.Reader.Modifiers.Ctrl);
+        app.Shelf.Click(noCover.Id, Core.Reader.Modifiers.Ctrl);
+        Record("pickedMenu", app.Shelf.MenuFor(search.Id, show: true));
+        await Task.Delay(500);
+        await Shot("b1-export-menu");
+        app.Shelf.HideMenus();
+        app.Shelf.Escape(() => { });
+
+        var all = Path.Combine(outDir, "all.readmelibrary");
+        var exporting = app.ExportAsync(library.Books, all);
+        await Task.Delay(30);
+        var working = app.Shelf.NoticeLines();
+        await exporting;
+        await Task.Delay(300);
+        Record("exported", new { lines = app.Shelf.NoticeLines(), whileWorking = working, size = new FileInfo(all).Length });
+        await Shot("b2-exported");
+        var one = Path.Combine(outDir, "one.readmelibrary");
+        await app.ExportAsync([longBook], one);
+        Record("exportedOne", LibraryBundle.Open(one).Manifest.BookIds.Count);
+        Record("safeFileName", AppCoordinator.SafeFileName("What: a <Title>?."));
+
+        // Now this library is as another machine's might be: search.epub gone, long.epub further back,
+        // with a highlight of its own and no marker.
+        library.Remove(search.Id);
+        library.Positions.Save(exportedPlace! with { Fraction = 0.01, Page = 1 }, longBook.Id);
+        library.Markers.Remove(longBook.Id);
+        foreach (var h in library.Highlights.Highlights(longBook.Id)) library.Highlights.Remove(h.Id, longBook.Id);
+        library.Highlights.Add(Highlight.Create("epubcfi(/6/2!/4/2,/1:0,/1:1)", "mine", 0.001), longBook.Id);
+        await app.OpenAsync(longBook);
+        await Task.Delay(600);
+        Record("openBeforeImport", reader.Record?.Title);
+        await Key("l", ctrl: true, delay: 800);
+
+        // Import, and answer the question as a person would: Combine.
+        var importing = app.ImportBundlesAsync([all]);
+        ContentDialog? dialog = null;
+        for (var i = 0; i < 50 && (dialog = app.OpenDialog) == null; i++) await Task.Delay(100);
+        await Task.Delay(500);
+        await Shot("b3-question");
+        Record("question", dialog == null ? null : new { title = dialog.Title, dialog.PrimaryButtonText, dialog.SecondaryButtonText, dialog.CloseButtonText });
+        if (dialog != null) Press(dialog, "Combine");
+        await importing;
+        await Task.Delay(300);
+        var back = library.Book(search.Id);
+        Record("combined", new
+        {
+            lines = app.Shelf.NoticeLines(),
+            readerClosed = reader.Record == null,
+            searchBack = back == null ? null : new { back.Title, pinned = back.PinnedAt != null, file = File.Exists(library.FilePath(back)), cover = File.Exists(library.CoverPath(back)) },
+            highlights = library.Highlights.Highlights(longBook.Id).Select(h => h.Text).ToList(),
+            highlightsBack = exportedHighlights.All(c => library.Highlights.Highlights(longBook.Id).Any(h => h.Cfi == c)),
+            placeIsTheFurther = library.Positions.Location(longBook.Id)?.Cfi == exportedPlace.Cfi,
+            markerBack = library.Markers.Marker(longBook.Id)?.Cfi == exportedMarker?.Cfi,
+        });
+        await Shot("b4-combined");
+
+        // Opened again, it starts where the import left it, with the marker and both highlights.
+        await app.OpenAsync(longBook);
+        await Task.Delay(1200);
+        Record("reopened", new { at = Where(), sameCfi = reader.Location?.Cfi == exportedPlace.Cfi, marked = reader.Location?.IsMarked, shown = reader.BookHighlights.Count });
+        await Shot("b5-reopened");
+        await Key("l", ctrl: true, delay: 800);
+
+        // Keep Mine, then Cancel: nothing changes.
+        library.Positions.Save(exportedPlace with { Fraction = 0.01, Page = 1 }, longBook.Id);
+        var before = library.Books;
+        await app.ImportBundlesAsync([all], _ => ImportChoice.KeepMine);
+        Record("keptMine", new { lines = app.Shelf.NoticeLines(), same = before.SequenceEqual(library.Books), place = library.Positions.Location(longBook.Id)?.Fraction });
+        await app.ImportBundlesAsync([all], _ => null);
+        Record("cancelled", before.SequenceEqual(library.Books));
+
+        // The bundle the Mac's tests read, written by this app's own code; and one from a newer Readme.
+        library.Remove(noCover.Id);
+        await app.ImportBundlesAsync([Fixture(Path.Combine("Golden", "windows.readmelibrary"))]);
+        var golden = library.Book(noCover.Id);
+        Record("golden", new
+        {
+            lines = app.Shelf.NoticeLines(),
+            golden?.Title,
+            golden?.Author,
+            pinned = golden?.PinnedAt,
+            highlights = library.Highlights.Highlights(noCover.Id).Select(h => h.Text).ToList(),
+            marker = library.Markers.Marker(noCover.Id)?.Page,
+            place = library.Positions.Location(noCover.Id)?.Fraction,
+        });
+        var newer = Path.Combine(outDir, "newer.readmelibrary");
+        using (var writer = new Core.Zip.ZipWriter(newer))
+        {
+            writer.Add("manifest.json", """{"formatVersion":2,"exportedAt":"2026-01-01T00:00:00Z","bookIDs":[]}"""u8);
+            writer.Finish();
+        }
+        await Task.Delay(4500);
+        await app.ImportBundlesAsync([newer]);
+        Record("newer", app.Shelf.NoticeLines());
+        await app.ImportBundlesAsync([Fixture("long.epub")]);
+        Record("notABundle", app.Shelf.NoticeLines());
+        await Task.Delay(300);
+        await Shot("b6-refused");
+    }
+
+    /// <summary>Presses the dialog's button with this text, as a click would, through its automation peer.</summary>
+    static void Press(ContentDialog dialog, string text)
+    {
+        foreach (var popup in VisualTreeHelper.GetOpenPopupsForXamlRoot(dialog.XamlRoot))
+            if (Find(popup.Child, text) is { } button && new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke) is IInvokeProvider invoke)
+            {
+                invoke.Invoke();
+                return;
+            }
+    }
+
+    static Button? Find(DependencyObject? element, string text)
+    {
+        if (element == null) return null;
+        if (element is Button { Content: string content } button && content == text) return button;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+            if (Find(VisualTreeHelper.GetChild(element, i), text) is { } found) return found;
+        return null;
     }
 
     object? Where() => reader.Location is { } l

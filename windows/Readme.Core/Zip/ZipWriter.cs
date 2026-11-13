@@ -13,9 +13,12 @@ public static class Crc32
         return value;
     }).ToArray();
 
-    public static uint Checksum(ReadOnlySpan<byte> data)
+    public static uint Checksum(ReadOnlySpan<byte> data) => Update(0, data);
+
+    /// <summary>The checksum of what <paramref name="crc"/> covered followed by <paramref name="data"/>; 0 to start.</summary>
+    public static uint Update(uint crc, ReadOnlySpan<byte> data)
     {
-        var crc = 0xFFFF_FFFFu;
+        crc ^= 0xFFFF_FFFF;
         foreach (var b in data) crc = Table[(crc ^ b) & 0xFF] ^ (crc >> 8);
         return crc ^ 0xFFFF_FFFF;
     }
@@ -61,33 +64,67 @@ public sealed class ZipWriter : IDisposable
         }
     }
 
+    /// <summary>
+    /// Adds the file's contents, streamed rather than read whole, so a book of any size the zip can
+    /// hold goes in: read once for its checksum, then again into the zip. The same entry the Mac writes.
+    /// </summary>
     public void Add(string name, string file)
     {
-        byte[] data;
-        try { data = File.ReadAllBytes(file); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or OutOfMemoryException)
+        var nameBytes = Encoding.UTF8.GetBytes(name);
+        try
+        {
+            using var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
+            var size = input.Length;
+            Reserve(nameBytes, size);
+            var buffer = new byte[1 << 20];
+            var crc = 0u;
+            for (int read; (read = input.Read(buffer)) > 0;) crc = Crc32.Update(crc, buffer.AsSpan(0, read));
+            if (input.Length != size) throw Fail(ZipWriterFailure.Unwritable);
+            var entry = new Entry(nameBytes, crc, (uint)size, (uint)_offset);
+            WriteHeader(entry);
+            input.Seek(0, SeekOrigin.Begin);
+            long copied = 0;
+            for (int read; (read = input.Read(buffer)) > 0;)
+            {
+                copied += read;
+                if (copied > size) throw Fail(ZipWriterFailure.Unwritable);
+                Write(buffer.AsSpan(0, read));
+            }
+            if (copied != size) throw Fail(ZipWriterFailure.Unwritable);
+            _entries.Add(entry);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             throw Fail(ZipWriterFailure.Unwritable);
         }
-        Add(name, data);
     }
 
     public void Add(string name, ReadOnlySpan<byte> data)
     {
         var nameBytes = Encoding.UTF8.GetBytes(name);
-        // This entry, and the directory record and end record that will follow it, must fit.
-        var end = _offset + 30 + nameBytes.Length + data.Length;
+        Reserve(nameBytes, data.Length);
+        var entry = new Entry(nameBytes, Crc32.Checksum(data), (uint)data.Length, (uint)_offset);
+        WriteHeader(entry);
+        Write(data);
+        _entries.Add(entry);
+    }
+
+    /// <summary>Fails with <see cref="ZipWriterFailure.TooLarge"/> unless this entry, and the directory and end records after it, fit.</summary>
+    void Reserve(byte[] nameBytes, long size)
+    {
+        var end = _offset + 30 + nameBytes.Length + size;
         var directory = _entries.Sum(e => 46L + e.Name.Length) + 46 + nameBytes.Length;
         if (_entries.Count + 1 >= 0xFFFF || nameBytes.Length > 0xFFFF || end + directory + 22 > _limit)
             throw Fail(ZipWriterFailure.TooLarge);
-        var entry = new Entry(nameBytes, Crc32.Checksum(data), (uint)data.Length, (uint)_offset);
+    }
+
+    void WriteHeader(Entry entry)
+    {
         var header = new Bytes();
         header.U32(0x0403_4B50).U16(20).U16(0x0800).U16(0).U16(0).U16(0)
             .U32(entry.Crc).U32(entry.Size).U32(entry.Size)
-            .U16((ushort)nameBytes.Length).U16(0).Raw(nameBytes);
+            .U16((ushort)entry.Name.Length).U16(0).Raw(entry.Name);
         Write(header.ToArray());
-        Write(data);
-        _entries.Add(entry);
     }
 
     /// <summary>Writes the directory, closes the file, and leaves it complete.</summary>
