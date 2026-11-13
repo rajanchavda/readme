@@ -65,10 +65,15 @@ const forwardInput = target => {
         type: 'key', key: event.key, code: event.code, repeat: event.repeat,
         ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey, meta: event.metaKey,
     }))
-    target.addEventListener('wheel', event => postToApp({
-        type: 'wheel', deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode,
-        ctrl: event.ctrlKey,
-    }), { passive: true })
+    // The wheel would otherwise scroll foliate's paginated container, which it takes as a move. The
+    // app decides what a wheel or a swipe does, as the Mac app's scroll monitor does there.
+    target.addEventListener('wheel', event => {
+        event.preventDefault()
+        postToApp({
+            type: 'wheel', deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode,
+            ctrl: event.ctrlKey,
+        })
+    }, { passive: false })
 }
 forwardInput(document)
 
