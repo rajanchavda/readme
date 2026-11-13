@@ -64,8 +64,9 @@ public static class SpreadLayout
 
     /// <summary>
     /// Width a character takes in a rendered line, as a share of the font size. The Mac's values were
-    /// calibrated in WebKit; they must be checked again in Chromium (phase 2, LineLengthTests).
-    /// Fraunces has no calibration yet and borrows New York's 0.448 until it's measured.
+    /// calibrated in WebKit, and hold in Chromium: measured as the Mac's LineLengthTests do (a 1600 by
+    /// 900 view), Regular gives 51.3, 50.9 and 50.8 characters a line for EB Garamond, Literata and
+    /// Fraunces, inside the Mac's 50 to 55 (Readme.exe --checks &lt;dir&gt; calibrate, Nov 13, 2026).
     /// </summary>
     public static double CharacterWidth(BookFont font) => font switch
     {
