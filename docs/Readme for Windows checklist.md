@@ -12,10 +12,10 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** 2 next. Phases 0 and 1 are committed, apart from the items that need the Mac
-- **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed
-- **Last thing done:** phases 0 and 1 committed (Nov 13, 2026): the spike in `windows/Spike/`, `Readme.Core` and its 92 tests, the golden files, and `.gitattributes`. See **Spike findings** and **Phase 1 findings**
-- **Next step:** phase 2, starting with `BookScheme.cs` and `BookWebView.cs` rebuilt from the spike. The Mac items left open in phases 0 and 1 (Swift tests, the golden `.readmelibrary`) wait until the Windows app is ready to test against the Mac
+- **Phase:** 3 next. Phases 0 to 2 are done on Windows, apart from the items that need the Mac
+- **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed (phase 2 is on it too)
+- **Last thing done:** phase 2 (Nov 13, 2026): `Readme.App`, a WinUI 3 reader that opens at the saved place, turns, restyles, goes full screen, and keeps the place and the window across a quit. See **Phase 2 findings**. Before that, phases 0 and 1: see **Spike findings** and **Phase 1 findings**
+- **Next step:** phase 3, the library shelf, replacing the stand-in book list. The Mac items left open (Swift tests, the golden `.readmelibrary`) wait until the Windows app is ready to test against the Mac
 - **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites
@@ -116,21 +116,37 @@ Everything above except the `.readmelibrary` golden file was built on Windows on
 
 ## Phase 2: Reader basics
 
-- [ ] `BookScheme.cs` and `BookWebView.cs` rebuilt properly from the spike
-- [ ] `App.xaml.cs`, `AppCoordinator.cs`, `LaunchRoute.cs`, `BundledFonts`
-- [ ] `ReaderPage` with root grid (desk), spine shadow
-- [ ] `ReaderCommand.cs` with Windows key mapping; keys from the page plus `KeyboardAccelerator` backup
-- [ ] `ReaderSettings.cs` saved to `settings.json`
-- [ ] `ReadingCss.cs`; WebKit workarounds re-checked under Chromium (hyphenation, long words, wide tables)
-- [ ] `SpreadLayout.cs`, `BookFrame.cs`, `PlaceKeeper.cs`
-- [ ] Page turns with slide or fade
-- [ ] Themes, fonts (Fraunces in place of New York), text size, line width
-- [ ] Resume position; stores flushed on close
-- [ ] Full screen (F11)
-- [ ] One-page layout for narrow windows
-- [ ] Reduce-motion setting
-- [ ] Window size and position remembered
-- [ ] **Done when:** read a whole book, quit, reopen on the same page
+- [x] `BookScheme.cs` and `BookWebView.cs` rebuilt properly from the spike
+- [ ] `App.xaml.cs`, `AppCoordinator.cs`, `LaunchRoute.cs`, `BundledFonts`. **All but `BundledFonts`:** the reader's fonts reach the page through the book scheme; registering them for XAML is only needed for the generated covers, so it moves to phase 3
+- [x] `ReaderPage` with root grid (desk), spine shadow (`ReaderView.cs`)
+- [x] `ReaderCommand.cs` with Windows key mapping; keys from the page plus `KeyboardAccelerator` backup. The backup is a `KeyDown` handler on the window content, using the same mapping; it ignores keys while the page has the focus, since the page passes those on
+- [x] `ReaderSettings.cs` saved to `settings.json`
+- [x] `ReadingCss.cs`; WebKit workarounds re-checked under Chromium (hyphenation, long words, wide tables). Long words and wide content stay in their columns; Chromium doesn't hyphenate (see findings)
+- [x] `SpreadLayout.cs`, `BookFrame.cs`, `PlaceKeeper.cs`
+- [x] Page turns with slide or fade. foliate's own 300 ms slide, switched on from C#; the book fades in on open, and restyles crossfade from a snapshot
+- [x] Themes, fonts (Fraunces in place of New York), text size, line width. Chosen from an "Aa" menu until the phase 4 toolbar
+- [x] Resume position; stores flushed on close
+- [x] Full screen (F11)
+- [x] One-page layout for narrow windows
+- [ ] Reduce-motion setting. **Built, not yet seen working:** follows Windows' "Animation effects" (`UISettings.AnimationsEnabled`), turning off the slide, fades and crossfade. Check by switching that setting off
+- [x] Window size and position remembered
+- [x] **Done when:** read a whole book, quit, reopen on the same page. `--checks <dir> whole` turns through all 449 pages of `long.epub` (479 turns), and `resume` reopens on the place saved
+
+Built on Windows, Nov 13, 2026. `windows/Readme.App` is the app: run `bin\x64\Debug\…\win-x64\Readme.exe`, optionally with an `.epub` path to open. It isn't in `Readme.slnx` yet, since `dotnet test` on the solution would then need a Windows runtime identifier; build it with `dotnet build windows/Readme.App -p:Platform=x64 -r win-x64`. `Readme.Core` gained the phase 2 logic, and `dotnet test windows/Readme.slnx` now runs 129 tests.
+
+### Phase 2 findings
+
+- **Self-checks drive the real app.** `Readme.exe --checks <dir> read <book>` opens a book, sends real key presses into the page through the DevTools protocol, changes theme, font and size, narrows the window, goes in and out of full screen, and closes the way the close button does. `--checks <dir> resume` launches as usual and records where the book reopened, `whole <book>` reads a book from the first page to the last, and `calibrate <long> <wide>` measures line lengths. Each writes JSON and window screenshots. Set `README_DATA_DIR` to a scratch folder, so the reader's own library and settings are never touched.
+- **An async trap in the restyle queue.** Before a book opens, a restyle has nothing to wait for, so it finished before it was stored, and the finished task stayed stored: every later restyle was skipped, and since the reader then always counted as "laying out", no place was ever saved. Fixed with a yield at the start; the self-check caught it.
+- **The mouse wheel scrolled foliate's container**, which foliate took as a move. On Mac the app's scroll monitor swallows the wheel before WebKit sees it; here `bridge.js`'s Windows-only wheel listener cancels it, and the wheel does nothing, as decided.
+- **Turns queued without end** when presses came faster than a turn takes (about 450 ms with foliate's slide), so the book trailed the reader and queued calls timed out. Now one turn may wait behind the one under way, and further presses are dropped, as are a held key's repeats. Phase 7's rapid-turn handling replaces this.
+- **`Window.Close()` doesn't raise `AppWindow.Closing`**, so it would skip keeping the place and the window. Only a real close does (the close button, Alt+F4, or the `WM_CLOSE` the self-check sends).
+- **Reopening can show the place on the facing page.** foliate pages by column: turning backwards from the end of a chapter with an odd number of columns aligns the spreads a column off from a fresh open, so a place that began the left page can reopen on the right page of the spread before. The place is on screen either way, and this is foliate's own behaviour, so the Mac does the same.
+- **Line lengths hold in Chromium.** Measured as the Mac's LineLengthTests do (a 1600 by 900 view), Regular sets 51.3, 50.9 and 50.8 characters a line for EB Garamond, Literata and Fraunces, inside the Mac's 50 to 55, with Narrow and Wide more than 3 either side. So Fraunces keeps 0.448, now measured. In the app's normal 980 px book, lines run a few characters shorter than the targets on both platforms, since the bridge's column maths was calibrated at 1600.
+- **Chromium doesn't hyphenate here.** `hyphens: auto` is applied, but WebView2 has no hyphenation dictionaries, so justified lines are a little looser than on Mac. Long words still break inside the column, and the wide-content fixture shows nothing running out of its column on any page.
+- **Wider fonts drop to one page sooner.** At the default window, Fraunces and Literata show one page, as New York does on Mac, since two of their columns don't fit in 980 px.
+- **Unpackaged for now.** The app runs straight from `dotnet build`; MSIX packaging is phase 6. The library is in `Documents\Readme`; settings, `window.json` and WebView2's data are in `%LOCALAPPDATA%\Readme`.
+- **Until phase 3 there's no shelf.** The library is a plain list of books with an Open button (Ctrl+O); a book can also be opened by passing its path on the command line. Ctrl+L shows the list.
 
 ## Phase 3: Library shelf
 
