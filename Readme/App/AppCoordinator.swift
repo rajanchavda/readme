@@ -119,8 +119,6 @@ final class AppCoordinator {
             library: library, importer: importer, drops: drops, selection: selection, search: search,
             onOpen: { [weak self] book in
                 guard let self else { return }
-                // The shelf is whole again when the reader comes back to it.
-                self.search.close()
                 Task { await self.open(book) }
             },
             onExport: { [weak self] books in
@@ -135,7 +133,12 @@ final class AppCoordinator {
         reader.setLibrary(shelf)
         reader.onShowLibrary = { [weak self] in self?.showLibrary() }
         reader.onRead = { [weak self] id, location in self?.marker.read(id: id, location: location) }
-        reader.onShowingLibraryChange = { [weak self] showing in self?.state.isShowingLibrary = showing }
+        reader.onShowingLibraryChange = { [weak self] showing in
+            guard let self else { return }
+            self.state.isShowingLibrary = showing
+            // However a book was opened, the shelf is whole again when the reader comes back to it.
+            if !showing { self.search.close() }
+        }
         reader.onMarkerChange = { [weak self] has in self?.state.hasMarker = has }
         reader.onLibraryEscape = { [weak self] in
             guard let self else { return }

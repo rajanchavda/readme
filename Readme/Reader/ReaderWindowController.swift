@@ -636,6 +636,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         guard isShowingLibrary else { return }
         isShowingLibrary = false
         onShowingLibraryChange?(false)
+        // A field on the shelf mustn't keep the keyboard, or the reader's keys would type into it.
+        if let window, let host = libraryHost, (window.firstResponder as? NSView)?.isDescendant(of: host) == true {
+            window.makeFirstResponder(nil)
+        }
         showTrafficLights(isFullscreen, animated: animated)
         guard let host = libraryHost else { return }
         fade(host, to: 0, animated: animated) { [weak self] in

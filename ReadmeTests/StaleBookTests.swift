@@ -232,6 +232,42 @@ func spreadImage() throws -> CGImage {
         #expect(!coordinator.isShowingLibrary)
     }
 
+    @Test func openingABookAnyWayClearsTheShelfSearch() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let positions = PositionStore(directory: folder.appendingPathComponent("Positions", isDirectory: true))
+        let library = LibraryStore(directory: folder, positions: positions)
+        let book = try await shelve("long.epub", in: library)
+        let coordinator = AppCoordinator(library: library, positions: positions, defaults: scratchDefaults())
+        defer { coordinator.reader.window?.close() }
+        coordinator.reader.window?.setFrameAutosaveName("")
+        coordinator.showLibrary()
+        coordinator.search.open()
+        coordinator.search.query = "nothing like it"
+
+        // As ⌘O, the Dock and launching do, not by a click on the shelf.
+        await coordinator.open(book)
+        #expect(coordinator.search.query == "")
+        #expect(!coordinator.search.isOpen)
+    }
+
+    @Test func puttingTheLibraryAwayTakesTheKeyboardFromIt() throws {
+        let reader = ReaderWindowController(
+            defaults: scratchDefaults(), positions: PositionStore(directory: try libraryFolder()), library: nil)
+        defer { reader.window?.close() }
+        let shelf = NSView()
+        let field = NSTextField()
+        shelf.addSubview(field)
+        reader.setLibrary(shelf)
+        reader.showLibrary(animated: false)
+        let window = try #require(reader.window)
+        #expect(window.makeFirstResponder(field))
+        #expect((window.firstResponder as? NSView)?.isDescendant(of: shelf) == true)
+
+        reader.showBook(animated: false)
+        #expect((window.firstResponder as? NSView)?.isDescendant(of: shelf) != true)
+    }
+
     @Test func removingTheOpenBookClosesIt() async throws {
         let folder = try libraryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
