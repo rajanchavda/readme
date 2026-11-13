@@ -3,6 +3,12 @@
 A quiet EPUB reader for the Mac. Books open as a two-page spread that turns with a page curl,
 set in a proper book typeface, with highlights, a page marker and search.
 
+![Reading in Readme with page curl](docs/screenshots/reading-page-turn.png)
+
+| Library shelf | Night theme |
+|:---:|:---:|
+| ![Library shelf](docs/screenshots/library-shelf.png) | ![Night theme with highlights](docs/screenshots/night-theme.png) |
+
 ## Features
 
 - **Library shelf.** Drag EPUB files onto the shelf, or onto Readme's icon in the Dock. Books
