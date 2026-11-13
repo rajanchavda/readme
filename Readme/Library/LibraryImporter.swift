@@ -114,6 +114,8 @@ struct LibraryImporter {
         // Named as the shelf showed it there, not by the file or the staged copy's name.
         store.setDetails(id: id, title: contents.info.title, author: contents.info.author)
         store.applyImported(id: id, addedAt: contents.info.addedAt, lastReadAt: contents.info.lastReadAt, location: contents.position)
+        // Only a book new here takes the bundle's pin: how this shelf is arranged is this Mac's own.
+        if let pinnedAt = contents.info.pinnedAt { store.restorePin(id: id, at: pinnedAt) }
         await store.highlights.merge(contents.highlights, bookID: id)
         if let marker = contents.marker { await store.markers.setIfNone(marker, bookID: id) }
         if let position = contents.position, ImportMerge.isFurther(position, than: await store.positions.location(bookID: id)) {

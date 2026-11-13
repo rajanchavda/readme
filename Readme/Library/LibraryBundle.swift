@@ -22,6 +22,8 @@ struct BundledBook: Codable, Equatable, Sendable {
     var author: String?
     var addedAt: Date
     var lastReadAt: Date?
+    /// When it was pinned to the front of the shelf. Bundles from before pins have none.
+    var pinnedAt: Date? = nil
 }
 
 /// One book to put in a bundle.

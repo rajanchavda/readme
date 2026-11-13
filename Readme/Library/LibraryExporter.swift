@@ -33,7 +33,9 @@ struct LibraryExporter {
             }
             items.append(BundleItem(
                 id: book.id,
-                info: BundledBook(title: book.title, author: book.author, addedAt: book.addedAt, lastReadAt: book.lastReadAt),
+                info: BundledBook(
+                    title: book.title, author: book.author, addedAt: book.addedAt, lastReadAt: book.lastReadAt,
+                    pinnedAt: book.pinnedAt),
                 epub: file,
                 highlights: await store.highlights.highlights(bookID: book.id),
                 marker: await store.markers.marker(bookID: book.id),
