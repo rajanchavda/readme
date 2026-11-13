@@ -84,6 +84,8 @@ final class AppCoordinator {
     let reader: ReaderWindowController
     /// The books picked out on the shelf.
     let selection = ShelfSelection()
+    /// What's being looked for on the shelf.
+    let search = ShelfSearch()
     let exporter: LibraryExporter
     let libraryImporter: LibraryImporter
     /// The books an import under way is combining into, which mustn't be opened until it's done.
@@ -114,7 +116,7 @@ final class AppCoordinator {
         libraryImporter = LibraryImporter(store: library, importer: importer)
         reader = ReaderWindowController(defaults: defaults, positions: positions, library: library)
         let shelf = NSHostingView(rootView: LibraryView(
-            library: library, importer: importer, drops: drops, selection: selection,
+            library: library, importer: importer, drops: drops, selection: selection, search: search,
             onOpen: { [weak self] book in
                 guard let self else { return }
                 Task { await self.open(book) }
@@ -131,9 +133,18 @@ final class AppCoordinator {
         reader.setLibrary(shelf)
         reader.onShowLibrary = { [weak self] in self?.showLibrary() }
         reader.onRead = { [weak self] id, location in self?.marker.read(id: id, location: location) }
-        reader.onShowingLibraryChange = { [weak self] showing in self?.state.isShowingLibrary = showing }
+        reader.onShowingLibraryChange = { [weak self] showing in
+            guard let self else { return }
+            self.state.isShowingLibrary = showing
+            // However a book was opened, the shelf is whole again when the reader comes back to it.
+            if !showing { self.search.close() }
+        }
         reader.onMarkerChange = { [weak self] has in self?.state.hasMarker = has }
-        reader.onLibraryEscape = { [weak self] in self?.selection.clear() }
+        reader.onLibraryEscape = { [weak self] in
+            guard let self else { return }
+            ShelfSearch.escape(self.search) { self.selection.clear() }
+        }
+        reader.onLibraryFind = { [weak self] in self?.search.open() }
         state.hasBooks = !library.books.isEmpty
         watchingBooks = library.$books.sink { [weak state] books in state?.hasBooks = !books.isEmpty }
         library.onRemove = { [weak self] id in

@@ -44,4 +44,12 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         let panel = ShortcutsPanel(frame: NSRect(x: 0, y: 0, width: ShortcutsPanel.width, height: 400))
         #expect(panel.shownKeys == ShortcutsHelp.sections.flatMap(\.rows).map(\.keys))
     }
+
+    @Test func libraryKeysAreListed() throws {
+        let library = try #require(ShortcutsHelp.sections.first { $0.title == "Library" })
+        #expect(library.rows == [
+            ShortcutsHelp.Row(keys: ["⌘F"], description: "Search the library"),
+            ShortcutsHelp.Row(keys: ["Esc"], description: "Clear the search"),
+        ])
+    }
 }

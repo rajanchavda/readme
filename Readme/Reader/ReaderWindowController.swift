@@ -33,8 +33,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     var onRead: ((_ bookID: String, ReaderLocation) -> Void)?
     /// Hears that a library book couldn't be opened, as when its file is no longer a book.
     var onOpenFailed: ((Book) -> Void)?
-    /// Esc pressed over the library, which puts down the books picked out on the shelf.
+    /// Esc pressed over the library, which clears a search or puts down the books picked out on the shelf.
     var onLibraryEscape: (() -> Void)?
+    /// ⌘F pressed over the library, which opens the shelf's search.
+    var onLibraryFind: (() -> Void)?
     /// Hears whether the open book has a reading marker, for the menu.
     var onMarkerChange: ((Bool) -> Void)?
     /// Hears the library being shown, or put away.
@@ -634,6 +636,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         guard isShowingLibrary else { return }
         isShowingLibrary = false
         onShowingLibraryChange?(false)
+        // A field on the shelf mustn't keep the keyboard, or the reader's keys would type into it.
+        if let window, let host = libraryHost, (window.firstResponder as? NSView)?.isDescendant(of: host) == true {
+            window.makeFirstResponder(nil)
+        }
         showTrafficLights(isFullscreen, animated: animated)
         guard let host = libraryHost else { return }
         fade(host, to: 0, animated: animated) { [weak self] in
@@ -1030,6 +1036,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             if event.keyCode == 53, isShowingLibrary, event.window === window, window?.attachedSheet == nil,
                let onLibraryEscape {
                 onLibraryEscape()
+                return true
+            }
+            if isShowingLibrary, event.window === window, window?.attachedSheet == nil,
+               event.charactersIgnoringModifiers?.lowercased() == "f",
+               event.modifierFlags.intersection(KeyShortcut.relevantModifiers) == [.command], let onLibraryFind {
+                onLibraryFind()
                 return true
             }
             return false

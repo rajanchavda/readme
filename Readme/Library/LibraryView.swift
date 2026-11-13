@@ -10,6 +10,8 @@ struct LibraryView: View {
     let onExport: ([Book]) -> Void
     /// Library bundles dropped on the shelf, which are imported rather than added as books.
     let onBundles: ([URL]) -> Void
+    /// What's being looked for on the shelf.
+    @ObservedObject var search: ShelfSearch
 
     @StateObject private var drops: ShelfDrops
     @State private var targeted = false
@@ -23,7 +25,7 @@ struct LibraryView: View {
     /// With notices the app can add to, as it does when a book on the shelf won't open.
     init(
         library: LibraryStore, importer: BookImporter, drops: ShelfDrops, selection: ShelfSelection = ShelfSelection(),
-        onOpen: @escaping (Book) -> Void, onExport: @escaping ([Book]) -> Void = { _ in },
+        search: ShelfSearch = ShelfSearch(), onOpen: @escaping (Book) -> Void, onExport: @escaping ([Book]) -> Void = { _ in },
         onBundles: @escaping ([URL]) -> Void = { _ in }
     ) {
         self.library = library
@@ -32,6 +34,7 @@ struct LibraryView: View {
         self.selection = selection
         self.onExport = onExport
         self.onBundles = onBundles
+        self.search = search
         _drops = StateObject(wrappedValue: drops)
     }
 
@@ -43,6 +46,7 @@ struct LibraryView: View {
         selection = ShelfSelection()
         onExport = { _ in }
         onBundles = { _ in }
+        search = ShelfSearch()
         let drops = ShelfDrops(importAll: { await importer.importAll($0) })
         if !previewing.isEmpty { drops.showForPreview(previewing) }
         _drops = StateObject(wrappedValue: drops)
@@ -54,7 +58,8 @@ struct LibraryView: View {
             // the window's edge. The scroll view is made that much wider and the excess is clipped away.
             ScrollView(.vertical) {
                 Shelves(
-                    library: library, size: geometry.size, animation: settle, selection: selection, onOpen: onOpen,
+                    library: library, query: search.query, size: geometry.size, animation: settle, selection: selection,
+                    onOpen: onOpen,
                     onRemove: { library.remove(id: $0.id) }, onExport: onExport
                 )
                 .frame(minHeight: geometry.size.height, alignment: .top)
@@ -73,6 +78,24 @@ struct LibraryView: View {
                 .padding(8)
                 .allowsHitTesting(false)
                 .animation(.easeOut(duration: 0.15), value: targeted)
+        }
+        .overlay(alignment: .top) {
+            if search.isActive && Shelves.found(library, query: search.query).isEmpty {
+                Text("No books match \u{201C}\(search.query.trimmingCharacters(in: .whitespaces))\u{201D}")
+                    .font(ShelfStyle.body(16, italic: true))
+                    .foregroundStyle(ShelfStyle.text)
+                    .padding(.top, 80)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            ShelfSearchField(search: search) {
+                let found = Shelves.found(library, query: search.query)
+                if found.count == 1 { onOpen(found[0]) }
+            }
+            .padding(.top, 12)
+            .padding(.trailing, 20)
         }
         .overlay(alignment: .bottom) {
             NoticeView(lines: drops.lines, adding: drops.adding, working: drops.working)
@@ -120,6 +143,8 @@ private struct ShelfRowBooks: Identifiable {
 /// The shelves themselves, laid out for a window of `size`.
 private struct Shelves: View {
     @ObservedObject var library: LibraryStore
+    /// What's typed in the search field; blank shows every book.
+    let query: String
     let size: CGSize
     let animation: Animation?
     let selection: ShelfSelection
@@ -128,12 +153,18 @@ private struct Shelves: View {
     let onExport: ([Book]) -> Void
 
     var body: some View {
-        let rows = ShelfLayout.rows(library.others, width: size.width)
+        let others = ShelfSearch.filter(library.others, query: query)
+        let rows = ShelfLayout.rows(others, width: size.width)
         let empties = max(0, ShelfLayout.emptyRowCount(height: size.height) - rows.count)
+        let current = library.current
+        // While searching, the current book's shelf stays only if that book is one it finds.
+        let showsCurrent = current.map { ShelfSearch.matches($0, query: query) } ?? !Self.isSearching(query)
         LazyVStack(spacing: ShelfLayout.shelfGap) {
-            CurrentBookShelf(
-                book: library.current, library: library, onOpen: onOpen, onRemove: onRemove, selection: selection,
-                onExport: onExport)
+            if showsCurrent {
+                CurrentBookShelf(
+                    book: current, library: library, onOpen: onOpen, onRemove: onRemove, selection: selection,
+                    onExport: onExport)
+            }
             // Keyed by the book each shelf starts with, so a lazy stack notices shelves that appear or
             // change after it first showed.
             ForEach(rows.map(ShelfRowBooks.init)) { row in
@@ -152,8 +183,19 @@ private struct Shelves: View {
         }
         .padding(.bottom, 26)
         .frame(maxWidth: .infinity)
-        // On the shelf's order too, so a book pinned or unpinned glides to its new place.
-        .animation(animation, value: library.books.map(\.id) + library.others.map(\.id))
+        // On the shelf's order too, so a book pinned or unpinned glides to its new place, and on what a
+        // search finds, so books step aside and come back as it changes.
+        .animation(animation, value: library.books.map(\.id) + others.map(\.id) + [showsCurrent ? "current" : ""])
+    }
+
+    /// The books a search finds, the current one first, in the shelf's order.
+    static func found(_ library: LibraryStore, query: String) -> [Book] {
+        let current = library.current.map { [$0] } ?? []
+        return ShelfSearch.filter(current + library.others, query: query)
+    }
+
+    private static func isSearching(_ query: String) -> Bool {
+        query.contains { !$0.isWhitespace }
     }
 }
 
