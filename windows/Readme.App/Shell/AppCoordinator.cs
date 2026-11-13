@@ -112,6 +112,9 @@ sealed class AppCoordinator
         _content.IsTabStop = true;
         _window.Content = _content;
         _window.Title = "Readme";
+        // The desk and the shelf are dark in every theme, so the title bar is too, whatever Windows' mode.
+        _window.AppWindow.TitleBar.PreferredTheme = TitleBarTheme.Dark;
+        _window.AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Readme.ico"));
         _window.AppWindow.Closing += OnClosing;
         _window.AppWindow.Changed += (_, change) =>
         {
@@ -120,7 +123,36 @@ sealed class AppCoordinator
                 _restoredBounds = new RectInt32(_window.AppWindow.Position.X, _window.AppWindow.Position.Y, _window.AppWindow.Size.Width, _window.AppWindow.Size.Height);
         };
         _window.Closed += (_, _) => _exit();
+        Program.Activated += paths => _window.DispatcherQueue.TryEnqueue(() => _ = OpenFromOutsideAsync(paths));
     }
+
+    /// <summary>
+    /// A later launch, handed on to this one: a book or library double-clicked, or Readme opened
+    /// again. The window comes to the front; books are added and the first opened, bundles imported,
+    /// as when they're given at launch. Anything else on the command line is passed over.
+    /// </summary>
+    async Task OpenFromOutsideAsync(IReadOnlyList<string> paths)
+    {
+        BringToFront();
+        var (books, bundles) = LibraryView.Split(paths.Where(p => File.Exists(p)
+            && (p.EndsWith(".epub", StringComparison.OrdinalIgnoreCase) || p.EndsWith(LibraryBundle.Extension, StringComparison.OrdinalIgnoreCase))));
+        if (bundles.Count > 0) await ImportBundlesAsync(bundles);
+        if (books.Count > 0) await ImportAndOpenAsync(books);
+        Redirected?.Invoke(paths);
+    }
+
+    /// <summary>For the self-checks: a launch was handed on here, and dealt with.</summary>
+    internal event Action<IReadOnlyList<string>>? Redirected;
+
+    void BringToFront()
+    {
+        if (_window.AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter) presenter.Restore();
+        _window.Activate();
+        SetForegroundWindow(Hwnd);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool SetForegroundWindow(nint hwnd);
 
     public void Launch()
     {

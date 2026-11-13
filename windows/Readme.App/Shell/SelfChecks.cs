@@ -42,6 +42,7 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
             else if (mode == "shelf") await ShelfAsync(rest[1]);
             else if (mode == "tools") await ToolsAsync(rest[1]);
             else if (mode == "bundles") await BundlesAsync(rest[1]);
+            else if (mode == "instance") await InstanceAsync(rest[1]);
             else await ReadAsync(rest.ElementAtOrDefault(1) ?? throw new ArgumentException("read needs a book"));
         }
         catch (Exception error)
@@ -780,6 +781,59 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
         return null;
     }
 
+    /// <summary>
+    /// The phase 6 "done when", from a command line: a second launch with a book, a library and
+    /// nothing at all, each handed to this app, which is still the only one running.
+    /// </summary>
+    async Task InstanceAsync(string fixtures)
+    {
+        app.ShowLibrary(animated: false);
+        await Task.Delay(800);
+        var exe = Environment.ProcessPath!;
+        async Task<object> Launch(string? file)
+        {
+            var handed = new TaskCompletionSource<IReadOnlyList<string>>();
+            void Done(IReadOnlyList<string> paths) => handed.TrySetResult(paths);
+            app.Redirected += Done;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            using var second = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe) { ArgumentList = { }, UseShellExecute = false }.With(file));
+            var exited = second!.WaitForExit(20000);
+            var exitedAfter = clock.ElapsedMilliseconds;
+            var paths = await Task.WhenAny(handed.Task, Task.Delay(20000)) == handed.Task ? handed.Task.Result : null;
+            app.Redirected -= Done;
+            await Task.Delay(1500);
+            return new
+            {
+                exited,
+                exitCode = exited ? second.ExitCode : (int?)null,
+                exitedAfter,
+                handed = paths,
+                running = System.Diagnostics.Process.GetProcessesByName("Readme").Count(p => { try { return p.MainModule?.FileName == exe; } catch { return false; } }),
+                showingLibrary = app.IsShowingLibrary,
+                open = reader.Record?.Title,
+                at = Where(),
+                books = library.Books.Select(b => b.Title).ToList(),
+                lines = app.Shelf.NoticeLines(),
+            };
+        }
+        Record("withBook", await Launch(Path.Combine(fixtures, "long.epub")));
+        await Shot("i1-book-handed-on");
+        Record("withBundle", await Launch(Path.Combine(fixtures, "Golden", "windows.readmelibrary")));
+        await Shot("i2-bundle-handed-on");
+        Record("withNothing", await Launch(null));
+        Record("withSpaces", await LaunchCopy(fixtures, Launch));
+    }
+
+    /// <summary>A book whose path has spaces in it, which the command line must keep whole.</summary>
+    async Task<object> LaunchCopy(string fixtures, Func<string?, Task<object>> launch)
+    {
+        var folder = Path.Combine(outDir, "a folder with spaces");
+        Directory.CreateDirectory(folder);
+        var copy = Path.Combine(folder, "search book.epub");
+        File.Copy(Path.Combine(fixtures, "search.epub"), copy, overwrite: true);
+        return await launch(copy);
+    }
+
     object? Where() => reader.Location is { } l
         ? new { l.Page, l.PageCount, l.Cfi, l.ChapterTitle, l.IsAtStart, l.IsAtEnd, l.Fraction, columns = reader.Book.Columns }
         : null;
@@ -872,4 +926,14 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
     [DllImport("gdi32.dll")] static extern bool DeleteObject(nint obj);
     [DllImport("gdi32.dll")] static extern bool DeleteDC(nint dc);
     [DllImport("gdi32.dll")] static extern int GetDIBits(nint dc, nint bitmap, uint start, uint lines, byte[] bits, ref BITMAPINFOHEADER info, uint usage);
+}
+
+static class StartInfoExtensions
+{
+    /// <summary>The start info with <paramref name="argument"/> added, if there is one.</summary>
+    public static System.Diagnostics.ProcessStartInfo With(this System.Diagnostics.ProcessStartInfo info, string? argument)
+    {
+        if (argument != null) info.ArgumentList.Add(argument);
+        return info;
+    }
 }

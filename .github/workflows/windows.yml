@@ -1,0 +1,75 @@
+name: Windows
+
+# Runs only when asked, never on its own, like the Mac's Tests:
+#   - Actions tab > Windows > "Run workflow", choosing the branch, or
+#   - adding the label "run-tests" to a pull request (remove and add it again to rerun).
+#
+# Runs the Core tests, then reads a book in the real app (WebView2 comes with the runner's Edge),
+# then builds the MSIX packages for x64 and ARM64 and keeps them as artifacts. They're unsigned:
+# the Store signs what it's given. Install one for testing with Developer Mode on; see windows/README.md.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Test and Package
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-tests'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: windows/global.json
+
+      - name: Core tests
+        run: dotnet test windows/Readme.Core.Tests/Readme.Core.Tests.csproj
+
+      - name: Build the app
+        working-directory: windows/Readme.App
+        run: dotnet build -p:Platform=x64 -r win-x64
+
+      - name: Read a book in the app
+        working-directory: windows/Readme.App
+        run: |
+          $out = "$env:RUNNER_TEMP\checks"
+          $env:README_DATA_DIR = "$env:RUNNER_TEMP\data"
+          $exe = Get-ChildItem bin\x64\Debug -Recurse -Filter Readme.exe | Select-Object -First 1
+          $book = Resolve-Path ..\..\ReadmeTests\Fixtures\long.epub
+          $app = Start-Process $exe.FullName -ArgumentList '--checks', $out, 'read', $book -PassThru
+          if (-not $app.WaitForExit(300000)) { $app.Kill(); throw 'The app did not finish reading within 5 minutes' }
+          $result = Get-Content "$out\read.json" -Raw | ConvertFrom-Json
+          if ($result.error) { throw $result.error }
+          if (-not $result.opened -or -not $result.done) { throw 'The book did not open' }
+          "Opened on page $($result.atOpen.Page) of $($result.atOpen.PageCount), left on page $($result.final.Page)"
+
+      - name: Keep what the app saw
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: app-checks
+          path: ${{ runner.temp }}/checks
+          if-no-files-found: ignore
+
+      - name: Build the MSIX packages
+        working-directory: windows/Readme.App
+        run: |
+          dotnet build -c Release -p:Platform=x64 -r win-x64 -p:ReadmePackage=true
+          dotnet build -c Release -p:Platform=ARM64 -r win-arm64 -p:ReadmePackage=true
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: msix
+          path: windows/Readme.App/bin/Packages/**/*.msix
+          if-no-files-found: error
