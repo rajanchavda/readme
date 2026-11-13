@@ -12,10 +12,10 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** 3 built on Windows and passing its self-check (`--checks <dir> shelf <fixtures>`); boxes not yet ticked
+- **Phase:** 4 next. Phases 0 to 3 are done on Windows, apart from the items that need the Mac or a hand
 - **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed (phase 2 is on it too)
-- **Last thing done:** phase 2 (Nov 13, 2026): `Readme.App`, a WinUI 3 reader that opens at the saved place, turns, restyles, goes full screen, and keeps the place and the window across a quit. See **Phase 2 findings**. Before that, phases 0 and 1: see **Spike findings** and **Phase 1 findings**
-- **Next step:** finish phase 3: tick its boxes and write its findings (import moves failed until BookScheme opened files with FileShare.Delete; one hidden WebView2 reused for imports; generated covers drawn in XAML, not Win2D), and check by hand drag-and-drop, the right-click menu, Ctrl/Shift-click and the last-spread picture on relaunch. Then phase 4
+- **Last thing done:** phase 3 (Nov 13, 2026): the library shelf. See **Phase 3 findings**. Before that, phases 0 to 2: see their findings
+- **Next step:** phase 4, the reading tools. Still to try by hand: dragging books from File Explorer onto the shelf, and reduce motion (phase 2). The Mac items left open (Swift tests, the golden `.readmelibrary`) wait until the Windows app is ready to test against the Mac
 - **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites
@@ -117,7 +117,7 @@ Everything above except the `.readmelibrary` golden file was built on Windows on
 ## Phase 2: Reader basics
 
 - [x] `BookScheme.cs` and `BookWebView.cs` rebuilt properly from the spike
-- [ ] `App.xaml.cs`, `AppCoordinator.cs`, `LaunchRoute.cs`, `BundledFonts`. **All but `BundledFonts`:** the reader's fonts reach the page through the book scheme; registering them for XAML is only needed for the generated covers, so it moves to phase 3
+- [x] `App.xaml.cs`, `AppCoordinator.cs`, `LaunchRoute.cs`, `BundledFonts`. `BundledFonts` came with phase 3: XAML loads the bundled fonts from `ms-appx:///Web/fonts/…`, which works unpackaged too
 - [x] `ReaderPage` with root grid (desk), spine shadow (`ReaderView.cs`)
 - [x] `ReaderCommand.cs` with Windows key mapping; keys from the page plus `KeyboardAccelerator` backup. The backup is a `KeyDown` handler on the window content, using the same mapping; it ignores keys while the page has the focus, since the page passes those on
 - [x] `ReaderSettings.cs` saved to `settings.json`
@@ -150,18 +150,29 @@ Built on Windows, Nov 13, 2026. `windows/Readme.App` is the app: run `bin\x64\De
 
 ## Phase 3: Library shelf
 
-- [ ] `LibraryPage.xaml`, `CurrentBookShelf`, `ShelfRow`, `BookCover` controls
-- [ ] `ShelfLayout.cs`, `ShelfSelection.cs` (Ctrl and Shift)
-- [ ] File picker import
-- [ ] Drag-and-drop import (`DragOver`, `Drop`)
-- [ ] `BookImporter.cs` with hidden WebView2 check; cover extraction via `BitmapDecoder`
-- [ ] `GeneratedCover.cs` with Win2D (12 palettes, FNV-1a pick)
-- [ ] `LastSpreadCache.cs` placeholder
-- [ ] Remove book; right-click menu (Export arrives in phase 5)
-- [ ] Pin to Front and Unpin in the right-click menu, multi-selection titles as on Mac; ribbon on pinned covers in the marker colour; Narrator label ends ", pinned"
-- [ ] Shelf search: magnifier top-right, Ctrl+F opens it, Esc clears then falls through, filters in place, "No books match" line, Return opens a single match, cleared when a book opens
-- [ ] Import failure notices
-- [ ] **Done when:** import 5 books, see covers, open and switch between them
+- [x] `LibraryPage.xaml`, `CurrentBookShelf`, `ShelfRow`, `BookCover` controls. Built in code: `LibraryView.cs` (ledge, shelves, empty first-run ledge) and `BookCoverView.cs`
+- [x] `ShelfLayout.cs`, `ShelfSelection.cs` (Ctrl and Shift)
+- [x] File picker import. Ctrl+O; several files at once go to the shelf, one is opened
+- [ ] Drag-and-drop import (`DragOver`, `Drop`). **Built, not yet tried by hand:** it uses the same import as Ctrl+O, which is tested, but a real drag from File Explorer can't be driven from the self-checks
+- [x] `BookImporter.cs` with hidden WebView2 check; cover extraction via `BitmapDecoder`. The importer's flow is in `Readme.Core`, with the hidden view passed in; covers over 1200 px are scaled down
+- [x] `GeneratedCover.cs` (12 palettes, FNV-1a pick). Drawn in XAML rather than Win2D: one TextBlock a line, measured in the same fonts, so no extra package
+- [x] `LastSpreadCache.cs` placeholder
+- [x] Remove book; right-click menu (Export arrives in phase 5)
+- [x] Pin to Front and Unpin in the right-click menu, multi-selection titles as on Mac; ribbon on pinned covers in the marker colour; Narrator label ends ", pinned"
+- [x] Shelf search: magnifier top-right, Ctrl+F opens it, Esc clears then falls through, filters in place, "No books match" line, Return opens a single match, cleared when a book opens
+- [x] Import failure notices
+- [x] **Done when:** import 5 books, see covers, open and switch between them. `--checks <dir> shelf <fixtures>` imports five books and refuses two, opens one and reads, goes back with Ctrl+L, switches to another, then picks, pins, searches and removes
+
+Built on Windows, Nov 13, 2026. `Readme.Core` gained `BookImporter`, `ShelfSelection`, `GeneratedCover`, `ShelfText` and `LastSpreadCache`, with their Swift tests ported: `dotnet test windows/Readme.slnx` runs 162.
+
+### Phase 3 findings
+
+- **Import couldn't move the book it had just read.** WebView2 keeps a response's stream open for a while after reading it, and the book scheme opened files with `FileShare.Read`, so moving the staged copy into place failed and every import came back unreadable. The scheme now opens files with `FileShare.Delete` as well, which lets a file be moved or deleted while a stream is still open. Removing a book that's open relies on it too.
+- **One hidden view, reused.** Import opens each book in a WebView2 at opacity 0 behind everything, made once and kept, one book at a time, since closing a WebView2 straight after use crashed the app in the spike. Five books import in about 1.5 s.
+- **The last spread needs the real scale.** At launch the reader isn't in the window yet, so it read its scale as 1 and never matched a picture kept at 1.25. It now waits until it's laid out; the picture then shows within about 25 ms of launch, before the book opens.
+- **Generated covers match the Mac's colours.** FNV-1a over the id picks the same palette on both platforms (the Mac test's id gets palette 7 on both). The layout maths is in Core with the measuring passed in, so it's tested with a stand-in font, and the app measures in the real bundled fonts.
+- **Menus aren't in window screenshots.** WinUI 3 draws menus in their own popup window, which a window capture misses; the self-check reads the menu's items instead.
+- **Done by the self-check rather than by hand:** Ctrl and Shift selection go through the covers' own click logic with the modifiers given, since sending modifier keys to another window isn't reliable from inside the app. The rings, menu titles and plain-click behaviour all match the Mac's.
 
 ## Phase 4: Reading tools
 
