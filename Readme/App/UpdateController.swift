@@ -145,6 +145,17 @@ final class UpdateController {
     }
 }
 
+/// Runs an action, such as quitting, on a later turn of the main run loop, so that main-actor tasks can
+/// still run while it waits. `NSApp.terminate` waits in a nested run loop for the reply that
+/// `applicationShouldTerminate` sends from a main-actor task. Called from inside a main-actor task,
+/// that reply can never run, as the main actor is busy with the task doing the waiting, and the app hangs.
+enum QuitLater {
+    @MainActor
+    static func run(_ action: @escaping @MainActor () -> Void) {
+        RunLoop.main.perform { MainActor.assumeIsolated(action) }
+    }
+}
+
 /// Hands the update to Readme Updater, which sits inside the app, and quits so it can be replaced.
 /// The updater isn't sandboxed and Readme is, so it's started through Launch Services, which gives
 /// it its own (absent) sandbox instead of Readme's. It's given nothing: it finds the app it's in and
@@ -167,7 +178,7 @@ enum SelfUpdate {
                 if app == nil {
                     NSWorkspace.shared.open(release.page)
                 } else {
-                    NSApp.terminate(nil)
+                    QuitLater.run { NSApp.terminate(nil) }
                 }
             }
         }
