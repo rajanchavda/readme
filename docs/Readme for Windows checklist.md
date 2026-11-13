@@ -12,10 +12,10 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** 4 next. Phases 0 to 3 are done on Windows, apart from the items that need the Mac or a hand
+- **Phase:** 5 next. Phases 0 to 4 are done on Windows, apart from the items that need the Mac or a hand
 - **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed (phase 2 is on it too)
-- **Last thing done:** phase 3 (Nov 13, 2026): the library shelf. See **Phase 3 findings**. Before that, phases 0 to 2: see their findings
-- **Next step:** phase 4, the reading tools. Still to try by hand: dragging books from File Explorer onto the shelf, and reduce motion (phase 2). The Mac items left open (Swift tests, the golden `.readmelibrary`) wait until the Windows app is ready to test against the Mac
+- **Last thing done:** phase 4 (Nov 13, 2026): the reading tools. See **Phase 4 findings**. Before that, phases 0 to 3: see their findings
+- **Next step:** phase 5, export and import. Still to try by hand: dragging books from File Explorer onto the shelf (phase 3), reduce motion (phase 2), and Narrator over the reading tools (phase 4). The Mac items left open (Swift tests, which now cover two `bridge.js` changes, and the golden `.readmelibrary`) wait until the Windows app is ready to test against the Mac
 - **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites
@@ -176,15 +176,28 @@ Built on Windows, Nov 13, 2026. `Readme.Core` gained `BookImporter`, `ShelfSelec
 
 ## Phase 4: Reading tools
 
-- [ ] `ReaderToolbar` with auto-hide (`IdleTimer.cs`); cursor hiding
-- [ ] `TocSidebar`, `TocProgress.cs`
-- [ ] `GoToPageField`
-- [ ] `Search.cs`, `SearchBox`
-- [ ] `HighlightBar`, `HighlightsSidebar`
-- [ ] `MarkerRibbon`
-- [ ] `ShortcutsHelp.cs` (Windows key names), `ShortcutsPanel`; every shortcut listed in it, including the Library section (Ctrl+F, Esc)
-- [ ] Tooltips, Narrator labels, error sound
-- [ ] **Done when:** every row of the shortcut mapping table works
+- [x] `ReaderToolbar` with auto-hide (`IdleTimer.cs`); cursor hiding. The pointer moving over the page wakes it through a Windows-only `pointermove` message from `bridge.js`; in full screen the pointer hides with the toolbar
+- [x] `TocSidebar`, `TocProgress.cs`
+- [x] `GoToPageField`
+- [x] `Search.cs`, `SearchBox`
+- [x] `HighlightBar`, `HighlightsSidebar`
+- [x] `MarkerRibbon`
+- [x] `ShortcutsHelp.cs` (Windows key names), `ShortcutsPanel`; every shortcut listed in it, including the Library section (Ctrl+F, Esc). A Core test checks that every key the panel names does what its row says
+- [x] Tooltips, Narrator labels, error sound. Tooltips give the shortcut in brackets, Windows style. **Narrator itself not yet tried by hand:** the names are checked, not how it reads them
+- [x] **Done when:** every row of the shortcut mapping table works. `--checks <dir> tools <fixtures>` presses each row's keys in the page and checks what it did, then works each tool: contents, go to page, the marker, highlights, search, the shortcuts panel, full screen, the toolbar's buttons and the shelf's Ctrl+F and Esc
+
+Built on Windows, Nov 13, 2026. `Readme.Core` gained `ReadingTools.cs`: `IdleTimer`, `TocProgress`, `SearchResults`, `GoToPage`, `ChapterTimeLeft`, `ShortcutsHelp`, the tools' colours and the bar's and ribbon's placement, with their Swift tests ported: `dotnet test windows/Readme.slnx` runs 196.
+
+### Phase 4 findings
+
+- **WebView2 keeps the pointer to itself, like keys.** Moving the mouse over the page never reaches XAML, so the toolbar couldn't wake. `bridge.js` now posts a `pointer` message from the same Windows-only `forwardInput` that passes keys and the wheel on, a few times a second at most. A second change to `bridge.js` for the Mac build and tests to cover.
+- **Hiding the pointer in full screen is done in the page.** WinUI 3 has no blank cursor to set over a WebView2, so the toolbar going to sleep puts `cursor: none` into the reader's document and each chapter's frame, and the next pointer move takes it out again.
+- **The highlight bar, ribbon, sidebars and panels are XAML over the WebView2**, never in the page, as on Mac. They draw over it without trouble, as the cover crossfade in phase 2 already did.
+- **A list's own colours are the theme's ink, never the accent.** The contents and highlights use a ListView with its selection, hover and press brushes replaced and its selection pill turned off. Each opening makes a new list, so the colours are right from the start.
+- **A ListView can't take the keyboard until its rows exist.** The sidebars hand it over once the list has loaded, at low priority, so the arrows, Enter and Esc work straight away.
+- **Search keeps the keyboard in its field.** The rows are plain elements that never take focus, so a click picks a row rather than closing the box, as on Mac.
+- **Found along the way:** with no picture of the last spread to show at launch, the spine's shadow stayed hidden on the first spread until the first restyle. It's now placed again once the book has opened.
+- **Done by the self-check rather than by hand:** text is selected by pointing at the middle of the left-hand page, with the page's own selection reporting doing the rest; typing into the page field and search box sets their text directly. Keys go into the page through DevTools, except those meant for the sidebars, which aren't in the page; those go through the window's own key handling.
 
 ## Phase 5: Export and import
 
