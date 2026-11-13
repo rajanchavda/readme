@@ -12,64 +12,107 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** not started
-- **Branch:** none yet
-- **Last thing done:** plan written and reviewed (Nov 11, 2026)
-- **Next step:** settle the blocking decisions, then set up a Windows machine (prerequisites below)
-- **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows.
+- **Phase:** 2 next. Phases 0 and 1 are committed, apart from the items that need the Mac
+- **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed
+- **Last thing done:** phases 0 and 1 committed (Nov 13, 2026): the spike in `windows/Spike/`, `Readme.Core` and its 92 tests, the golden files, and `.gitattributes`. See **Spike findings** and **Phase 1 findings**
+- **Next step:** phase 2, starting with `BookScheme.cs` and `BookWebView.cs` rebuilt from the spike. The Mac items left open in phases 0 and 1 (Swift tests, the golden `.readmelibrary`) wait until the Windows app is ready to test against the Mac
+- **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites
 
-- [ ] Windows machine or VM (x64 or arm64) with Visual Studio 2022, the Windows App SDK workload and the WebView2 runtime
+- [x] Windows machine or VM (x64 or arm64) with Visual Studio 2026, the WinUI / Windows App SDK workload, the .NET 10 SDK (LTS) and the WebView2 runtime. Changed from VS 2022 on Nov 12, 2026: VS 2022 stops at .NET 9, and .NET 8 and 9 both leave support in Nov 2026
 - [ ] .NET SDK on the Mac too (`brew install --cask dotnet-sdk`), for working on `Readme.Core` here
-- [ ] Repo cloned on the Windows machine, and git line endings agreed (`.gitattributes`), so shared files in `Readme/Web/` and the fixtures don't get rewritten with CRLF
+- [x] Repo cloned on the Windows machine, and git line endings agreed (`.gitattributes`), so shared files in `Readme/Web/` and the fixtures don't get rewritten with CRLF
 
 ## Decisions
 
 Blocking: settle before the phase shown.
 
-- [ ] Packaging: MSIX or unpackaged with a classic installer (before phase 0, since it shapes the project template)
-- [ ] Minimum Windows version: 10 or 11 only (before phase 0)
-- [ ] Uninstall deletes the library under MSIX: accept and document, or store it in Documents (before phase 1)
-- [ ] Mouse wheel: one notch turns a page, or does nothing as on Mac (before phase 2)
-- [ ] Freeze Mac features until Windows reaches parity? (before phase 1)
-- [ ] Distribution: Microsoft Store, paid-signed download, or both (before phase 6)
+- [x] Packaging: MSIX or unpackaged with a classic installer (before phase 0, since it shapes the project template). **Decided Nov 13, 2026: MSIX (single-project packaged), shipped through the Microsoft Store.** The Store signs it for free (an unsigned MSIX won't install at all) and handles updates, so the Mac's Readme Updater isn't ported. This also settles the distribution decision below
+- [x] Minimum Windows version: 10 or 11 only (before phase 0). **Decided Nov 13, 2026: Windows 11 only**, `TargetPlatformMinVersion` 10.0.22000.0. Windows 10 consumer extended updates ended Oct 2026, the Mac app likewise targets a recent OS only (macOS 14), and there's no Windows 10 machine to test on
+- [x] Uninstall deletes the library under MSIX: accept and document, or store it in Documents (before phase 1). **Decided Nov 13, 2026: `Documents\Readme`.** It survives uninstall and reinstall as on Mac (an MSIX app has no uninstall hook to warn from), the user can see and back it up, and Calibre does the same. A full-trust MSIX app writes there unvirtualized. Settings and WebView2 data stay in app data. Write the JSON stores atomically (temp file, then replace), since OneDrive or a backup tool may read Documents mid-write. Install docs mention that Documents may sync to OneDrive
+- [x] Mouse wheel: one notch turns a page, or does nothing as on Mac (before phase 2). **Decided Nov 13, 2026: a mouse wheel does nothing, as on Mac.** Only a touchpad swipe turns the page. Windows doesn't label wheel events by device, so phase 2 has to tell the two apart (a notch arrives as a whole multiple of 120 with no horizontal part; touchpad deltas are small and often horizontal), and the spike's one-notch-a-page handling goes
+- [x] Freeze Mac features until Windows reaches parity? (before phase 1). **Decided Nov 13, 2026: soft freeze until phase 6.** No new Mac features; bug fixes allowed, and a fix that touches the shared contract (`Readme/Web/`, store JSON, `.readmelibrary`) lands on Windows in the same PR. New ideas go in `docs/future-todos.md`. Shelf search and pinning (both released Nov 13, v1.4 and v1.5) came before the freeze and are ported: see **Mac features added since the plan**
+- [x] Distribution: Microsoft Store, paid-signed download, or both (before phase 6). **Microsoft Store**, which follows from the packaging decision above
 - [ ] Ship v1 after phase 6 with a slide, or wait for the curl (before phase 6)
+
+## Mac features added since the plan
+
+Released on Nov 13, 2026, before the freeze, so the port includes them. Their Swift code and specs are the spec: `docs/pin-to-front.md` and `docs/superpowers/specs/2026-11-13-shelf-search-design.md`. The items are repeated in the phases below.
+
+- **Pin to front (v1.4).** Changes the shared contract: `pinnedAt` (ISO 8601, optional) on `Book` in `library.json` and on `BundledBook` in `.readmelibrary`. Without it, a library going Mac → Windows → Mac loses its pins.
+- **Shelf search (v1.5).** Windows only needs the UI. Ctrl+F on the shelf in place of ⌘F, and no new formats.
+- **Quitting for an update (v1.4.1).** Mac Updater only; nothing to port, since the Store does updates.
 
 ## Phase 0: Spike
 
 Throwaway. Goal is to prove the risky assumptions.
 
-- [ ] Empty WinUI 3 app in `windows/` hosting a WebView2
-- [ ] `readme-book://app/` registered as a custom scheme (authority, secure, own origin allowed), serving `reader.html` with the same CSP. If it fails, fall back to a virtual `https://` host and note it here
-- [ ] `bridge.js`: one `post()` helper (WebKit handler or `chrome.webview.postMessage`) replacing the 4 call sites; Mac build and tests still pass
-- [ ] `long.epub` opens as a two-page spread
-- [ ] `ready` and `relocate` messages arrive in C#
-- [ ] `bridge.js`: Windows-only `keydown` and `wheel` forwarding in the per-document load hook; an arrow key pressed after clicking the page reaches C#
-- [ ] Wheel deltas reach C#
-- [ ] Remote loads blocked in `WebResourceRequested` (http, https, ws), navigations and new windows cancelled; the remote-image fixture makes no network request
-- [ ] Browser features off: accelerator keys, context menu, dev tools, zoom, pinch zoom, swipe navigation
-- [ ] In-private mode, user data folder in app data
-- [ ] Async script calls: request id in, result posted back (or DevTools evaluate). Pick one and note it here
-- [ ] A second, never-shown WebView2 opens a book and returns a snapshot via `CapturePreviewAsync`
-- [ ] All 24 fixtures open (or fail the same way they do on Mac); note any Chromium pagination differences here
-- [ ] Spike findings written up in this file; plan amended if anything changed
+- [x] Empty WinUI 3 app in `windows/` hosting a WebView2
+- [x] `readme-book://app/` registered as a custom scheme (authority, secure, own origin allowed), serving `reader.html` with the same CSP. If it fails, fall back to a virtual `https://` host and note it here
+- [ ] `bridge.js`: one `post()` helper (WebKit handler or `chrome.webview.postMessage`) replacing the 4 call sites; Mac build and tests still pass. **Windows half done; the Mac build and tests are still to run** (the Mac app will be tested once the Windows app is ready)
+- [x] `long.epub` opens as a two-page spread
+- [x] `ready` and `relocate` messages arrive in C#
+- [x] `bridge.js`: Windows-only `keydown` and `wheel` forwarding in the per-document load hook; an arrow key pressed after clicking the page reaches C#
+- [x] Wheel deltas reach C#
+- [x] Remote loads blocked in `WebResourceRequested` (http, https, ws), navigations and new windows cancelled; the remote-image fixture makes no network request
+- [x] Browser features off: accelerator keys, context menu, dev tools, zoom, pinch zoom, swipe navigation
+- [x] In-private mode, user data folder in app data
+- [x] Async script calls: request id in, result posted back (or DevTools evaluate). Pick one and note it here
+- [x] A second, never-shown WebView2 opens a book and returns a snapshot via `CapturePreviewAsync`
+- [x] All 24 fixtures open (or fail the same way they do on Mac); note any Chromium pagination differences here
+- [x] Spike findings written up in this file; plan amended if anything changed
+
+Every item above except the Mac half of the `bridge.js` item was verified on Windows on Nov 13, 2026 by `windows/Spike` (`ReadmeSpike.exe --checks <dir>`), and re-run after rebasing on v1.5.
+
+### Spike findings
+
+Machine: Windows 11 x64, Windows App SDK 2.6.5, WebView2 runtime 157, .NET 10.0.404. The spike is unpackaged so it runs from `dotnet build`; the app proper is MSIX.
+
+- **Custom scheme works**, no `https://` fallback needed. `reader.html` loads from `readme-book://app` with the same CSP, as a secure context, and every fetch of the book and of foliate's modules goes through `WebResourceRequested`. Two traps in the WinRT projection of the WebView2 API: `CoreWebView2EnvironmentOptions.CustomSchemeRegistrations` returns a copy, so `.Add()` on it silently does nothing and the scheme is never registered (the navigation just aborts with `ConnectionAborted`); assign a new list instead. And `TreatAsSecure` is an `int`, not a `bool`. `AllowedOrigins` reads back empty the same way; it isn't needed while everything is same-origin.
+- **Filters:** `AddWebResourceRequestedFilter` with `CoreWebView2WebResourceRequestSourceKinds.All`, so requests from book iframes are seen too. An exception thrown in the handler is swallowed and the request aborts, so the real handler must catch and answer 500.
+- **Two-page spread:** `long.epub` opens with 2 columns of 546 px in a 1384 px view, 449 pages, page number drawn. `ready` and `relocate` arrive; `next()` posts one `relocate`.
+- **Async calls: request id chosen.** `ExecuteScriptAsync` runs a wrapper that awaits the bridge call and posts `{type: 'reply', id, ok, value | error}` back; C# matches the id. No change to `bridge.js` needed for it, and it doesn't need DevTools.
+- **Keys and wheel:** after a click on the page (focus lands on `FOLIATE-VIEW`), ArrowRight and Ctrl+F both reach C# as `key` messages, with accelerator keys off so Ctrl+F doesn't open find. Horizontal and vertical wheel deltas arrive as `wheel` messages (120 per notch, `deltaMode` 0). Tested with DevTools-protocol input, which works with `AreDevToolsEnabled` off; worth one manual check with a real keyboard and touchpad.
+- **Remote loads:** the remote-image fixture's image is `blocked` (its `https://` URL is the only request caught by the filter). A `fetch` and a `WebSocket` from the reader page are stopped by the CSP before reaching the filter. `location.href = https://…` is cancelled in `NavigationStarting`, and both `window.open` calls are cancelled in `NewWindowRequested`. The link-hints fixture makes no remote request.
+- **Book scripts never run:** the scripted fixture loads with its 2 scripts in place; `__pwned` stays false, the page title stays `Readme`, and no stray message arrives.
+- **Browser features off** and in-private on, with the user data folder under `%LOCALAPPDATA%`.
+- **Hidden view: plan change needed.** A bare `CoreWebView2Controller` parented to the WinUI window fails with `ERROR_INVALID_STATE` (0x8007139F) whatever the options. A XAML `WebView2` set to `Visibility.Collapsed`, or placed in a window that's never shown, hangs the UI thread in `EnsureCoreWebView2Async`. What works: a XAML `WebView2` at `Opacity = 0`, `IsHitTestVisible = false`, behind the reader in the same window. It opens `long.epub` in about 300 ms, paints (`document.hidden` false, 14% of pixels ink), and `CapturePreviewAsync` takes about 200 ms per spread, including after a page turn. So import (phase 3) and the curl cache (phase 7) use an invisible view in the visual tree, not an offscreen one. 200 ms a snapshot is slow for rapid turns; that's the phase 7 risk the plan already names.
+- **Closing a hidden view can crash the app.** In about 1 run in 3, removing and closing the opacity-0 WebView2 straight after a snapshot ends the process with an access violation in `coreclr.dll` (0xC0000005); the other checks are unaffected. So the app proper creates its hidden view once and reuses it for every import and spread, never closing one mid-session. Worth a minimal repro and a WebView2 bug report if it shows up again in phase 3.
+- **Fixtures:** 17 of 24 open through `bridge.js`: big-chapter 418 pages, broken-chapter 11, long 449, search 10, spreads 19, wide-content 14, and the rest 1 to 12. The 7 that fail do so in `bridge.js` or zip.js with sensible errors: `not-an-epub` (not an EPUB), `plain-zip` (no container), `pk-comment` (split zip), `drm-bad-size` and `drm-bomb` (invalid size), `drm-past-end` (junk after data), `drm-bad-xml` (XML error). The DRM fixtures that open (`drm`, `drm-lcp`, `drm-rights`, `drm-sinf`) are meant to be refused earlier by `EpubInspector` in phase 1, as on Mac. Not yet compared page by page with the Mac.
+- **Still to check on the Mac:** the `bridge.js` change keeps the Mac build and tests passing. On Mac `postToApp` posts the same JSON strings as before, and the key and wheel forwarding is off unless `chrome.webview` is present and WebKit's handler isn't.
 
 ## Phase 1: Core library
 
-- [ ] `windows/` solution with `Readme.Core` and `Readme.Core.Tests` (MSTest), fixtures linked from `ReadmeTests/Fixtures/`
-- [ ] Golden files committed to shared fixtures: a `library.json`, a highlights file, one exported `.readmelibrary`; a Swift test reads them too
-- [ ] `Book.cs`, same SHA-256 id scheme (golden check: same id as on Mac)
-- [ ] `ReaderLocation.cs`
-- [ ] Zip reader port (same read limits, ZIP64 refused)
-- [ ] `ZipWriter.cs` port (stored or deflated only, no ZIP64)
-- [ ] `EpubInspector.cs`
-- [ ] `LibraryStore.cs` (`library.json`, `Books/`, `Covers/`)
-- [ ] `PositionStore.cs`
-- [ ] `HighlightStore.cs`
-- [ ] `MarkerStore.cs`
-- [ ] Layout maths
-- [ ] Core tests pass, including the 8 DRM fixtures and the junk-file ones
+- [x] `windows/` solution with `Readme.Core` and `Readme.Core.Tests` (MSTest), fixtures linked from `ReadmeTests/Fixtures/`
+- [ ] Golden files committed to shared fixtures: a `library.json`, a highlights file, one exported `.readmelibrary`; a Swift test reads them too. **`library.json`, highlights, marker, position and ids are in; the `.readmelibrary` and a run of the Swift test wait for the Mac**
+- [x] `Book.cs`, same SHA-256 id scheme (golden check: same id as on Mac), with `pinnedAt`; a `library.json` without it loads with nothing pinned
+- [x] Golden `library.json` includes a pinned book
+- [x] `ReaderLocation.cs`
+- [x] Zip reader port (same read limits, ZIP64 refused)
+- [x] `ZipWriter.cs` port (stored only, as the Mac writes; no ZIP64)
+- [x] `EpubInspector.cs`
+- [x] `LibraryStore.cs` (`library.json`, `Books/`, `Covers/`) rooted at `Documents\Readme`, with atomic writes; `SetPinned` and the shelf order (current book, then pins newest first, then by recency)
+- [x] `ShelfSearch.cs`: title and author, case- and accent-insensitive, every word must match
+- [x] `PositionStore.cs`
+- [x] `HighlightStore.cs`
+- [x] `MarkerStore.cs`
+- [x] Layout maths
+- [x] Core tests pass, including the 8 DRM fixtures and the junk-file ones
+
+Everything above except the `.readmelibrary` golden file was built on Windows on Nov 13, 2026: `dotnet test windows/Readme.slnx` runs 92 tests, all passing. "Layout maths" here means `ShelfLayout` and `SpreadLayout`; `BookFrame` and `PlaceKeeper` need reader settings and CSS, so they stay in phase 2. The boxes stay unticked until committed. Still to do on the Mac: run `GoldenFilesTests.swift` (written, not yet run), and export a small `.readmelibrary` into `Fixtures/Golden/` for phase 5.
+
+### Phase 1 findings
+
+- **Dates differ by file, and the plan's "dates are ISO 8601" is only half right.** `library.json` and positions use `JSONEncoder`'s default: a number of seconds since 1 Jan 2001 UTC. Highlights, markers and bundles use `.iso8601`: whole seconds, `Z`, and the Mac's decoder **rejects fractional seconds**, so Windows never writes them. `Fixtures/Golden/README.md` has the table.
+- **Date precision:** Swift's `Date` is a double, so it survives `library.json` exactly. A .NET date has 100 ns ticks, which a double can't hold that far from 2001. `Readme.Core` keeps library dates at whole microseconds (`ReferenceDateConverter.Normalize`), so a book read back equals the book saved; a 100,000-date sweep test guards it. Scaling seconds by a million directly broke for dates after about 2080; whole seconds and the fraction are now scaled separately.
+- **Other contract details:** Swift writes UUIDs in upper case (C# would write lower), leaves out nil fields rather than writing `null`, and writes `/` as `\/`. The golden tests check that Windows reads the Mac's files and writes back the same JSON.
+- **Golden files** live in `ReadmeTests/Fixtures/Golden/`. It's a folder reference in `project.yml`, so the Swift tests get them with no project change. `ids.json` pins the SHA-256 ids of three fixtures for both platforms.
+- **Zip:** `ZipWriter` writes stored entries only (the Mac's does too, not "stored or deflated"). A .NET array stops just short of 2 GB, so `ZipReader.Data` refuses a book that large, where the Mac's 2 GB limit would allow one exactly 2 GB. Phase 5 should stream `book.epub` out of a bundle instead of reading it whole.
+- **Inspector verdicts** match the Swift tests: the 8 `drm*` fixtures are copy-protected, `not-an-epub` and `plain-zip` aren't EPUBs, and the other 14 pass. XML is read with DTDs ignored and no entity expansion, as Swift's `XMLParser` does.
+- **Stores are synchronous and thread-safe** (a lock each), where the Mac's are actors. Writing a place on every page turn without blocking the UI (`PlaceWriter`) belongs to phase 2. `LastSpreadCache` (phase 3) hooks in through `LibraryStore.Removing`.
+- **Shelf search folding** drops combining marks and lower-cases. Letters with no decomposition (ø, ß, æ) aren't folded further; the Mac's `folding` may treat some of them differently.
+- **Fraunces** has no measured character width yet. It borrows New York's 0.448 until phase 2 calibrates it in Chromium, along with re-checking the other two fonts.
 
 ## Phase 2: Reader basics
 
@@ -99,6 +142,8 @@ Throwaway. Goal is to prove the risky assumptions.
 - [ ] `GeneratedCover.cs` with Win2D (12 palettes, FNV-1a pick)
 - [ ] `LastSpreadCache.cs` placeholder
 - [ ] Remove book; right-click menu (Export arrives in phase 5)
+- [ ] Pin to Front and Unpin in the right-click menu, multi-selection titles as on Mac; ribbon on pinned covers in the marker colour; Narrator label ends ", pinned"
+- [ ] Shelf search: magnifier top-right, Ctrl+F opens it, Esc clears then falls through, filters in place, "No books match" line, Return opens a single match, cleared when a book opens
 - [ ] Import failure notices
 - [ ] **Done when:** import 5 books, see covers, open and switch between them
 
@@ -110,7 +155,7 @@ Throwaway. Goal is to prove the risky assumptions.
 - [ ] `Search.cs`, `SearchBox`
 - [ ] `HighlightBar`, `HighlightsSidebar`
 - [ ] `MarkerRibbon`
-- [ ] `ShortcutsHelp.cs` (Windows key names), `ShortcutsPanel`; every shortcut listed in it
+- [ ] `ShortcutsHelp.cs` (Windows key names), `ShortcutsPanel`; every shortcut listed in it, including the Library section (Ctrl+F, Esc)
 - [ ] Tooltips, Narrator labels, error sound
 - [ ] **Done when:** every row of the shortcut mapping table works
 
@@ -119,6 +164,7 @@ Throwaway. Goal is to prove the risky assumptions.
 - [ ] `.readmelibrary` format spec written in `docs/`
 - [ ] `LibraryBundle.cs`, `LibraryExporter.cs`, `LibraryImporter.cs`
 - [ ] Never replace; keep mine or combine; newer format refused whole; size limits match
+- [ ] `pinnedAt` in bundles: a book the import adds keeps its pin; a book already here keeps its own pin state
 - [ ] Shelf Export, including multi-selection
 - [ ] **Done when:** Mac export imports on Windows with highlights, marker and position intact, and the reverse
 
