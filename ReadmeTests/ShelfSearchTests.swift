@@ -60,4 +60,17 @@ private func book(_ id: String, _ title: String, by author: String? = nil) -> Bo
         search.query = " a "
         #expect(search.isActive)
     }
+
+    @MainActor @Test func escapeClosesOpenSearchFirst() {
+        let search = ShelfSearch()
+        search.open()
+        search.query = "a"
+        var fellThrough = 0
+        ShelfSearch.escape(search) { fellThrough += 1 }
+        #expect(!search.isOpen)
+        #expect(search.query == "")
+        #expect(fellThrough == 0)
+        ShelfSearch.escape(search) { fellThrough += 1 }
+        #expect(fellThrough == 1)
+    }
 }

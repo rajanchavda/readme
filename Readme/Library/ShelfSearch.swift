@@ -23,6 +23,11 @@ final class ShelfSearch: ObservableObject {
         isOpen = false
     }
 
+    /// Esc over the shelf: it clears and folds a search that's open, and otherwise does `fallback`.
+    static func escape(_ search: ShelfSearch, else fallback: () -> Void) {
+        if search.isOpen || search.isActive { search.close() } else { fallback() }
+    }
+
     /// Whether every word typed is somewhere in the book's title or author, whatever the case and accents.
     nonisolated static func matches(_ book: Book, query: String) -> Bool {
         let words = words(query)

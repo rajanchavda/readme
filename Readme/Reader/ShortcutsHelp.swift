@@ -44,6 +44,11 @@ enum ShortcutsHelp {
                 Row(keys: ["Esc"], description: "Close a panel or leave full screen"),
                 row(.showShortcuts),
             ]),
+            // On the shelf, where the reader's commands are put away.
+            Section(title: "Library", rows: [
+                Row(keys: ["⌘F"], description: "Search the library"),
+                Row(keys: ["Esc"], description: "Clear the search"),
+            ]),
         ],
     ]
 
