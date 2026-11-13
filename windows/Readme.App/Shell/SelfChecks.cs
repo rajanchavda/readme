@@ -34,6 +34,7 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
             else if (mode == "calibrate") await CalibrateAsync(rest[1], rest[2]);
             else if (mode == "whole") await WholeBookAsync(rest[1]);
             else if (mode == "shelf") await ShelfAsync(rest[1]);
+            else if (mode == "tools") await ToolsAsync(rest[1]);
             else await ReadAsync(rest.ElementAtOrDefault(1) ?? throw new ArgumentException("read needs a book"));
         }
         catch (Exception error)
@@ -315,6 +316,248 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
         Record("libraryFiles", Directory.GetFiles(library.BooksDirectory).Length);
     }
 
+    /// <summary>
+    /// The phase 4 "done when": every row of the plan's shortcut table, sent as keys into the page as a
+    /// person would press them, and the tools each opens: the toolbar, contents, go to page, the marker,
+    /// highlights, search, the shortcuts panel, full screen and the library.
+    /// </summary>
+    async Task ToolsAsync(string fixtures)
+    {
+        string Fixture(string name) => Path.Combine(fixtures, name);
+        reader.Change(new ReaderSettings { Theme = ThemeChoice.Paper });
+        await app.ImportAndOpenAsync([Fixture("long.epub")]);
+        await Task.Delay(1200);
+        Record("opened", Where());
+
+        // The toolbar wakes with the pointer and sleeps after it rests.
+        reader.WakeForChecks();
+        await Task.Delay(400);
+        Record("toolbar", new { awake = reader.IsToolbarAwake, buttons = reader.Toolbar.ButtonNames.ToList() });
+        await Shot("t1-toolbar");
+        await Task.Delay(2200);
+        Record("toolbarSleeps", !reader.IsToolbarAwake);
+
+        // Next and previous page: arrows and Space.
+        var start = reader.Location?.Page;
+        await Key("ArrowRight");
+        var afterRight = reader.Location?.Page;
+        await Key(" ");
+        var afterSpace = reader.Location?.Page;
+        await Key("ArrowLeft");
+        Record("turns", new { start, afterRight, afterSpace, afterLeft = reader.Location?.Page });
+
+        // Bigger and smaller text: Ctrl+ and Ctrl-.
+        var size = reader.Settings.FontSize;
+        await Key("=", ctrl: true, delay: 1500);
+        var bigger = reader.Settings.FontSize;
+        await Key("-", ctrl: true, delay: 1500);
+        Record("textSize", new { size, bigger, smaller = reader.Settings.FontSize });
+
+        // Start and end: Ctrl+Home and Ctrl+End, and Home and End.
+        await Key("End", ctrl: true, delay: 1500);
+        var ctrlEnd = reader.Location?.IsAtEnd;
+        await Key("Home", ctrl: true, delay: 1500);
+        var ctrlHome = reader.Location?.IsAtStart;
+        await Key("End", delay: 1500);
+        var end = reader.Location?.IsAtEnd;
+        await Key("Home", delay: 1500);
+        Record("startAndEnd", new { ctrlEnd, ctrlHome, end, home = reader.Location?.IsAtStart });
+
+        // Contents: Ctrl+T, Esc, and choosing a chapter.
+        await Key("ArrowRight", delay: 600);
+        await Key("t", ctrl: true, delay: 300);
+        await reader.ContentsLoadedAsync();
+        await Task.Delay(600);
+        var entries = reader.Contents.Entries;
+        Record("contents", new
+        {
+            shown = reader.IsShowingContents,
+            count = entries.Count,
+            current = Enumerable.Range(0, entries.Count).Where(reader.Contents.IsMarkedCurrent).Select(i => entries[i].Title).ToList(),
+            focused = reader.Contents.HasFocus,
+        });
+        await Shot("t2-contents");
+        app.HandleKey(new PageKey("Escape", Modifiers.None, false));
+        await Task.Delay(500);
+        var closedByEscape = !reader.IsShowingContents;
+        await Key("t", ctrl: true, delay: 300);
+        await reader.ContentsLoadedAsync();
+        await Task.Delay(500);
+        var chapter20 = entries.ToList().FindIndex(e => e.Title == "Chapter 20");
+        reader.Contents.Choose(chapter20);
+        await Task.Delay(1500);
+        Record("contentsChoose", new { closedByEscape, closedOnChoose = !reader.IsShowingContents, chapter = reader.Location?.ChapterTitle });
+
+        // Go to page: Ctrl+G.
+        await Key("g", ctrl: true, delay: 500);
+        var count = reader.Location?.PageCount ?? 0;
+        var placeholder = reader.PageField.Placeholder;
+        await Shot("t3-go-to-page");
+        var notAPage = reader.PageField.Enter("soon");
+        var stillOpen = reader.IsShowingPageField;
+        var went = reader.PageField.Enter((count / 2).ToString());
+        await Task.Delay(1500);
+        Record("goToPage", new { placeholder, notAPage, stillOpen, went, closed = !reader.IsShowingPageField, wanted = count / 2, page = reader.Location?.Page });
+
+        // The marker: Ctrl+D marks, Ctrl+Shift+D goes back to it, Ctrl+D again takes it away.
+        await Key("d", ctrl: true, delay: 300);
+        await reader.MarkedAsync();
+        await Task.Delay(500);
+        var marked = new
+        {
+            marker = reader.BookMarker?.Page,
+            stored = reader.BookId is { } id1 ? library.Markers.Marker(id1)?.Page : null,
+            ribbon = reader.IsRibbonShown,
+            notice = reader.NoticeText,
+            isMarked = reader.Location?.IsMarked,
+        };
+        await Shot("t4-marked");
+        await Key("End", ctrl: true, delay: 1500);
+        var ribbonAway = reader.IsRibbonShown;
+        await Key("D", ctrl: true, delay: 1500);
+        var back = new { page = reader.Location?.Page, isMarked = reader.Location?.IsMarked, ribbon = reader.IsRibbonShown };
+        await Key("d", ctrl: true, delay: 300);
+        await reader.MarkedAsync();
+        Record("marker", new
+        {
+            marked, ribbonAway, back,
+            removed = reader.BookMarker == null,
+            stored = reader.BookId is { } id2 ? library.Markers.Marker(id2) : null,
+            notice = reader.NoticeText,
+        });
+
+        // Highlights: select words, press Highlight; Ctrl+Shift+H lists them; then remove it.
+        var selected = (await SelectWordsAsync()).ToString();
+        await Task.Delay(800);
+        var bar = new { shown = reader.Bar.IsShown, mode = reader.Bar.Shown.ToString() };
+        await Shot("t5-highlight-bar");
+        reader.Bar.Press();
+        await reader.MarkedAsync();
+        await Task.Delay(800);
+        List<string> stored = reader.BookId is { } id3 ? library.Highlights.Highlights(id3).Select(h => h.Text).ToList() : [];
+        await Shot("t6-highlighted");
+        await Key("H", ctrl: true, delay: 800);
+        var panel = new { shown = reader.IsShowingHighlights, rows = reader.HighlightsPanel.Highlights.Count, focused = reader.HighlightsPanel.HasFocus };
+        await Shot("t7-highlights");
+        reader.HighlightsPanel.Choose(0);
+        await Task.Delay(1200);
+        var closedOnChoose = !reader.IsShowingHighlights;
+        await SelectWordsAsync();
+        await Task.Delay(800);
+        var removeMode = reader.Bar.IsShown ? reader.Bar.Shown.ToString() : null;
+        reader.Bar.Press();
+        await reader.MarkedAsync();
+        await Task.Delay(500);
+        Record("highlights", new { selected, bar, stored, panel, closedOnChoose, removeMode, left = reader.BookHighlights.Count });
+        await Key("H", ctrl: true, delay: 800);
+        await Shot("t8-no-highlights");
+        await Key("H", ctrl: true, delay: 600);
+        Record("highlightsToggle", !reader.IsShowingHighlights);
+
+        // Find: Ctrl+F, type, pick a match.
+        await Key("f", ctrl: true, delay: 500);
+        var searchShown = reader.IsShowingSearch;
+        reader.Search.Type("chapter");
+        await Task.Delay(600);
+        await reader.SearchedAsync();
+        await Task.Delay(300);
+        await Shot("t9-search");
+        var found = reader.SearchOutcome?.Matches.Count;
+        reader.Search.Pick(Math.Min(3, (found ?? 1) - 1));
+        await Task.Delay(1500);
+        var flashing = await reader.Book.EvaluateAsync("readmeBridge.flashing()");
+        Record("search", new { searchShown, found, rows = reader.Search.RowCount, closed = !reader.IsShowingSearch, at = Where(), flashing = flashing.ToString() });
+        await Shot("t10-search-match");
+
+        // Keyboard shortcuts: ? and Ctrl+/, Esc closes.
+        await Key("?", delay: 600);
+        var shortcuts = new { shown = reader.IsShowingShortcuts, rows = reader.ShortcutKeysShown.Count, keys = reader.ShortcutKeysShown.Select(k => string.Join(" ", k)).ToList() };
+        await Shot("t11-shortcuts");
+        await Key("Escape", delay: 600);
+        var closedByEsc = !reader.IsShowingShortcuts;
+        await Key("/", ctrl: true, delay: 600);
+        var ctrlSlash = reader.IsShowingShortcuts;
+        await Key("/", ctrl: true, delay: 600);
+        Record("shortcuts", new { shortcuts, closedByEsc, ctrlSlash, ctrlSlashCloses = !reader.IsShowingShortcuts });
+
+        // Full screen: F and F11; Esc leaves. The pointer hides with the toolbar there.
+        await Key("f", delay: 2000);
+        var fullscreen = reader.IsFullscreen;
+        reader.WakeForChecks();
+        await Task.Delay(300);
+        await Shot("t12-fullscreen-toolbar");
+        await Task.Delay(2200);
+        var pointerHidden = reader.IsPointerHidden;
+        await Key("Escape", delay: 2000);
+        var leftByEscape = !reader.IsFullscreen;
+        await Key("F11", delay: 2000);
+        var f11 = reader.IsFullscreen;
+        await Key("F11", delay: 2000);
+        Record("fullscreen", new { fullscreen, pointerHidden, leftByEscape, f11, f11Leaves = !reader.IsFullscreen, pointerBack = !reader.IsPointerHidden });
+
+        // The toolbar's buttons: a theme.
+        reader.WakeForChecks();
+        await Task.Delay(300);
+        var pressedSepia = reader.Toolbar.Press("Sepia");
+        await Task.Delay(1500);
+        var sepia = reader.Settings.Theme;
+        reader.WakeForChecks();
+        await Task.Delay(400);
+        await Shot("t13-sepia-toolbar");
+        reader.Toolbar.Press("Paper");
+        await Task.Delay(1200);
+        Record("toolbarButtons", new { pressedSepia, sepia = sepia.ToString(), now = reader.Settings.Theme.ToString() });
+
+        // Library: Ctrl+L; there, Ctrl+F searches the shelf and Esc clears it, then goes back.
+        await Key("l", ctrl: true, delay: 1200);
+        var shelf = app.IsShowingLibrary;
+        app.HandleKey(new PageKey("f", Modifiers.Ctrl, false));
+        await Task.Delay(500);
+        app.Shelf.Type("long");
+        await Task.Delay(600);
+        var filtered = app.Shelf.ShownTitles();
+        app.HandleKey(new PageKey("Escape", Modifiers.None, false));
+        await Task.Delay(500);
+        var cleared = app.Shelf.ShownTitles();
+        app.HandleKey(new PageKey("Escape", Modifiers.None, false));
+        await Task.Delay(900);
+        Record("library", new { shelf, filtered, cleared, backToBook = !app.IsShowingLibrary, toolbarStaysAsleep = !reader.IsToolbarAwake });
+    }
+
+    /// <summary>
+    /// Selects twenty characters of the words in the middle of the left-hand page, then lets go, as a
+    /// drag there would: the page's own selection reporting does the rest (HighlightBridgeTests.swift).
+    /// </summary>
+    Task<System.Text.Json.JsonElement> SelectWordsAsync() => reader.Book.EvaluateAsync("""
+        (() => {
+            const renderer = document.querySelector('foliate-view').renderer
+            const box = renderer.getBoundingClientRect()
+            for (const { doc } of renderer.getContents()) {
+                const frame = doc.defaultView.frameElement.getBoundingClientRect()
+                for (const share of [0.4, 0.5, 0.3, 0.6, 0.25, 0.7]) {
+                    const x = box.left + box.width * 0.25 - frame.left
+                    const y = box.top + box.height * share - frame.top
+                    const caret = doc.caretRangeFromPoint(x, y)
+                    const node = caret?.startContainer
+                    if (node?.nodeType !== Node.TEXT_NODE) continue
+                    // From the start of the word pointed at.
+                    let from = caret.startOffset
+                    while (from > 0 && /\S/.test(node.data[from - 1])) from--
+                    if (node.data.length - from < 20) continue
+                    const range = doc.createRange()
+                    range.setStart(node, from)
+                    range.setEnd(node, from + 20)
+                    const selection = doc.defaultView.getSelection()
+                    selection.removeAllRanges()
+                    selection.addRange(range)
+                    doc.dispatchEvent(new Event('pointerup'))
+                    return range.toString()
+                }
+            }
+            return null
+        })()
+        """);
+
     /// <summary>Reads the whole book with the arrow key, from the first page to the last, then back a few.</summary>
     async Task WholeBookAsync(string book)
     {
@@ -374,17 +617,18 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
     static bool Near(ReaderLocation? before, ReaderLocation? after) =>
         before != null && after != null && Math.Abs(before.Page - after.Page) <= 2;
 
-    async Task Key(string key, bool ctrl = false, int delay = 900)
+    async Task Key(string key, bool ctrl = false, int delay = 900, bool shift = false)
     {
         var (code, vk) = key switch
         {
             "ArrowRight" => ("ArrowRight", 39), "ArrowLeft" => ("ArrowLeft", 37), " " => ("Space", 32),
             "Home" => ("Home", 36), "End" => ("End", 35), "F11" => ("F11", 122), "Escape" => ("Escape", 27),
-            "=" => ("Equal", 187), "-" => ("Minus", 189),
-            { Length: 1 } letter when char.IsAsciiLetterLower(letter[0]) => ("Key" + letter.ToUpperInvariant(), letter[0] - 'a' + 65),
+            "=" => ("Equal", 187), "-" => ("Minus", 189), "/" or "?" => ("Slash", 191),
+            { Length: 1 } letter when char.IsAsciiLetter(letter[0]) => ("Key" + letter.ToUpperInvariant(), char.ToLowerInvariant(letter[0]) - 'a' + 65),
             _ => throw new ArgumentException(key),
         };
-        var modifiers = ctrl ? 2 : 0;
+        var shifted = shift || key == "?" || (key.Length == 1 && char.IsAsciiLetterUpper(key[0]));
+        var modifiers = (ctrl ? 2 : 0) | (shifted ? 8 : 0);
         await reader.Book.DevToolsAsync("Input.dispatchKeyEvent", new { type = "rawKeyDown", key, code, windowsVirtualKeyCode = vk, nativeVirtualKeyCode = vk, modifiers });
         await reader.Book.DevToolsAsync("Input.dispatchKeyEvent", new { type = "keyUp", key, code, windowsVirtualKeyCode = vk, nativeVirtualKeyCode = vk, modifiers });
         await Task.Delay(delay);

@@ -14,6 +14,9 @@ public sealed class BookWebViewException(string message) : Exception(message);
 /// <summary>A key pressed in the page, as bridge.js reports it.</summary>
 public readonly record struct PageKey(string Key, Modifiers Modifiers, bool IsRepeat);
 
+/// <summary>Words the reader selected in the page: where they are, and their box in the view.</summary>
+public sealed record SelectionInfo(string Cfi, string Text, double Fraction, string? ChapterTitle, Box Rect);
+
 /// <summary>
 /// Shows one EPUB, paginated by foliate-js in a WebView2 (BookWebView.swift). Moves run in the order
 /// they're asked for and return the new location, or null if nothing moved. <see cref="Relocated"/>
@@ -55,6 +58,16 @@ public sealed class BookWebView
     public event Action<bool>? LinkFollowed;
     public event Action<PageKey>? KeyPressed;
     public event Action<double, double>? Wheel;
+    /// <summary>The pointer moved over the page.</summary>
+    public event Action? PointerMoved;
+    /// <summary>Words selected, or null once the selection's gone.</summary>
+    public event Action<SelectionInfo?>? SelectionChanged;
+    /// <summary>A click on a highlight, with its box in the view.</summary>
+    public event Action<string, Box>? HighlightClicked;
+
+    /// <summary>The highlights drawn, and their colour, as last set.</summary>
+    public IReadOnlyList<string> HighlightCfis { get; private set; } = [];
+    public string HighlightColor { get; private set; } = "";
 
     /// <summary>
     /// One environment for every view in the app: the user data folder in app data, and the book scheme
@@ -144,6 +157,8 @@ public sealed class BookWebView
         var generation = ++_openGeneration;
         IsOpen = false;
         CurrentLocation = null;
+        // A new page has none drawn.
+        HighlightCfis = [];
         if (!File.Exists(file)) throw new BookWebViewException("The book's file can't be read");
         await LoadReaderAsync();
         if (generation != _openGeneration) throw new OperationCanceledException();
@@ -189,6 +204,129 @@ public sealed class BookWebView
         double.IsFinite(fraction) ? NavigateAsync($"readmeBridge.goToFraction({Js(Math.Clamp(fraction, 0, 1))})") : Task.FromResult<ReaderLocation?>(null);
     public Task<ReaderLocation?> GoToStartAsync() => NavigateAsync("readmeBridge.goToStart()");
     public Task<ReaderLocation?> GoToEndAsync() => NavigateAsync("readmeBridge.goToEnd()");
+    public Task<ReaderLocation?> GoToPageAsync(int page) => NavigateAsync($"readmeBridge.goToPage({page})");
+
+    /// <summary>
+    /// Follows a link of the book's: whether it led anywhere, and where the book went, or null if it
+    /// was already there.
+    /// </summary>
+    public async Task<(bool Resolved, ReaderLocation? Location)> GoToHrefAsync(string href)
+    {
+        if (!IsOpen) return (false, null);
+        var heard = _relocationsHeard;
+        try
+        {
+            var reply = await CallAsync($"readmeBridge.goToHref({Js(href)})");
+            var resolved = reply.TryGetProperty("resolved", out var r) && r.ValueKind == JsonValueKind.True;
+            var location = reply.TryGetProperty("location", out var l) ? Location(l) : null;
+            Take(location, heard);
+            return (resolved, location);
+        }
+        catch (Exception error) when (error is BookWebViewException or TimeoutException) { return (false, null); }
+    }
+
+    // MARK: Reading tools
+
+    /// <summary>The book's table of contents, flattened, each entry with its level.</summary>
+    public async Task<IReadOnlyList<TocEntry>> TocAsync()
+    {
+        if (!IsOpen) return [];
+        try { return (await CallAsync("readmeBridge.toc()")).Deserialize<List<TocEntry>>(Json.Library) ?? []; }
+        catch (Exception error) when (error is BookWebViewException or TimeoutException or JsonException)
+        {
+            Debug.WriteLine($"Reading the contents failed: {error.Message}");
+            return [];
+        }
+    }
+
+    /// <summary>Searches the whole book. Null if it failed, or a newer search replaced it.</summary>
+    public async Task<SearchOutcome?> SearchAsync(string query, int limit)
+    {
+        if (!IsOpen) return null;
+        try
+        {
+            var reply = await CallAsync($"readmeBridge.search({Js(query)}, {limit})", TimeSpan.FromSeconds(120));
+            if (reply.TryGetProperty("isCancelled", out var cancelled) && cancelled.ValueKind == JsonValueKind.True) return null;
+            var matches = reply.GetProperty("matches").Deserialize<List<SearchMatch>>(Json.Library) ?? [];
+            return new SearchOutcome(matches, reply.TryGetProperty("isCapped", out var capped) && capped.ValueKind == JsonValueKind.True);
+        }
+        catch (Exception error) when (error is BookWebViewException or TimeoutException or JsonException or KeyNotFoundException)
+        {
+            Debug.WriteLine($"Searching failed: {error.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The words at <paramref name="cfi"/> glow for a moment in <paramref name="color"/>.</summary>
+    public Task FlashAsync(string cfi, string color) => TryAsync($"readmeBridge.flash({Js(cfi)}, {Js(color)})");
+
+    /// <summary>Draws exactly <paramref name="cfis"/> as highlights, in <paramref name="color"/>.</summary>
+    public async Task SetHighlightsAsync(IReadOnlyList<string> cfis, string color)
+    {
+        HighlightCfis = cfis;
+        HighlightColor = color;
+        if (IsOpen) await TryAsync($"readmeBridge.setHighlights({Js(cfis)}, {Js(color)})");
+    }
+
+    public async Task AddHighlightAsync(string cfi)
+    {
+        HighlightCfis = [.. HighlightCfis.Where(c => c != cfi), cfi];
+        await TryAsync($"readmeBridge.addHighlight({Js(cfi)})");
+    }
+
+    public async Task RemoveHighlightAsync(string cfi)
+    {
+        HighlightCfis = [.. HighlightCfis.Where(c => c != cfi)];
+        await TryAsync($"readmeBridge.removeHighlight({Js(cfi)})");
+    }
+
+    public Task ClearSelectionAsync() => TryAsync("readmeBridge.clearSelection()");
+
+    /// <summary>
+    /// Sets the reading marker at the start of <paramref name="cfi"/>, or takes it away with null.
+    /// Answers the point kept, and notes whether the spread on show now holds it.
+    /// </summary>
+    public async Task<string?> SetMarkerAsync(string? cfi)
+    {
+        if (!IsOpen) return cfi;
+        try
+        {
+            var reply = await CallAsync($"readmeBridge.setMarker({Js(cfi)})");
+            var kept = reply.TryGetProperty("cfi", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
+            var marked = reply.TryGetProperty("isMarked", out var m) && m.ValueKind == JsonValueKind.True;
+            if (CurrentLocation is { } here) CurrentLocation = here with { IsMarked = marked };
+            return kept;
+        }
+        catch (Exception error) when (error is BookWebViewException or TimeoutException) { return cfi; }
+    }
+
+    /// <summary>
+    /// Hides the pointer over the page, or shows it again: the page's documents, the chapters' frames
+    /// among them, each get a rule. A chapter loaded later has none, but by then the pointer has moved.
+    /// </summary>
+    public Task SetPointerHiddenAsync(bool hidden) => TryAsync($$"""
+        (() => {
+            const view = document.querySelector('foliate-view')
+            const docs = [document, ...(view?.renderer?.getContents?.() ?? []).map(c => c.doc).filter(Boolean)]
+            for (const doc of docs) {
+                let style = doc.getElementById('readme-pointer')
+                if (!style) {
+                    style = doc.createElement('style')
+                    style.id = 'readme-pointer'
+                    ;(doc.head ?? doc.documentElement).append(style)
+                }
+                style.textContent = {{Js(hidden)}} ? '*, *::before, *::after { cursor: none !important }' : ''
+            }
+            return true
+        })()
+        """);
+
+    async Task TryAsync(string expression)
+    {
+        if (!IsOpen) return;
+        try { await CallAsync(expression); }
+        catch (Exception error) when (error is BookWebViewException or TimeoutException) { Debug.WriteLine(error.Message); }
+    }
 
     async Task<ReaderLocation?> NavigateAsync(string expression)
     {
@@ -387,7 +525,34 @@ public sealed class BookWebView
             case "wheel":
                 Wheel?.Invoke(message.GetProperty("deltaX").GetDouble(), message.GetProperty("deltaY").GetDouble());
                 break;
+            case "pointer":
+                PointerMoved?.Invoke();
+                break;
+            case "selection":
+                SelectionChanged?.Invoke(Selection(message));
+                break;
+            case "highlight":
+                if (message.TryGetProperty("cfi", out var cfi) && cfi.GetString() is { } value && Rect(message) is { } rect)
+                    HighlightClicked?.Invoke(value, rect);
+                break;
         }
+    }
+
+    static Box? Rect(JsonElement message)
+    {
+        if (!message.TryGetProperty("rect", out var r) || r.ValueKind != JsonValueKind.Object) return null;
+        try { return new Box(r.GetProperty("x").GetDouble(), r.GetProperty("y").GetDouble(), r.GetProperty("width").GetDouble(), r.GetProperty("height").GetDouble()); }
+        catch (Exception error) when (error is KeyNotFoundException or InvalidOperationException or FormatException) { return null; }
+    }
+
+    static SelectionInfo? Selection(JsonElement message)
+    {
+        static string? Text(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        if (Text(message, "cfi") is not { } cfi || Text(message, "text") is not { } text || Rect(message) is not { } rect) return null;
+        var fraction = message.TryGetProperty("fraction", out var f) && f.ValueKind == JsonValueKind.Number ? f.GetDouble() : 0;
+        var label = Text(message, "label")?.Trim();
+        return new SelectionInfo(cfi, text, fraction, string.IsNullOrEmpty(label) ? null : label, rect);
     }
 
     static bool Flag(JsonElement message, string name) =>

@@ -20,7 +20,7 @@ namespace Readme.App.Reader;
 /// on it laid out by <see cref="BookFrame"/>, the spine's shadow, the progress hairline, and everything
 /// that turns, jumps and restyles the book while keeping the reader's place.
 /// </summary>
-public sealed class ReaderView
+public sealed partial class ReaderView
 {
     static readonly TimeSpan Motion = TimeSpan.FromMilliseconds(200);
     /// <summary>How long the window has to keep its size before a resize counts as over.</summary>
@@ -106,6 +106,7 @@ public sealed class ReaderView
         _root.Children.Add(_desk);
         _root.Children.Add(_progress);
         _root.Children.Add(_notice);
+        BuildTools();
 
         _root.SizeChanged += (_, _) => Resized();
         _edgeBack.PointerPressed += (_, e) => EdgeClicked(TurnDirection.Backward, e);
@@ -162,6 +163,8 @@ public sealed class ReaderView
         _isOpening = false;
         _spreadWanted = false;
         _book.Unload();
+        ResetTools();
+        SleepToolbar();
         Record = null;
         BookId = null;
         _book.Control.Opacity = 0;
@@ -281,6 +284,7 @@ public sealed class ReaderView
         _places.MovedTo(null);
         _book.Control.Opacity = 0;
         HideNotice();
+        ResetTools();
         _layout = new BookFrame(_root.ActualWidth > 0 ? _root.ActualWidth : 1048, _root.ActualHeight > 0 ? _root.ActualHeight : 620, _settings, _isFullscreen);
         PlaceViews();
         ApplyColors();
@@ -296,6 +300,8 @@ public sealed class ReaderView
             var location = await _book.OpenAsync(file, start);
             if (!Current()) return false;
             BookId = bookId;
+            await LoadMarksAsync(bookId, Current);
+            if (!Current()) return false;
             // The book opens on the page that holds its place, which starts before it. A place it
             // couldn't find is replaced by where it opened, or by the same share of the way through.
             var place = await _book.PlaceAsync() ?? location.Cfi;
@@ -314,6 +320,8 @@ public sealed class ReaderView
             await _book.SettleAsync();
             if (!Current()) return false;
             _isOpening = false;
+            // The spine shows now the book is open, even with no last spread shown before it.
+            PlaceViews();
             // A page turned as the book settled is where the reader now is.
             if ((isLost || _places.HasTurnedSince(opened)) && _book.CurrentLocation is { } here) Keep(here);
             else if (_book.CurrentLocation is { } now) Read?.Invoke(bookId, now);
@@ -324,6 +332,8 @@ public sealed class ReaderView
                 RememberSpread();
             });
             _book.Control.Focus(FocusState.Programmatic);
+            UpdateRibbon(animated: false);
+            MentionMarker();
             return true;
         }
         catch (OperationCanceledException)
@@ -365,7 +375,12 @@ public sealed class ReaderView
         await _writer.WrittenAsync();
     }
 
-    void Show(ReaderLocation location) => PlaceProgress(location);
+    void Show(ReaderLocation location)
+    {
+        PlaceProgress(location);
+        if (_turnsInFlight == 0) UpdateRibbon(animated: true);
+        if (_toolbar.IsAwake) RefreshToolbar();
+    }
 
     // MARK: Commands and keys
 
@@ -374,7 +389,22 @@ public sealed class ReaderView
     {
         // While the shelf covers the book, its keys are the shelf's, not page turns underneath.
         if (Intercept?.Invoke(key) is { } handled) return handled;
-        var action = KeyAction.Of(key.Key, key.Modifiers, key.IsRepeat, _isFullscreen, isTyping: false);
+        var isEscape = key.Key == "Escape" && key.Modifiers == Modifiers.None;
+        // Esc puts the shortcuts away, and any other key does what it does once they're gone.
+        if (_shortcutsShown && isEscape)
+        {
+            CloseShortcuts();
+            return true;
+        }
+        var action = KeyAction.Of(key.Key, key.Modifiers, key.IsRepeat, _isFullscreen, isTyping: false,
+            isInContents: _contentsShown || _highlightsShown);
+        if (action == null && isEscape && _bar.IsShown)
+        {
+            HideBar();
+            _ = _book.ClearSelectionAsync();
+            return true;
+        }
+        if (_shortcutsShown && action is not (KeyAction.Command { Value: ReaderCommand.ShowShortcuts } or KeyAction.Ignore)) CloseShortcuts();
         switch (action)
         {
             case KeyAction.Command { Value: var command }:
@@ -387,6 +417,10 @@ public sealed class ReaderView
             case KeyAction.LeaveFullscreen:
                 CommandRequested?.Invoke(ReaderCommand.ToggleFullscreen);
                 return true;
+            case KeyAction.CloseContents:
+                CloseContents();
+                CloseHighlights();
+                return true;
             case KeyAction.Ignore:
                 return true;
             default:
@@ -397,6 +431,7 @@ public sealed class ReaderView
 
     public void Perform(ReaderCommand command)
     {
+        if (PerformTool(command)) return;
         switch (command)
         {
             case ReaderCommand.BiggerText or ReaderCommand.SmallerText:
@@ -409,7 +444,7 @@ public sealed class ReaderView
                 Jump(book => book.GoToEndAsync());
                 break;
             default:
-                // Full screen and the library are the window's; the rest arrive in phase 4.
+                // Full screen and the library are the window's.
                 CommandRequested?.Invoke(command);
                 break;
         }
@@ -438,13 +473,19 @@ public sealed class ReaderView
         if (_isCovered || !_book.IsOpen) return;
         if (isRepeat ? _turnsInFlight > 0 : _turnsInFlight >= MostInFlight) return;
         _places.Turned();
+        HideBar();
         _turnsInFlight++;
+        TurnBegan();
         var turn = direction == TurnDirection.Forward ? _book.NextAsync() : _book.PreviousAsync();
         _turning = Finish(turn);
         async Task Finish(Task<ReaderLocation?> moving)
         {
             try { await moving; }
-            finally { _turnsInFlight--; }
+            finally
+            {
+                _turnsInFlight--;
+                TurnLanded();
+            }
         }
     }
 
@@ -455,12 +496,27 @@ public sealed class ReaderView
     void Jump(Func<BookWebView, Task<ReaderLocation?>> go)
     {
         if (_isCovered || !_book.IsOpen) return;
+        ClosePanelsForJump();
+        HideBar();
         _places.Turned();
+        var before = _turning;
+        _turnsInFlight++;
+        TurnBegan();
         _turning = Land();
         async Task Land()
         {
-            await go(_book);
-            _places.Turned();
+            try
+            {
+                // After the turns before it have landed, so it's the last word.
+                try { await before; } catch (Exception) { }
+                await go(_book);
+                _places.Turned();
+            }
+            finally
+            {
+                _turnsInFlight--;
+                TurnLanded();
+            }
         }
     }
 
@@ -471,6 +527,8 @@ public sealed class ReaderView
         if (changed == _settings) return;
         _settings = changed;
         _settings.Save(AppPaths.Settings);
+        // As on Mac, the toolbar goes, so the reader sees the page in its new look.
+        SleepToolbar();
         Restyle(animated: true);
     }
 
@@ -579,6 +637,7 @@ public sealed class ReaderView
         Put(_spineRight, new Box(middle, frame.Y, SpineShadow.Reach, frame.Height));
         var spineShown = _layout.Columns == 2 && (_book.IsOpen || IsShowingLastSpread) ? Visibility.Visible : Visibility.Collapsed;
         _spineLeft.Visibility = _spineRight.Visibility = spineShown;
+        PlaceTools();
         var edge = frame.Width * EdgeShare;
         Put(_edgeBack, new Box(frame.X, frame.Y, edge, frame.Height));
         Put(_edgeForward, new Box(frame.Right - edge, frame.Y, edge, frame.Height));
@@ -622,6 +681,7 @@ public sealed class ReaderView
         _spineRight.Fill = SpineBrush(colors.Spine, towardsSpine: false);
         // The desk is dark in every theme, so the window's own controls are drawn for a dark ground.
         _root.RequestedTheme = ElementTheme.Dark;
+        ApplyToolColors();
     }
 
     static SolidColorBrush Brush(Rgba color) => new(Windows.UI.Color.FromArgb((byte)Math.Round(color.A * 255), color.R, color.G, color.B));
@@ -685,6 +745,8 @@ public sealed class ReaderView
         if (!_places.IsChangingLayout) _places.BeginLayoutChange(Place);
         _isResizeOwnChange = true;
         _isFullscreen = on;
+        if (!on) SetAwake(_toolbar.IsAwake);
+        RefreshToolbar();
         SettleResize();
     }
 

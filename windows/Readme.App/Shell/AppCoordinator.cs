@@ -48,7 +48,6 @@ sealed class AppCoordinator
     /// </summary>
     readonly BookWebView _hidden = new();
     readonly SemaphoreSlim _hiddenTurn = new(1, 1);
-    readonly Button _settingsButton = new() { Content = "Aa", HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 8, 12, 0), Padding = new Thickness(10, 2, 10, 4), Opacity = 0.8 };
     bool _isShowingLibrary;
     bool _isClosing;
     bool _closeKept;
@@ -94,8 +93,6 @@ sealed class AppCoordinator
         _content.Children.Add(_reader.Root);
         _content.Children.Add(_shelf.Root);
         _shelf.Root.Visibility = Visibility.Collapsed;
-        _settingsButton.Flyout = SettingsMenu();
-        _content.Children.Add(_settingsButton);
         _content.KeyDown += OnKeyDown;
         _content.IsTabStop = true;
         _window.Content = _content;
@@ -186,12 +183,7 @@ sealed class AppCoordinator
         var on = appWindow.Presenter.Kind != AppWindowPresenterKind.FullScreen;
         _reader.SetFullscreen(on);
         appWindow.SetPresenter(on ? AppWindowPresenterKind.FullScreen : AppWindowPresenterKind.Overlapped);
-        ShowSettingsButton();
     }
-
-    void ShowSettingsButton() =>
-        _settingsButton.Visibility = _isShowingLibrary || _window.AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen
-            ? Visibility.Collapsed : Visibility.Visible;
 
     /// <summary>
     /// Closing waits for the turns and restyles under way and writes the reader's place, then the
@@ -277,7 +269,6 @@ sealed class AppCoordinator
             case ReaderCommand.ShowLibrary:
                 ShowLibrary();
                 break;
-            // Contents, highlights, marker, go to page, find and shortcuts arrive in phase 4.
         }
     }
 
@@ -291,7 +282,7 @@ sealed class AppCoordinator
         _shelf.Rebuild();
         _shelf.Root.Visibility = Visibility.Visible;
         Fade(_shelf.Root, 1, animated);
-        ShowSettingsButton();
+        _reader.SetBehind(true);
         _window.Title = "Readme";
         _content.Focus(FocusState.Programmatic);
         _ = _reader.KeepPlaceAsync();
@@ -307,7 +298,7 @@ sealed class AppCoordinator
         {
             if (!_isShowingLibrary) _shelf.Root.Visibility = Visibility.Collapsed;
         });
-        ShowSettingsButton();
+        _reader.SetBehind(false);
         if (_reader.Record is { } book) _window.Title = $"{book.Title} — Readme";
         _reader.Book.Control.Focus(FocusState.Programmatic);
     }
@@ -419,47 +410,5 @@ sealed class AppCoordinator
         {
             _hiddenTurn.Release();
         }
-    }
-
-    // MARK: Settings menu
-
-    /// <summary>Theme, font, line width and text size. The toolbar of phase 4 takes this over.</summary>
-    MenuFlyout SettingsMenu()
-    {
-        var menu = new MenuFlyout();
-        void Group<T>(string title, IEnumerable<(string Label, T Value)> choices, Func<ReaderSettings, T> current, Func<ReaderSettings, T, ReaderSettings> apply)
-        {
-            var sub = new MenuFlyoutSubItem { Text = title };
-            foreach (var (label, value) in choices)
-            {
-                var item = new RadioMenuFlyoutItem { Text = label, GroupName = title };
-                item.Click += (_, _) => _reader.Change(apply(_reader.Settings, value));
-                sub.Items.Add(item);
-            }
-            menu.Opening += (_, _) =>
-            {
-                foreach (var (item, (_, value)) in sub.Items.OfType<RadioMenuFlyoutItem>().Zip(choices))
-                    item.IsChecked = EqualityComparer<T>.Default.Equals(value, current(_reader.Settings));
-            };
-            menu.Items.Add(sub);
-        }
-        Group("Theme", [("Auto", ThemeChoice.Auto), ("Paper", ThemeChoice.Paper), ("Sepia", ThemeChoice.Sepia), ("Night", ThemeChoice.Night)],
-            s => s.Theme, (s, v) => s with { Theme = v });
-        Group("Font", [("EB Garamond", BookFont.EbGaramond), ("Literata", BookFont.Literata), ("Fraunces", BookFont.Fraunces)],
-            s => s.Font, (s, v) => s with { Font = v });
-        Group("Line Width", [("Narrow", LineWidth.Narrow), ("Regular", LineWidth.Regular), ("Wide", LineWidth.Wide)],
-            s => s.LineWidth, (s, v) => s with { LineWidth = v });
-        menu.Items.Add(new MenuFlyoutSeparator());
-        foreach (var command in new[] { ReaderCommand.BiggerText, ReaderCommand.SmallerText, ReaderCommand.ToggleFullscreen, ReaderCommand.ShowLibrary })
-        {
-            var item = new MenuFlyoutItem { Text = command.Title(), KeyboardAcceleratorTextOverride = command.Shortcut().Label };
-            item.Click += (_, _) => _reader.Perform(command);
-            menu.Items.Add(item);
-        }
-        var open = new MenuFlyoutItem { Text = "Add Books…", KeyboardAcceleratorTextOverride = "Ctrl+O" };
-        open.Click += (_, _) => _ = ChooseBookAsync();
-        menu.Items.Add(open);
-        menu.Closed += (_, _) => _reader.Book.Control.Focus(FocusState.Programmatic);
-        return menu;
     }
 }

@@ -56,9 +56,9 @@ const postToApp = message => {
     else globalThis.chrome?.webview?.postMessage(json)
 }
 
-// Windows only. WebView2 keeps keys and wheel turns to itself once the page has focus, so the app's
-// keyboard accelerators and swipe tracking never see them. The page passes them on instead. On Mac the
-// app's own event monitors see them, so none of this runs there.
+// Windows only. WebView2 keeps keys, wheel turns and pointer moves to itself once the page has focus,
+// so the app's keyboard accelerators, swipe tracking and toolbar never see them. The page passes them
+// on instead. On Mac the app's own event monitors see them, so none of this runs there.
 const forwardInput = target => {
     if (!isWindowsHost()) return
     target.addEventListener('keydown', event => postToApp({
@@ -74,6 +74,13 @@ const forwardInput = target => {
             ctrl: event.ctrlKey,
         })
     }, { passive: false })
+    // The pointer moving over the page wakes the toolbar. A few times a second is plenty for that.
+    let lastPointer = 0
+    target.addEventListener('pointermove', event => {
+        if (event.timeStamp - lastPointer < 100) return
+        lastPointer = event.timeStamp
+        postToApp({ type: 'pointer' })
+    })
 }
 forwardInput(document)
 
