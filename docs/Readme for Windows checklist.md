@@ -12,10 +12,10 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** 8 next. Phases 0 to 7 are done on Windows, apart from the items that need the Mac, GitHub or a hand
+- **Phase:** 8, waiting on the owner. Everything that can be built is built; what's left needs Partner Center, GitHub, the Mac or a person's hands
 - **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed (phase 2 is on it too)
-- **Last thing done:** phase 7 (Nov 14, 2026): the page curl. See **Phase 7 findings**. Before that, phases 0 to 6: see their findings
-- **Next step:** phase 8, release. Run the Windows workflow once from the Actions tab (it has never run on GitHub). Still to try by hand: the curl's feel with a real touchpad and keyboard (phase 7), dragging books and bundles from File Explorer onto the shelf (phases 3 and 5), reduce motion (phase 2), and Narrator over the reading tools (phase 4). On the Mac, still open: run the Swift tests (they now cover two `bridge.js` changes and read the Windows-made bundle), export a bundle into `Fixtures/Golden/` for the Windows tests, and carry bundles both ways between the two apps, which is phase 5's "done when"
+- **Last thing done:** phase 8 (Nov 14, 2026): the release script, install docs, README section and Store listing draft. Before that, phases 0 to 7: see their findings
+- **Next step:** for the owner. (1) Run the Windows workflow once from the Actions tab. (2) Reserve the name in Partner Center, copy the identity into `Package.appxmanifest`, put up the privacy page, run `scripts/windows-release.ps1 -Store` and submit, following `docs/windows-store-listing.md`. (3) Have someone install it from `docs/install-windows.md` alone. Still to try by hand: the curl's feel with a real touchpad and keyboard (phase 7), dragging books and bundles from File Explorer onto the shelf (phases 3 and 5), reduce motion (phase 2), and Narrator over the reading tools (phase 4). On the Mac: run the Swift tests (they now cover two `bridge.js` changes and read the Windows-made bundle), export a bundle into `Fixtures/Golden/` for the Windows tests, and carry bundles both ways between the two apps, which is phase 5's "done when"
 - **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites
@@ -270,8 +270,8 @@ Built on Windows, Nov 14, 2026. `dotnet test windows/Readme.slnx` runs 278.
 
 ## Phase 8: Release
 
-- [ ] Store listing or signed installer
-- [ ] Windows install docs (including the uninstall note if MSIX)
-- [ ] Release script
-- [ ] README section for Windows
-- [ ] **Done when:** someone else installs it from the install docs alone
+- [ ] Store listing or signed installer. **Drafted, not submitted:** `docs/windows-store-listing.md` has the description, features, category, the `runFullTrust` answer, the privacy text and the steps. Submitting needs the owner's Partner Center account and the real package identity
+- [x] Windows install docs (including the uninstall note if MSIX): `docs/install-windows.md`. Uninstalling keeps the library in `Documents\Readme` (which may be in OneDrive) and removes the settings
+- [x] Release script: `scripts/windows-release.ps1` takes the version from `project.yml` (1.5 build 7 is 1.5.7.0), runs the Core tests and builds both packages into `windows/dist` with checksums; `-Store` refuses the placeholder identity. Steps in `docs/releasing.md`, "Windows"
+- [x] README section for Windows, with the privacy line for a full-trust app in place of "sandboxed", and links to the Windows docs
+- [ ] **Done when:** someone else installs it from the install docs alone. Needs the Store listing first, and a person
