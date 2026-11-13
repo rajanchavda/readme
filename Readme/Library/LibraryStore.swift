@@ -54,10 +54,35 @@ final class LibraryStore: ObservableObject {
             ?? books.max { $0.addedAt < $1.addedAt }
     }
 
-    /// The rest, latest first. A book never read counts from when it was added.
+    /// The rest: the pinned ones first, the latest pin first, then the others latest first. A book
+    /// never read counts from when it was added.
     var others: [Book] {
         let current = current
-        return books.filter { $0.id != current?.id }.sorted { $0.recency > $1.recency }
+        let rest = books.filter { $0.id != current?.id }
+        let pinned = rest.filter { $0.pinnedAt != nil }.sorted { $0.pinnedAt! > $1.pinnedAt! }
+        let unpinned = rest.filter { $0.pinnedAt == nil }.sorted { $0.recency > $1.recency }
+        return pinned + unpinned
+    }
+
+    /// Pins the books to the front of the shelf, or unpins them. A book pinned already keeps its pin,
+    /// and so its place among the pins. IDs not in the library are passed over.
+    func setPinned(ids: [String], pinned: Bool) {
+        let moment = now()
+        var changed = false
+        for index in books.indices where ids.contains(books[index].id) {
+            let value = pinned ? books[index].pinnedAt ?? moment : nil
+            guard books[index].pinnedAt != value else { continue }
+            books[index].pinnedAt = value
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    /// Pins the book as it was pinned elsewhere, at `date`, for an import.
+    func restorePin(id: String, at date: Date) {
+        guard let index = books.firstIndex(where: { $0.id == id }) else { return }
+        books[index].pinnedAt = date
+        save()
     }
 
     /// A book already in the library stays as it is.

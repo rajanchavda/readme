@@ -121,4 +121,116 @@ private let place = ReaderLocation(
         await store.saved()
         #expect(LibraryStore(directory: folder).books.map(\.id) == ["a"])
     }
+
+    // MARK: Pins
+
+    /// A store whose clock reads whatever `clock` is set to.
+    private final class Clock: @unchecked Sendable {
+        var time: Double = 1000
+    }
+
+    private func pinStore(_ folder: URL, _ clock: Clock) -> LibraryStore {
+        let store = LibraryStore(directory: folder, now: { Date(timeIntervalSince1970: clock.time) })
+        store.add(book("current", added: 1, read: 500))
+        store.add(book("a", added: 2, read: 100))
+        store.add(book("b", added: 3, read: 200))
+        store.add(book("c", added: 4, read: 300))
+        store.add(book("d", added: 5, read: 400))
+        return store
+    }
+
+    @Test func pinnedComeFirstNewestPinFirst() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let clock = Clock()
+        let store = pinStore(folder, clock)
+        #expect(store.others.map(\.id) == ["d", "c", "b", "a"])
+        store.setPinned(ids: ["a"], pinned: true)
+        clock.time = 1001
+        store.setPinned(ids: ["b"], pinned: true)
+        #expect(store.others.map(\.id) == ["b", "a", "d", "c"])
+        #expect(store.book(id: "b")?.pinnedAt == Date(timeIntervalSince1970: 1001))
+        // Reading a pinned book doesn't reorder the pins.
+        clock.time = 1002
+        store.markRead(id: "a", location: place)
+        clock.time = 1003
+        store.markRead(id: "current", location: place)
+        #expect(store.others.map(\.id) == ["b", "a", "d", "c"])
+    }
+
+    @Test func unpinnedGoBackByRecency() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = pinStore(folder, Clock())
+        store.setPinned(ids: ["a", "b"], pinned: true)
+        store.setPinned(ids: ["a", "b"], pinned: false)
+        #expect(store.others.map(\.id) == ["d", "c", "b", "a"])
+        #expect(store.books.allSatisfy { $0.pinnedAt == nil })
+    }
+
+    @Test func pinningAgainKeepsTheDate() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let clock = Clock()
+        let store = pinStore(folder, clock)
+        store.setPinned(ids: ["a"], pinned: true)
+        clock.time = 1001
+        store.setPinned(ids: ["b"], pinned: true)
+        clock.time = 1002
+        // A mixed selection: "a" is pinned already and keeps its place behind "b".
+        store.setPinned(ids: ["a", "c"], pinned: true)
+        #expect(store.book(id: "a")?.pinnedAt == Date(timeIntervalSince1970: 1000))
+        #expect(store.others.map(\.id) == ["c", "b", "a", "d"])
+    }
+
+    @Test func currentBookPinnedIsOnlyOnTheLedge() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = pinStore(folder, Clock())
+        store.setPinned(ids: ["current", "a"], pinned: true)
+        #expect(store.current?.id == "current")
+        #expect(store.others.map(\.id) == ["a", "d", "c", "b"])
+    }
+
+    @Test func pinningAMissingBookDoesNothing() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = pinStore(folder, Clock())
+        let before = store.books
+        store.setPinned(ids: ["gone"], pinned: true)
+        store.restorePin(id: "gone", at: Date(timeIntervalSince1970: 1))
+        #expect(store.books == before)
+    }
+
+    @Test func restorePinKeepsTheGivenDate() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = pinStore(folder, Clock())
+        store.setPinned(ids: ["a"], pinned: true)
+        store.restorePin(id: "b", at: Date(timeIntervalSince1970: 1))
+        #expect(store.book(id: "b")?.pinnedAt == Date(timeIntervalSince1970: 1))
+        #expect(store.others.map(\.id) == ["a", "b", "d", "c"])
+    }
+
+    @Test func pinsSurviveRestart() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = pinStore(folder, Clock())
+        store.setPinned(ids: ["a"], pinned: true)
+        await store.saved()
+        let reopened = LibraryStore(directory: folder)
+        #expect(reopened.book(id: "a")?.pinnedAt == Date(timeIntervalSince1970: 1000))
+        #expect(reopened.others.map(\.id) == ["a", "d", "c", "b"])
+    }
+
+    @Test func oldLibraryFileLoadsUnpinned() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        // As written before books could be pinned.
+        let json = #"[{"id":"a","title":"A","fileName":"a.epub","hasCover":false,"addedAt":10}]"#
+        try Data(json.utf8).write(to: folder.appendingPathComponent("library.json"))
+        let store = LibraryStore(directory: folder)
+        #expect(store.books.map(\.id) == ["a"])
+        #expect(store.book(id: "a")?.pinnedAt == nil)
+    }
 }

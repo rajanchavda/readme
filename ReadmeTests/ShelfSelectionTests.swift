@@ -47,6 +47,13 @@ import Testing
         #expect(selection.menuTitle(rightClicked: "b") == "Export…")
     }
 
+    @Test func pinMenuTitles() {
+        #expect(ShelfSelection.pinMenuTitle(count: 1, allPinned: false) == "Pin to Front")
+        #expect(ShelfSelection.pinMenuTitle(count: 3, allPinned: false) == "Pin 3 Books to Front")
+        #expect(ShelfSelection.pinMenuTitle(count: 1, allPinned: true) == "Unpin")
+        #expect(ShelfSelection.pinMenuTitle(count: 3, allPinned: true) == "Unpin 3 Books")
+    }
+
     @Test func clearEmptiesIt() {
         let selection = ShelfSelection()
         _ = selection.click("c", modifiers: .command, order: order)

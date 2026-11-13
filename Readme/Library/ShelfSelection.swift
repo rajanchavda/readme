@@ -50,4 +50,14 @@ final class ShelfSelection: ObservableObject {
     func menuTitle(rightClicked id: String) -> String {
         ids.contains(id) && ids.count > 1 ? "Export \(ids.count) Books…" : "Export…"
     }
+
+    /// The pin item for `count` books: it unpins when every one of them is pinned, and pins otherwise.
+    static func pinMenuTitle(count: Int, allPinned: Bool) -> String {
+        switch (allPinned, count > 1) {
+        case (true, true): "Unpin \(count) Books"
+        case (true, false): "Unpin"
+        case (false, true): "Pin \(count) Books to Front"
+        case (false, false): "Pin to Front"
+        }
+    }
 }

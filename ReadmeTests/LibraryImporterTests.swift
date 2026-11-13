@@ -28,9 +28,10 @@ import Testing
 
     /// long.epub on Mac A with h, m and a place halfway, added at 1000 and read at 2000, exported.
     @discardableResult
-    private func exportFromA() async throws -> String {
+    private func exportFromA(pinnedAt: Date? = nil) async throws -> String {
         let book = try await BookImporter(store: storeA).importBook(from: exportFixture("long.epub"))
         storeA.applyImported(id: book.id, addedAt: bundleDate(1000), lastReadAt: bundleDate(2000), location: nil)
+        if let pinnedAt { storeA.restorePin(id: book.id, at: pinnedAt) }
         await storeA.highlights.add(h, bookID: book.id)
         await storeA.markers.set(m, bookID: book.id)
         await storeA.positions.save(bundlePlace(0.5), bookID: book.id)
@@ -76,6 +77,29 @@ import Testing
         _ = await importerB.run(try await importerB.prepare(url), choice: .keepMine)
         #expect(storeB.book(id: id)?.title == "Shelf Title")
         #expect(storeB.book(id: id)?.author == "Shelf Author")
+    }
+
+    @Test func newBooksKeepTheirPin() async throws {
+        defer { clean() }
+        let id = try await exportFromA(pinnedAt: bundleDate(3000))
+        _ = await importerB.run(try await importerB.prepare(url), choice: .keepMine)
+        #expect(storeB.book(id: id)?.pinnedAt == bundleDate(3000))
+    }
+
+    @Test(arguments: [ImportChoice.keepMine, .combine])
+    func existingBooksKeepTheirOwnPin(choice: ImportChoice) async throws {
+        defer { clean() }
+        // Pinned there, not here: stays unpinned.
+        let id = try await exportFromA(pinnedAt: bundleDate(3000))
+        _ = try await haveOnB(fraction: 0.2)
+        _ = await importerB.run(try await importerB.prepare(url), choice: choice)
+        #expect(storeB.book(id: id)?.pinnedAt == nil)
+        // Pinned here, not there: stays pinned, with its own date.
+        storeB.restorePin(id: id, at: bundleDate(4000))
+        storeA.setPinned(ids: [id], pinned: false)
+        _ = try await LibraryExporter(store: storeA).export(storeA.books, to: url)
+        _ = await importerB.run(try await importerB.prepare(url), choice: choice)
+        #expect(storeB.book(id: id)?.pinnedAt == bundleDate(4000))
     }
 
     @Test func keepMineLeavesExistingBooksAlone() async throws {
