@@ -12,10 +12,10 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** 6 next. Phases 0 to 5 are done on Windows, apart from the items that need the Mac or a hand
+- **Phase:** 7 next, once the first run of the Windows workflow passes. Phases 0 to 6 are done on Windows, apart from the items that need the Mac, GitHub or a hand
 - **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed (phase 2 is on it too)
-- **Last thing done:** phase 5 (Nov 13, 2026): export and import of `.readmelibrary` bundles. See **Phase 5 findings**. Before that, phases 0 to 4: see their findings
-- **Next step:** phase 6, Windows integration. Still to try by hand: dragging books and bundles from File Explorer onto the shelf (phases 3 and 5), reduce motion (phase 2), and Narrator over the reading tools (phase 4). On the Mac, still open: run the Swift tests (they now cover two `bridge.js` changes and read the Windows-made bundle), export a bundle into `Fixtures/Golden/` for the Windows tests, and carry bundles both ways between the two apps, which is phase 5's "done when"
+- **Last thing done:** phase 6 (Nov 13, 2026): single instance, MSIX packaging with file associations, the Windows workflow. See **Phase 6 findings**. Before that, phases 0 to 5: see their findings
+- **Next step:** run the Windows workflow once from the Actions tab (it has never run on GitHub), then phase 7, the page curl, unless v1 ships first with a slide (the open decision above). Still to try by hand: dragging books and bundles from File Explorer onto the shelf (phases 3 and 5), reduce motion (phase 2), and Narrator over the reading tools (phase 4). On the Mac, still open: run the Swift tests (they now cover two `bridge.js` changes and read the Windows-made bundle), export a bundle into `Fixtures/Golden/` for the Windows tests, and carry bundles both ways between the two apps, which is phase 5's "done when"
 - **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites
@@ -223,14 +223,26 @@ Built on Windows, Nov 13, 2026. `Readme.Core` gained `LibraryBundle.cs`, `Librar
 
 ## Phase 6: Windows integration
 
-- [ ] `.epub` and `.readmelibrary` file associations
-- [ ] Single instance with file-open redirection
-- [ ] Auto theme follows Windows
-- [ ] Packaging per the decision above
-- [ ] README's "sandboxed" claim handled for Windows
-- [ ] CI on `windows-latest` (Core tests, then app tests with WebView2 runtime)
-- [ ] Signing per the decision above
-- [ ] **Done when:** double-clicking an EPUB opens it in the running app; installer builds in CI
+- [x] `.epub` and `.readmelibrary` file associations, in `Package.appxmanifest`
+- [x] Single instance with file-open redirection (`Program.cs`). `--checks <dir> instance <fixtures>` launches a second copy with a book, a library, nothing, and a path with spaces: each is handed over in about 100 ms and the copy quits, leaving one Readme running
+- [x] Auto theme follows Windows: done in phase 2, as Windows' light or dark mode changes. The title bar is now dark in every theme, like the desk and the shelf
+- [x] Packaging per the decision above: single-project MSIX, built with `-p:ReadmePackage=true`, x64 and ARM64. A plain build stays unpackaged for development and the self-checks. Identity Name and Publisher are placeholders until Partner Center gives the real ones; see `windows/README.md`
+- [x] README's "sandboxed" claim handled for Windows: the Windows wording is in `windows/README.md`, ready for the README's Windows section in phase 8. The README itself is still Mac-only, so it's unchanged
+- [ ] CI on `windows-latest` (Core tests, then app tests with WebView2 runtime). **Written, not yet run on GitHub:** `.github/workflows/windows.yml`, run from the Actions tab or the `run-tests` label like the Mac's. Core tests, a book read in the real app by the `read` self-check, then both MSIX packages as artifacts. The app step was run locally as CI runs it
+- [x] Signing per the decision above: none in the repo or CI. The Store signs; a test copy is registered with Developer Mode instead
+- [ ] **Done when:** double-clicking an EPUB opens it in the running app; installer builds in CI. **First half done:** with the package registered as a test install, opening a book through its file association started Readme on it, and with Readme running, a library and then a book each went to the same window, which came to the front. The packages build locally; CI is still to run
+
+Built on Windows, Nov 13, 2026.
+
+### Phase 6 findings
+
+- **The app has its own `Main` now** (`DISABLE_XAML_GENERATED_MAIN`), since a second launch has to be handed on before any window exists. `AppInstance.FindOrRegisterForKey` takes a key made from the library folder, so a self-check with its own `README_DATA_DIR` never lands in the reader's own Readme. The redirect is waited for with `CoWaitForMultipleObjects`, as an STA thread must, and the second launch calls `AllowSetForegroundWindow` for the first, so the window really does come to the front.
+- **A file activation brings its files in the activation, not on the command line.** The first launch takes them from `GetActivatedEventArgs`; a redirected command line is split with `CommandLineToArgvW`, so paths with spaces stay whole.
+- **`dotnet build` can make the `.msix`, but not the Store's `.msixupload`.** The wrapper and its symbols package need Visual Studio's own MSBuild (a missing `System.Security.Permissions` and `mspdbcmf.exe`). The Store takes a plain `.msix`, so the package is built `SideloadOnly` without symbols, which keeps CI to the .NET SDK.
+- **`IApplicationActivationManager.ActivateForFile` doesn't work for a full-trust app** ("does not support the contract"); a desktop app's file association goes through its ProgID. The test opened files with `ShellExecuteEx` and the ProgID the package registered, which is what Explorer does on a double-click. Readme was the only `.epub` handler on the machine.
+- **Documents may be in OneDrive,** as it was here: `Environment.SpecialFolder.MyDocuments` follows it, so the library is in `OneDrive\Documents\Readme`. That was decided in phase 1, and the install docs (phase 8) must say so.
+- **The icons are the Mac's,** cropped to the rounded square for the tiles, with a `Readme.ico` for the window and the exe.
+- **Not tried:** a real double-click in Explorer, and the Store's own install. Both use the same association.
 
 ## Phase 7: Page curl
 
