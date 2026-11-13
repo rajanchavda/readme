@@ -14,4 +14,6 @@ struct Book: Codable, Identifiable, Equatable, Sendable {
     /// Where the reader left off, as the shelf shows it.
     var chapterTitle: String?
     var chapterMinutesLeft: Double?
+    /// When the reader pinned it to the front of the shelf, or nil if it isn't pinned.
+    var pinnedAt: Date? = nil
 }
