@@ -21,7 +21,7 @@ struct ShelfSearchField: View {
                     .foregroundStyle(ShelfStyle.text)
                     .focused($focused)
                     .onSubmit(onSubmit)
-                    .onAppear { focused = true }
+                    .onAppear(perform: takeKeyboard)
                     .accessibilityLabel("Search the library")
                 if !search.query.isEmpty {
                     Button { search.close() } label: {
@@ -53,10 +53,21 @@ struct ShelfSearchField: View {
             }
         }
         .animation(reduceMotion ? nil : ShelfStyle.lift, value: search.isOpen)
-        .onChange(of: search.focusRequest) { focused = true }
+        .onChange(of: search.focusRequest) { takeKeyboard() }
         // Clicking away from an empty field folds it back to its icon.
         .onChange(of: focused) { _, isFocused in
             if !isFocused && !search.isActive { search.close() }
+        }
+    }
+
+    /// Puts the keyboard in the field. Asked for as the field is first put on screen, focus is dropped,
+    /// so it's asked for once the field is there, and again once it has finished opening.
+    private func takeKeyboard() {
+        Task { @MainActor in
+            await Task.yield()
+            focused = true
+            try? await Task.sleep(for: .milliseconds(250))
+            if search.isOpen && !focused { focused = true }
         }
     }
 }

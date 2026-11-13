@@ -251,6 +251,36 @@ func spreadImage() throws -> CGImage {
         #expect(!coordinator.search.isOpen)
     }
 
+    @Test func clickingTheShelfsMagnifierPutsTheKeyboardInTheField() async throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let positions = PositionStore(directory: folder.appendingPathComponent("Positions", isDirectory: true))
+        let library = LibraryStore(directory: folder, positions: positions)
+        let book = try await shelve("long.epub", in: library)
+        let coordinator = AppCoordinator(library: library, positions: positions, defaults: scratchDefaults())
+        let window = try #require(coordinator.reader.window)
+        defer { window.close() }
+        window.setFrameAutosaveName("")
+        // As the reader comes to it: from a book that's open beneath the shelf.
+        await coordinator.open(book)
+        coordinator.showLibrary()
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(500))
+
+        // The magnifier: 20 in from the right and 12 below the title bar, 28 square.
+        let content = window.contentLayoutRect
+        let point = NSPoint(x: content.maxX - 20 - 14, y: content.maxY - 12 - 15)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(
+                with: type, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(coordinator.search.isOpen)
+        #expect(window.firstResponder is NSText, "\(String(describing: window.firstResponder))")
+    }
+
     @Test func puttingTheLibraryAwayTakesTheKeyboardFromIt() throws {
         let reader = ReaderWindowController(
             defaults: scratchDefaults(), positions: PositionStore(directory: try libraryFolder()), library: nil)

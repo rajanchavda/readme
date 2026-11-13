@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import SwiftUI
 import Testing
 @testable import Readme
 
@@ -72,5 +73,48 @@ private func book(_ id: String, _ title: String, by author: String? = nil) -> Bo
         #expect(fellThrough == 0)
         ShelfSearch.escape(search) { fellThrough += 1 }
         #expect(fellThrough == 1)
+    }
+
+    /// Opening the field, as a click on the magnifier or ⌘F does, puts the keyboard in it.
+    @MainActor @Test func openingPutsTheKeyboardInTheField() async throws {
+        let search = ShelfSearch()
+        let host = NSHostingView(rootView: ShelfSearchField(search: search) {})
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(100))
+
+        search.open()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(search.isOpen)
+        #expect(window.firstResponder is NSText)
+        #expect((window.firstResponder as? NSView)?.isDescendant(of: host) == true)
+    }
+
+    /// A click on the magnifier opens the field with the keyboard in it.
+    @MainActor @Test func clickingTheMagnifierPutsTheKeyboardInTheField() async throws {
+        let search = ShelfSearch()
+        let host = NSHostingView(rootView: ShelfSearchField(search: search) {})
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let centre = NSPoint(x: host.bounds.midX, y: host.bounds.midY)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(
+                with: type, location: host.convert(centre, to: nil), modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(search.isOpen)
+        #expect(window.firstResponder is NSText)
     }
 }
