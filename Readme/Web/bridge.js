@@ -1,5 +1,5 @@
-// Drives <foliate-view> for BookWebView.swift. Every method on `readmeBridge` is called from
-// Swift with callAsyncJavaScript and answers with plain JSON-safe values.
+// Drives <foliate-view> for BookWebView.swift on Mac and BookWebView.cs on Windows. Every method on
+// `readmeBridge` is called from the app and answers with plain JSON-safe values.
 import { makeBook } from './foliate/view.js'
 import { SectionProgress } from './foliate/progress.js'
 import { Overlayer } from './foliate/overlayer.js'
@@ -44,6 +44,33 @@ const highlights = new Set()
 let highlightColor = '#f2c744'
 // The reading marker: a point CFI at the start of the spread the reader marked, or null.
 let marker = null
+
+// Sends a message to the app as a JSON string: to WKWebView's `readme` handler on Mac, or to
+// WebView2's host on Windows.
+const macHandler = () => globalThis.webkit?.messageHandlers?.readme
+const isWindowsHost = () => !macHandler() && !!globalThis.chrome?.webview
+const postToApp = message => {
+    const json = JSON.stringify(message)
+    const handler = macHandler()
+    if (handler) handler.postMessage(json)
+    else globalThis.chrome?.webview?.postMessage(json)
+}
+
+// Windows only. WebView2 keeps keys and wheel turns to itself once the page has focus, so the app's
+// keyboard accelerators and swipe tracking never see them. The page passes them on instead. On Mac the
+// app's own event monitors see them, so none of this runs there.
+const forwardInput = target => {
+    if (!isWindowsHost()) return
+    target.addEventListener('keydown', event => postToApp({
+        type: 'key', key: event.key, code: event.code, repeat: event.repeat,
+        ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey, meta: event.metaKey,
+    }))
+    target.addEventListener('wheel', event => postToApp({
+        type: 'wheel', deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode,
+        ctrl: event.ctrlKey,
+    }), { passive: true })
+}
+forwardInput(document)
 
 // Whether the visible spread holds the marker: it's at or after the spread's start, and before its
 // end, which is where the next spread starts. A spread with nothing in it to span, such as a lone
@@ -126,8 +153,7 @@ const post = () => {
     if (!current || postKey(current) === lastPostedKey) return
     lastPostedCFI = current.cfi
     lastPostedKey = postKey(current)
-    globalThis.webkit?.messageHandlers?.readme?.postMessage(
-        JSON.stringify({ type: 'relocate', location: current }))
+    postToApp({ type: 'relocate', location: current })
 }
 
 // foliate ignores a turn while the last one is finishing, so commands wait in line. A command
@@ -545,13 +571,12 @@ const open = async (url, cfi, css, columns, width) => {
     view.addEventListener('link', event => {
         event.preventDefault()
         const { href } = event.detail
-        const tell = landed => globalThis.webkit?.messageHandlers?.readme?.postMessage(
-            JSON.stringify({ type: 'link', landed }))
+        const tell = landed => postToApp({ type: 'link', landed })
         tell(false)
         navigate(() => view.goTo(href)).catch(error => console.warn(error)).finally(() => tell(true))
     })
     // Highlights: the page tells the app about a selection worth marking and about a click on a mark.
-    const tellApp = message => globalThis.webkit?.messageHandlers?.readme?.postMessage(JSON.stringify(message))
+    const tellApp = postToApp
     const rectOf = range => {
         const frame = range.startContainer.ownerDocument.defaultView?.frameElement
         const offset = frame?.getBoundingClientRect() ?? { left: 0, top: 0 }
@@ -566,6 +591,7 @@ const open = async (url, cfi, css, columns, width) => {
         return Math.min(1, start + (end - start) * fractionInSection(range))
     }
     view.addEventListener('load', ({ detail: { doc, index } }) => {
+        forwardInput(doc)
         const report = () => {
             const selection = doc.getSelection()
             const text = selection?.toString().trim()
@@ -825,4 +851,4 @@ globalThis.readmeBridge = {
     },
 }
 
-globalThis.webkit?.messageHandlers?.readme?.postMessage(JSON.stringify({ type: 'ready', load: new URLSearchParams(globalThis.location.search).get('load') }))
+postToApp({ type: 'ready', load: new URLSearchParams(globalThis.location.search).get('load') })
