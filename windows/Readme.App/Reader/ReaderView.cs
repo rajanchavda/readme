@@ -174,6 +174,23 @@ public sealed class ReaderView
 
     double Scale => _root.XamlRoot?.RasterizationScale ?? 1;
 
+    /// <summary>
+    /// Returns once the view is in the window and laid out, so its scale and size are the real ones:
+    /// at launch it isn't yet, and a picture matched against a scale of 1 never matches.
+    /// </summary>
+    async Task LoadedAsync()
+    {
+        if (_root.XamlRoot != null && _root.ActualWidth > 0) return;
+        var loaded = new TaskCompletionSource();
+        void Done(object sender, SizeChangedEventArgs e)
+        {
+            if (_root.XamlRoot != null && e.NewSize.Width > 0) loaded.TrySetResult();
+        }
+        _root.SizeChanged += Done;
+        try { await Task.WhenAny(loaded.Task, Task.Delay(2000)); }
+        finally { _root.SizeChanged -= Done; }
+    }
+
     /// <summary>The look a spread has in the window now, to match a kept picture against.</summary>
     string SpreadSignature() => LastSpreadCache.Signature(
         _layout.Frame.Width, _layout.Frame.Height, Scale, _layout.Columns, _layout.ColumnWidth, Css());
@@ -182,8 +199,11 @@ public sealed class ReaderView
     async Task ShowLastSpreadAsync(Book record)
     {
         HidePlaceholder();
+        await LoadedAsync();
         _layout = new BookFrame(_root.ActualWidth > 0 ? _root.ActualWidth : 1048, _root.ActualHeight > 0 ? _root.ActualHeight : 620, _settings, _isFullscreen);
-        if (_spreads.Image(record.Id, SpreadSignature()) is not { } png) return;
+        var wanted = SpreadSignature();
+        Log.Write($"last spread wanted: {wanted[..Math.Min(40, wanted.Length)]}");
+        if (_spreads.Image(record.Id, wanted) is not { } png) return;
         var image = new BitmapImage();
         using (var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream())
         {
@@ -233,6 +253,7 @@ public sealed class ReaderView
         var signature = LastSpreadCache.Signature(_layout.Frame.Width, _layout.Frame.Height, Scale, _book.Columns, _book.ColumnWidth, _book.Css);
         using var png = await _book.SnapshotAsync();
         if (png == null || BookId != id) return;
+        Log.Write($"last spread kept: {signature[..Math.Min(40, signature.Length)]}");
         var bytes = new byte[png.Size];
         using (var reader = new Windows.Storage.Streams.DataReader(png))
         {

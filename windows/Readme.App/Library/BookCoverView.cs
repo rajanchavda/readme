@@ -72,6 +72,8 @@ sealed class BookCoverView : Button
         else ShowGenerated(width, palette);
     }
 
+    public bool IsPickedNow => _ring.Visibility == Visibility.Visible;
+
     public bool IsPicked
     {
         set

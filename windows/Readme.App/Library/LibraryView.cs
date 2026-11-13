@@ -296,6 +296,27 @@ sealed class LibraryView
         _searchBox.Text = query;
     }
 
+    /// <summary>For the self-checks: a click on a book with these modifiers held, as the cover's own click does.</summary>
+    internal ShelfSelection.Outcome Click(string id, Modifiers modifiers) =>
+        _selection.Click(id, modifiers, Order().Select(b => b.Id).ToList());
+
+    /// <summary>For the self-checks: which covers show the ring, and what the menu on a book offers.</summary>
+    internal IReadOnlyList<string> PickedTitles() => _covers.Values.Where(c => c.IsPickedNow).Select(c => c.Book.Title).ToList();
+
+    internal IReadOnlyList<string> MenuFor(string id, bool show)
+    {
+        var cover = _covers[id];
+        var menu = (MenuFlyout)cover.ContextFlyout;
+        FillMenu(menu, cover.Book);
+        if (show) menu.ShowAt(cover, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions { Position = new Windows.Foundation.Point(40, 60) });
+        return menu.Items.OfType<MenuFlyoutItem>().Select(i => i.Text).ToList();
+    }
+
+    internal void HideMenus()
+    {
+        foreach (var cover in _covers.Values) cover.ContextFlyout?.Hide();
+    }
+
     /// <summary>For the self-checks: what the shelf shows, in order.</summary>
     internal IReadOnlyList<string> ShownTitles() => _covers.Values.Select(c => c.Book.Title).ToList();
 

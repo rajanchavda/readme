@@ -267,6 +267,23 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
         Record("orderWithPin", app.Shelf.ShownTitles());
         await Shot("s4-pinned");
 
+        // Ctrl-click two books, then Shift-click a run, as the covers' own clicks do with keys held.
+        var shelfOrder = new[] { library.Current }.OfType<Book>().Concat(library.Others).ToList();
+        app.Shelf.Click(shelfOrder[1].Id, Core.Reader.Modifiers.Ctrl);
+        app.Shelf.Click(shelfOrder[3].Id, Core.Reader.Modifiers.Ctrl);
+        await Task.Delay(400);
+        Record("ctrlPicked", app.Shelf.PickedTitles());
+        Record("menuOnPicked", app.Shelf.MenuFor(shelfOrder[1].Id, show: true));
+        await Task.Delay(600);
+        await Shot("s4b-picked-with-menu");
+        app.Shelf.HideMenus();
+        Record("menuOnOther", app.Shelf.MenuFor(shelfOrder[2].Id, show: false));
+        app.Shelf.Click(shelfOrder[4].Id, Core.Reader.Modifiers.Shift);
+        await Task.Delay(300);
+        Record("shiftPicked", app.Shelf.PickedTitles());
+        Record("plainClick", app.Shelf.Click(shelfOrder[2].Id, Core.Reader.Modifiers.None).ToString());
+        Record("pickedAfterPlainClick", app.Shelf.PickedTitles());
+
         app.Shelf.Type("spread");
         await Task.Delay(800);
         Record("searchSpread", app.Shelf.ShownTitles());
