@@ -59,7 +59,10 @@ sealed class BookScheme(string webRoot)
                 type = MimeType(file);
             }
             if (file == null || !File.Exists(file)) return Status(environment, 404);
-            var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read).AsRandomAccessStream();
+            // WebView2 keeps a response's stream open for a while after it's read. FileShare.Delete
+            // lets the file be moved or deleted meanwhile, as an import moves the book it just read
+            // and a removal deletes it; without it Windows refuses both.
+            var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete).AsRandomAccessStream();
             var headers = $"Content-Type: {type}\r\nCache-Control: no-store";
             if (path == ReaderPath) headers += $"\r\nContent-Security-Policy: {ContentSecurityPolicy}";
             return environment.CreateWebResourceResponse(stream, 200, "OK", headers);

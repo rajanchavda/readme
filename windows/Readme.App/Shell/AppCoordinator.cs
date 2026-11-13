@@ -4,22 +4,25 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
-using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
+using Readme.App.Library;
 using Readme.App.Reader;
 using Readme.Core.Layout;
+using Readme.Core.Library;
 using Readme.Core.Model;
 using Readme.Core.Reader;
 using Readme.Core.Storage;
 using Readme.Core.Zip;
 using Windows.Graphics;
 using Windows.Storage.Pickers;
+using Windows.UI.ViewManagement;
 
 namespace Readme.App;
 
 /// <summary>
 /// Owns the library, the window and the reader (AppCoordinator.swift and the window parts of
-/// ReadmeApp.swift): where the app opens, opening books, full screen, and keeping everything on close.
-/// Until the shelf arrives (phase 3), the library is a plain list with an Open button.
+/// ReadmeApp.swift): where the app opens, the shelf over the desk, importing and opening books, full
+/// screen, and keeping everything on close.
 /// </summary>
 sealed class AppCoordinator
 {
@@ -31,12 +34,20 @@ sealed class AppCoordinator
     readonly string[] _arguments;
     readonly Action _exit;
     readonly LibraryStore _library = new(AppPaths.Library);
+    readonly LastSpreadCache _spreads;
+    readonly UISettings _system = new();
     readonly Window _window = new();
     readonly Grid _content = new();
     readonly ReaderView _reader;
-    readonly Grid _libraryPanel = new();
-    readonly StackPanel _bookList = new() { Spacing = 4 };
-    readonly TextBlock _libraryMessage = new() { TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Opacity = 0.75, MaxWidth = 420 };
+    readonly LibraryView _shelf;
+    readonly BookImporter _importer;
+    /// <summary>
+    /// The view nobody sees, which import opens each book in: one, made once and kept, since closing a
+    /// WebView2 straight after use can crash the app (spike findings). At opacity 0 behind everything,
+    /// as a collapsed or never-shown one doesn't work.
+    /// </summary>
+    readonly BookWebView _hidden = new();
+    readonly SemaphoreSlim _hiddenTurn = new(1, 1);
     readonly Button _settingsButton = new() { Content = "Aa", HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 8, 12, 0), Padding = new Thickness(10, 2, 10, 4), Opacity = 0.8 };
     bool _isShowingLibrary;
     bool _isClosing;
@@ -47,22 +58,46 @@ sealed class AppCoordinator
     {
         _arguments = arguments;
         _exit = exit;
-        _reader = new ReaderView(_library, ReaderSettings.Load(AppPaths.Settings));
+        _spreads = new LastSpreadCache(Path.Combine(AppPaths.Library, "LastSpreads"));
+        _importer = new BookImporter(_library, DetailsAsync);
+        _reader = new ReaderView(_library, _spreads, ReaderSettings.Load(AppPaths.Settings));
+        _shelf = new LibraryView(_library, book => OpenAsync(book), ImportAllAsync, () => _system.AnimationsEnabled);
+        _library.Removing += id =>
+        {
+            _spreads.Remove(id);
+            // The book open can't stay open once it's off the shelf.
+            if (_reader.Record?.Id == id) _reader.CloseBook();
+        };
         _reader.Read += (id, location) => _library.MarkRead(id, location);
-        _reader.OpenFailed += (book, _) => ShowLibrary($"“{book.Title}” couldn't be opened.");
-        _reader.TitleChanged += title => _window.Title = $"{title} — Readme";
+        _reader.OpenFailed += (book, _) =>
+        {
+            ShowLibrary();
+            _shelf.Say(ShelfText.Message(ImportError.Unreadable));
+        };
+        _reader.TitleChanged += title => _window.Title = string.IsNullOrEmpty(title) ? "Readme" : $"{title} — Readme";
         _reader.CommandRequested += Perform;
         _reader.UnhandledKey += key =>
         {
             if (key.Key == "o" && key.Modifiers == Modifiers.Ctrl) _ = ChooseBookAsync();
         };
+        _reader.Intercept = key => _isShowingLibrary ? HandleKey(key) : null;
+        _shelf.FocusLeft += () => _content.Focus(FocusState.Programmatic);
 
-        BuildLibraryPanel();
-        _settingsButton.Flyout = SettingsMenu();
+        _hidden.Control.Width = 600;
+        _hidden.Control.Height = 800;
+        _hidden.Control.Opacity = 0;
+        _hidden.Control.IsHitTestVisible = false;
+        _hidden.Control.IsTabStop = false;
+        _hidden.Control.HorizontalAlignment = HorizontalAlignment.Left;
+        _hidden.Control.VerticalAlignment = VerticalAlignment.Top;
+        _content.Children.Add(_hidden.Control);
         _content.Children.Add(_reader.Root);
-        _content.Children.Add(_libraryPanel);
+        _content.Children.Add(_shelf.Root);
+        _shelf.Root.Visibility = Visibility.Collapsed;
+        _settingsButton.Flyout = SettingsMenu();
         _content.Children.Add(_settingsButton);
         _content.KeyDown += OnKeyDown;
+        _content.IsTabStop = true;
         _window.Content = _content;
         _window.Title = "Readme";
         _window.AppWindow.Closing += OnClosing;
@@ -96,12 +131,15 @@ sealed class AppCoordinator
         await OpenAsUsualAsync();
     }
 
+    /// <summary>Straight into the book last read, at its place, or the shelf; or the books given on the command line.</summary>
     async Task OpenAsUsualAsync()
     {
-        var file = _arguments.FirstOrDefault(a => a.EndsWith(".epub", StringComparison.OrdinalIgnoreCase) && File.Exists(a));
-        if (file != null)
+        // Books whose copy has gone are taken off the shelf quietly, as on Mac.
+        _library.RemoveMissing(File.Exists);
+        var files = _arguments.Where(a => a.EndsWith(".epub", StringComparison.OrdinalIgnoreCase) && File.Exists(a)).ToList();
+        if (files.Count > 0)
         {
-            await ImportAndOpenAsync(file);
+            await ImportAndOpenAsync(files);
             return;
         }
         switch (LaunchRoute.Resolve(_library, _library.Positions.Location, File.Exists))
@@ -110,7 +148,7 @@ sealed class AppCoordinator
                 await OpenAsync(read.Book, read.Cfi);
                 break;
             default:
-                ShowLibrary();
+                ShowLibrary(animated: false);
                 break;
         }
     }
@@ -148,12 +186,16 @@ sealed class AppCoordinator
         var on = appWindow.Presenter.Kind != AppWindowPresenterKind.FullScreen;
         _reader.SetFullscreen(on);
         appWindow.SetPresenter(on ? AppWindowPresenterKind.FullScreen : AppWindowPresenterKind.Overlapped);
-        _settingsButton.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+        ShowSettingsButton();
     }
+
+    void ShowSettingsButton() =>
+        _settingsButton.Visibility = _isShowingLibrary || _window.AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen
+            ? Visibility.Collapsed : Visibility.Visible;
 
     /// <summary>
     /// Closing waits for the turns and restyles under way and writes the reader's place, then the
-    /// window's, then closes for real. The Mac does the same as it quits.
+    /// window's, then the picture of the spread, then closes for real. The Mac does the same as it quits.
     /// </summary>
     async void OnClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
@@ -166,11 +208,11 @@ sealed class AppCoordinator
         var maximized = sender.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Maximized };
         if (sender.Presenter.Kind == AppWindowPresenterKind.Overlapped || _restoredBounds != null)
             WindowPlacement.Of(sender, maximized, _restoredBounds).Save(AppPaths.Window);
+        try { if (!_isShowingLibrary) await _reader.KeepPlaceAsync(); }
+        catch (Exception error) { Debug.WriteLine(error); }
         _closeKept = true;
         _window.Close();
     }
-
-    public void Close() => _window.AppWindow.Destroy();
 
     /// <summary>
     /// Closes the way the close button does (WM_CLOSE), which is what raises AppWindow.Closing and so
@@ -182,32 +224,47 @@ sealed class AppCoordinator
     static extern bool PostMessage(nint hwnd, uint message, nint wParam, nint lParam);
 
     internal AppWindow AppWindow => _window.AppWindow;
+    internal LibraryView Shelf => _shelf;
+    internal bool IsShowingLibrary => _isShowingLibrary;
 
     // MARK: Keys
 
     /// <summary>
     /// Keys pressed with the focus outside the page. The page passes its own on, so a key pressed in it
-    /// is left alone here, rather than acted on twice.
+    /// is left alone here, rather than acted on twice. Keys typed into the shelf's search are its own.
     /// </summary>
     void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (FocusManager.GetFocusedElement(_content.XamlRoot) is WebView2) return;
+        var focused = FocusManager.GetFocusedElement(_content.XamlRoot);
+        if (focused is WebView2 or TextBox) return;
         if (Keys.FromVirtualKey(e.Key, e.KeyStatus.WasKeyDown) is not { } key) return;
+        e.Handled = HandleKey(key);
+    }
+
+    /// <summary>Over the shelf only what's about the window, the shelf's search and Esc do anything.</summary>
+    internal bool HandleKey(PageKey key)
+    {
         if (key.Key == "o" && key.Modifiers == Modifiers.Ctrl)
         {
             _ = ChooseBookAsync();
-            e.Handled = true;
-            return;
+            return true;
         }
-        if (_isShowingLibrary)
+        if (!_isShowingLibrary) return _reader.HandleKey(key);
+        if (key.Key == "l" && key.Modifiers == Modifiers.Ctrl) return true;
+        switch (key.Key, key.Modifiers)
         {
-            if (key.Key == "Escape" && _reader.Location != null) ShowBook();
-            else if (key.Key == "F11" || (key.Key == "f" && key.Modifiers == Modifiers.None)) ToggleFullscreen();
-            else return;
-            e.Handled = true;
-            return;
+            case ("Escape", Modifiers.None):
+                _shelf.Escape(() => { if (_reader.Location != null) ShowBook(); });
+                return true;
+            case ("f", Modifiers.Ctrl):
+                _shelf.OpenSearch();
+                return true;
+            case ("F11", Modifiers.None):
+                ToggleFullscreen();
+                return true;
+            default:
+                return false;
         }
-        e.Handled = _reader.HandleKey(key);
     }
 
     void Perform(ReaderCommand command)
@@ -226,77 +283,73 @@ sealed class AppCoordinator
 
     // MARK: Library
 
-    void BuildLibraryPanel()
+    /// <summary>Fades the shelf in over the book, which stays open beneath it at its place.</summary>
+    public void ShowLibrary(bool animated = true)
     {
-        var colors = ReadingCss.Colors(Theme.Paper);
-        _libraryPanel.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, colors.Desk.R, colors.Desk.G, colors.Desk.B));
-        _libraryPanel.RequestedTheme = ElementTheme.Dark;
-        var open = new Button { Content = "Open a Book…", HorizontalAlignment = HorizontalAlignment.Center };
-        open.Click += (_, _) => _ = ChooseBookAsync();
-        ToolTipService.SetToolTip(open, "Ctrl+O");
-        var panel = new StackPanel { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 460 };
-        panel.Children.Add(new TextBlock { Text = "Readme", FontSize = 30, FontFamily = new FontFamily("Georgia"), HorizontalAlignment = HorizontalAlignment.Center });
-        panel.Children.Add(_libraryMessage);
-        panel.Children.Add(open);
-        panel.Children.Add(new ScrollViewer { Content = _bookList, MaxHeight = 360 });
-        _libraryPanel.Children.Add(panel);
-        _libraryPanel.Visibility = Visibility.Collapsed;
-    }
-
-    public void ShowLibrary(string? message = null)
-    {
+        if (_isShowingLibrary) return;
         _isShowingLibrary = true;
-        _libraryMessage.Text = message ?? (_library.Books.Count == 0
-            ? "Your library is empty. Open an EPUB to start reading."
-            : "The shelf arrives in the next build. For now, pick a book.");
-        _bookList.Children.Clear();
-        foreach (var book in new[] { _library.Current }.Concat(_library.Others).OfType<Book>())
-        {
-            var item = new Button
-            {
-                Content = book.Author is { } author ? $"{book.Title} — {author}" : book.Title,
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-                Background = new SolidColorBrush(Colors.Transparent),
-            };
-            item.Click += (_, _) => _ = OpenAsync(book);
-            _bookList.Children.Add(item);
-        }
-        _libraryPanel.Visibility = Visibility.Visible;
-        _settingsButton.Visibility = Visibility.Collapsed;
+        _shelf.Rebuild();
+        _shelf.Root.Visibility = Visibility.Visible;
+        Fade(_shelf.Root, 1, animated);
+        ShowSettingsButton();
         _window.Title = "Readme";
+        _content.Focus(FocusState.Programmatic);
+        _ = _reader.KeepPlaceAsync();
     }
 
+    /// <summary>Fades the shelf away from over the book that's open.</summary>
     void ShowBook()
     {
+        if (!_isShowingLibrary) return;
         _isShowingLibrary = false;
-        _libraryPanel.Visibility = Visibility.Collapsed;
-        _settingsButton.Visibility = _window.AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? Visibility.Collapsed : Visibility.Visible;
+        _shelf.BookOpened();
+        Fade(_shelf.Root, 0, true, () =>
+        {
+            if (!_isShowingLibrary) _shelf.Root.Visibility = Visibility.Collapsed;
+        });
+        ShowSettingsButton();
+        if (_reader.Record is { } book) _window.Title = $"{book.Title} — Readme";
         _reader.Book.Control.Focus(FocusState.Programmatic);
     }
 
+    void Fade(UIElement element, double to, bool animated, Action? done = null)
+    {
+        if (!animated || !_system.AnimationsEnabled)
+        {
+            element.Opacity = to;
+            done?.Invoke();
+            return;
+        }
+        var animation = new DoubleAnimation { To = to, Duration = new Duration(TimeSpan.FromMilliseconds(200)), EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
+        Storyboard.SetTarget(animation, element);
+        Storyboard.SetTargetProperty(animation, "Opacity");
+        var storyboard = new Storyboard { Children = { animation } };
+        storyboard.Completed += (_, _) => done?.Invoke();
+        storyboard.Begin();
+    }
+
+    /// <summary>
+    /// Opens a library book. The shelf stays until there's a book to show instead, so one that won't
+    /// open leaves it where it is, with a notice.
+    /// </summary>
     public async Task<bool> OpenAsync(Book book, string? cfi = null)
     {
         if (!File.Exists(_library.FilePath(book)))
         {
             _library.RemoveMissing(File.Exists);
-            ShowLibrary($"“{book.Title}” is no longer in the library folder.");
+            ShowLibrary();
+            _shelf.Say("That book's file is no longer in the library folder.");
             return false;
         }
-        var opened = await _reader.OpenAsync(book, cfi);
-        if (!opened) return false;
-        ShowBook();
-        // A book added under its file name learns its real title and author once it's open.
-        if (_library.Book(book.Id) is { } record && record.Author == null)
+        // The same book, already open beneath the shelf: just put the shelf away.
+        if (cfi == null && _reader.Record?.Id == book.Id && _reader.Location != null)
         {
-            var (title, author) = await _reader.Book.BookInfoAsync();
-            if (!string.IsNullOrWhiteSpace(title) && (title != record.Title || author != null))
-            {
-                _library.SetDetails(record.Id, title, author);
-                _window.Title = $"{title} — Readme";
-            }
+            ShowBook();
+            return true;
         }
-        return true;
+        var opened = await _reader.OpenAsync(book, cfi);
+        if (opened) ShowBook();
+        return opened;
     }
 
     async Task ChooseBookAsync()
@@ -304,56 +357,67 @@ sealed class AppCoordinator
         var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
         picker.FileTypeFilter.Add(".epub");
         WinRT.Interop.InitializeWithWindow.Initialize(picker, Win32Interop.GetWindowFromWindowId(_window.AppWindow.Id));
-        var file = await picker.PickSingleFileAsync();
-        if (file != null) await ImportAndOpenAsync(file.Path);
+        var files = await picker.PickMultipleFilesAsync();
+        if (files.Count == 0) return;
+        var paths = files.Select(f => f.Path).ToList();
+        // Several books chosen at once are for the shelf, not for reading one of them.
+        if (paths.Count > 1)
+        {
+            ShowLibrary();
+            await _shelf.AddAsync(paths);
+        }
+        else await ImportAndOpenAsync(paths);
     }
 
-    /// <summary>
-    /// Checks the file, copies it into the library as <c>&lt;id&gt;.epub</c> and opens it. The same book
-    /// twice is one book. Phase 3 replaces this with the full importer (covers, a hidden check).
-    /// </summary>
-    public async Task<bool> ImportAndOpenAsync(string path)
+    /// <summary>Adds the books and opens the first that could be added. Those that can't get a quiet line, never a dialog.</summary>
+    public async Task ImportAndOpenAsync(IReadOnlyList<string> paths)
     {
+        IReadOnlyList<(string Path, Book? Book, ImportError? Error)> results;
+        if (_isShowingLibrary) results = await _shelf.AddAsync(paths);
+        else
+        {
+            results = await ImportAllAsync(paths);
+            var lines = ShelfText.Messages(results.Where(r => r.Error != null).Select(r => r.Error!.Value));
+            if (lines.Count > 0)
+            {
+                if (_reader.Location == null)
+                {
+                    ShowLibrary(animated: false);
+                    foreach (var line in lines) _shelf.Say(line);
+                }
+                else _reader.ShowNotice(string.Join("\n", lines));
+            }
+        }
+        if (results.FirstOrDefault(r => r.Book != null).Book is { } book) await OpenAsync(book);
+    }
+
+    Task<IReadOnlyList<(string Path, Book? Book, ImportError? Error)>> ImportAllAsync(IReadOnlyList<string> paths) =>
+        _importer.ImportAllAsync(paths);
+
+    /// <summary>
+    /// Opens a staged book in the hidden view, for its title, author and cover. One at a time, since
+    /// there's one view. A book that won't open throws, and the importer calls it unreadable.
+    /// </summary>
+    async Task<BookDetails> DetailsAsync(string path)
+    {
+        await _hiddenTurn.WaitAsync();
         try
         {
-            EpubInspector.Check(path);
-            var id = await BookId.OfAsync(path);
-            if (_library.Book(id) is not { } book)
-            {
-                Directory.CreateDirectory(_library.BooksDirectory);
-                var destination = Path.Combine(_library.BooksDirectory, id + ".epub");
-                if (!File.Exists(destination))
-                {
-                    var temporary = destination + ".tmp";
-                    File.Copy(path, temporary, overwrite: true);
-                    File.Move(temporary, destination, overwrite: true);
-                }
-                book = new Book
-                {
-                    Id = id,
-                    Title = Path.GetFileNameWithoutExtension(path),
-                    FileName = id + ".epub",
-                    HasCover = false,
-                    AddedAt = DateTimeOffset.UtcNow,
-                };
-                _library.Add(book);
-            }
-            return await OpenAsync(_library.Book(id)!);
+            await _hidden.OpenAsync(path, null);
+            var (title, author) = await _hidden.BookInfoAsync();
+            var cover = await _hidden.CoverAsync();
+            var png = cover == null ? null : await CoverImages.PngAsync(cover);
+            _hidden.Unload();
+            return new BookDetails(title, author, png);
         }
-        catch (ImportException error)
+        catch (Exception error)
         {
-            ShowLibrary(error.Error switch
-            {
-                ImportError.NotAnEpub => "This file isn't an EPUB book.",
-                ImportError.CopyProtected => "This book is copy-protected, so it can't be opened here.",
-                _ => "This book couldn't be read.",
-            });
-            return false;
+            Log.Write($"import: opening in the hidden view failed: {error}");
+            throw;
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        finally
         {
-            ShowLibrary("This book couldn't be read.");
-            return false;
+            _hiddenTurn.Release();
         }
     }
 
@@ -392,7 +456,7 @@ sealed class AppCoordinator
             item.Click += (_, _) => _reader.Perform(command);
             menu.Items.Add(item);
         }
-        var open = new MenuFlyoutItem { Text = "Open a Book…", KeyboardAcceleratorTextOverride = "Ctrl+O" };
+        var open = new MenuFlyoutItem { Text = "Add Books…", KeyboardAcceleratorTextOverride = "Ctrl+O" };
         open.Click += (_, _) => _ = ChooseBookAsync();
         menu.Items.Add(open);
         menu.Closed += (_, _) => _reader.Book.Control.Focus(FocusState.Programmatic);

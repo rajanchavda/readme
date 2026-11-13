@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Shapes;
+using Readme.Core.Library;
 using Readme.Core.Model;
 using Readme.Core.Reader;
 using Readme.Core.Storage;
@@ -39,6 +40,13 @@ public sealed class ReaderView
     readonly Border _edgeBack = new() { Background = new SolidColorBrush(Colors.Transparent) };
     readonly Border _edgeForward = new() { Background = new SolidColorBrush(Colors.Transparent) };
     readonly Image _cover = new() { IsHitTestVisible = false, Stretch = Stretch.Fill, Visibility = Visibility.Collapsed };
+    /// <summary>The last spread a book was left on, shown under its page until the page is ready.</summary>
+    readonly Image _placeholder = new() { IsHitTestVisible = false, Stretch = Stretch.Fill, Visibility = Visibility.Collapsed };
+    readonly LastSpreadCache _spreads;
+    static readonly TimeSpan SpreadInterval = TimeSpan.FromSeconds(1);
+    Task? _spreadMemory;
+    bool _spreadWanted;
+    DateTime _lastSpreadAttempt = DateTime.MinValue;
     readonly Rectangle _progress = new() { Height = 1, IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Bottom, HorizontalAlignment = HorizontalAlignment.Left };
     readonly TextBlock _notice = new() { Opacity = 0, IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 10), FontSize = 13 };
 
@@ -75,16 +83,20 @@ public sealed class ReaderView
     /// <summary>A key the reader doesn't use, for the window: Ctrl+O, say.</summary>
     public event Action<PageKey>? UnhandledKey;
     public event Action<string>? TitleChanged;
+    /// <summary>Takes keys before the reader does, answering whether it used them; null leaves them to the reader.</summary>
+    public Func<PageKey, bool?>? Intercept { get; set; }
 
-    public ReaderView(LibraryStore library, ReaderSettings settings)
+    public ReaderView(LibraryStore library, LastSpreadCache spreads, ReaderSettings settings)
     {
         _library = library;
+        _spreads = spreads;
         _writer = new PlaceWriter(library.Positions);
         _settings = settings;
         _layout = new BookFrame(1048, 620, settings, false);
 
         _bookHost.Child = _book.Control;
         _book.Control.Opacity = 0;
+        _desk.Children.Add(_placeholder);
         _desk.Children.Add(_bookHost);
         _desk.Children.Add(_cover);
         _desk.Children.Add(_spineLeft);
@@ -136,8 +148,106 @@ public sealed class ReaderView
 
     public async Task<bool> OpenAsync(Book record, string? cfi = null)
     {
-        await PlacesKeptAsync();
+        if (_book.IsOpen) await KeepPlaceAsync();
+        // Taken off the shelf while the book before it was being put away.
+        if (_library.Book(record.Id) == null) return false;
+        await ShowLastSpreadAsync(record);
         return await OpenFileAsync(_library.FilePath(record), record, cfi);
+    }
+
+    /// <summary>Lets go of the book, as when it's taken off the shelf. Nothing more is kept for it.</summary>
+    public void CloseBook()
+    {
+        ++_openGeneration;
+        _isOpening = false;
+        _spreadWanted = false;
+        _book.Unload();
+        Record = null;
+        BookId = null;
+        _book.Control.Opacity = 0;
+        HidePlaceholder();
+        PlaceViews();
+        TitleChanged?.Invoke("");
+    }
+
+    // MARK: The last spread
+
+    double Scale => _root.XamlRoot?.RasterizationScale ?? 1;
+
+    /// <summary>The look a spread has in the window now, to match a kept picture against.</summary>
+    string SpreadSignature() => LastSpreadCache.Signature(
+        _layout.Frame.Width, _layout.Frame.Height, Scale, _layout.Columns, _layout.ColumnWidth, Css());
+
+    /// <summary>Shows the picture of the spread the book was left on, if one was kept in the look the window has now.</summary>
+    async Task ShowLastSpreadAsync(Book record)
+    {
+        HidePlaceholder();
+        _layout = new BookFrame(_root.ActualWidth > 0 ? _root.ActualWidth : 1048, _root.ActualHeight > 0 ? _root.ActualHeight : 620, _settings, _isFullscreen);
+        if (_spreads.Image(record.Id, SpreadSignature()) is not { } png) return;
+        var image = new BitmapImage();
+        using (var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream())
+        {
+            await stream.WriteAsync(System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions.AsBuffer(png));
+            stream.Seek(0);
+            await image.SetSourceAsync(stream);
+        }
+        _placeholder.Source = image;
+        _placeholder.Visibility = Visibility.Visible;
+        ApplyColors();
+        PlaceViews();
+        Log.Write($"showing the last spread of {record.Id[..8]}");
+    }
+
+    void HidePlaceholder()
+    {
+        _placeholder.Visibility = Visibility.Collapsed;
+        _placeholder.Source = null;
+    }
+
+    public bool IsShowingLastSpread => _placeholder.Visibility == Visibility.Visible;
+
+    /// <summary>Keeps a picture of the spread the reader's on, at most once a second, and soon after the last place asked for.</summary>
+    void RememberSpread()
+    {
+        if (BookId == null) return;
+        _spreadWanted = true;
+        if (_spreadMemory != null) return;
+        var wait = SpreadInterval - (DateTime.UtcNow - _lastSpreadAttempt);
+        _spreadMemory = Remember(wait > TimeSpan.Zero ? wait : TimeSpan.Zero);
+        async Task Remember(TimeSpan delay)
+        {
+            await Task.Yield();
+            if (delay > TimeSpan.Zero) await Task.Delay(delay);
+            await WriteSpreadAsync();
+            _spreadMemory = null;
+            if (_spreadWanted) RememberSpread();
+        }
+    }
+
+    async Task WriteSpreadAsync()
+    {
+        _spreadWanted = false;
+        _lastSpreadAttempt = DateTime.UtcNow;
+        // Only a settled page, in the look it's kept under.
+        if (BookId is not { } id || !_book.IsOpen || _isCovered || IsLayingOut || _book.Control.Opacity < 1) return;
+        var signature = LastSpreadCache.Signature(_layout.Frame.Width, _layout.Frame.Height, Scale, _book.Columns, _book.ColumnWidth, _book.Css);
+        using var png = await _book.SnapshotAsync();
+        if (png == null || BookId != id) return;
+        var bytes = new byte[png.Size];
+        using (var reader = new Windows.Storage.Streams.DataReader(png))
+        {
+            await reader.LoadAsync((uint)png.Size);
+            reader.ReadBytes(bytes);
+        }
+        await Task.Run(() => _spreads.Save(bytes, signature, id));
+    }
+
+    /// <summary>Returns once the place is written, then the picture of its spread.</summary>
+    public async Task KeepPlaceAsync()
+    {
+        await PlacesKeptAsync();
+        if (_spreadMemory is { } memory) await memory;
+        await WriteSpreadAsync();
     }
 
     async Task<bool> OpenFileAsync(string file, Book? record, string? cfi)
@@ -186,7 +296,12 @@ public sealed class ReaderView
             // A page turned as the book settled is where the reader now is.
             if ((isLost || _places.HasTurnedSince(opened)) && _book.CurrentLocation is { } here) Keep(here);
             else if (_book.CurrentLocation is { } now) Read?.Invoke(bookId, now);
-            Fade(_book.Control, 1);
+            // Over the last spread, if that's showing, so the page never dims on its way in.
+            Fade(_book.Control, 1, () =>
+            {
+                if (Current()) HidePlaceholder();
+                RememberSpread();
+            });
             _book.Control.Focus(FocusState.Programmatic);
             return true;
         }
@@ -200,6 +315,7 @@ public sealed class ReaderView
             if (!Current()) return false;
             _isOpening = false;
             Record = null;
+            HidePlaceholder();
             if (record != null) OpenFailed?.Invoke(record, error.Message);
             return false;
         }
@@ -217,6 +333,7 @@ public sealed class ReaderView
         if (BookId is not { } id) return;
         _writer.Save(location, id);
         Read?.Invoke(id, location);
+        RememberSpread();
     }
 
     /// <summary>Returns once the turns and restyles under way are over and the place is written.</summary>
@@ -234,6 +351,8 @@ public sealed class ReaderView
     /// <summary>What a key does, from the page or from the window. Answers whether it was used.</summary>
     public bool HandleKey(PageKey key)
     {
+        // While the shelf covers the book, its keys are the shelf's, not page turns underneath.
+        if (Intercept?.Invoke(key) is { } handled) return handled;
         var action = KeyAction.Of(key.Key, key.Modifiers, key.IsRepeat, _isFullscreen, isTyping: false);
         switch (action)
         {
@@ -395,6 +514,7 @@ public sealed class ReaderView
             Show(here);
             // A page turned while the layout changed is where the reader now is.
             if (_places.HasTurnedSince(capture)) Keep(here);
+            else RememberSpread();
         }
     }
 
@@ -429,13 +549,14 @@ public sealed class ReaderView
         var frame = _layout.Frame;
         Put(_bookHost, frame);
         Put(_cover, frame);
+        Put(_placeholder, frame);
         if (Math.Abs(_book.Control.Width - frame.Width) > 0.5) _ = ResizedLaterAsync(frame.Width);
         _book.Control.Width = frame.Width;
         _book.Control.Height = frame.Height;
         var middle = frame.X + frame.Width / 2;
         Put(_spineLeft, new Box(middle - SpineShadow.Reach, frame.Y, SpineShadow.Reach, frame.Height));
         Put(_spineRight, new Box(middle, frame.Y, SpineShadow.Reach, frame.Height));
-        var spineShown = _layout.Columns == 2 && _book.IsOpen ? Visibility.Visible : Visibility.Collapsed;
+        var spineShown = _layout.Columns == 2 && (_book.IsOpen || IsShowingLastSpread) ? Visibility.Visible : Visibility.Collapsed;
         _spineLeft.Visibility = _spineRight.Visibility = spineShown;
         var edge = frame.Width * EdgeShare;
         Put(_edgeBack, new Box(frame.X, frame.Y, edge, frame.Height));

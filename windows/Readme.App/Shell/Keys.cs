@@ -12,13 +12,20 @@ namespace Readme.App;
 /// </summary>
 static class Keys
 {
-    public static PageKey? FromVirtualKey(VirtualKey key, bool isRepeat)
+    /// <summary>The modifier keys held now, as for a click on the shelf.</summary>
+    public static Modifiers CurrentModifiers()
     {
         var modifiers = Modifiers.None;
         if (Down(VirtualKey.Control)) modifiers |= Modifiers.Ctrl;
         if (Down(VirtualKey.Shift)) modifiers |= Modifiers.Shift;
         if (Down(VirtualKey.Menu)) modifiers |= Modifiers.Alt;
         if (Down(VirtualKey.LeftWindows) || Down(VirtualKey.RightWindows)) modifiers |= Modifiers.Win;
+        return modifiers;
+    }
+
+    public static PageKey? FromVirtualKey(VirtualKey key, bool isRepeat)
+    {
+        var modifiers = CurrentModifiers();
         var shift = modifiers.HasFlag(Modifiers.Shift);
         string? name = key switch
         {

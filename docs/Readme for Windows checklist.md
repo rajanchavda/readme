@@ -12,10 +12,10 @@ On a new machine, start the first Claude session with "read `docs/Readme for Win
 
 ## Current state
 
-- **Phase:** 3 next. Phases 0 to 2 are done on Windows, apart from the items that need the Mac
+- **Phase:** 3 built on Windows and passing its self-check (`--checks <dir> shelf <fixtures>`); boxes not yet ticked
 - **Branch:** `feat/windows-phase-0-1`, on `main` at v1.5, pushed (phase 2 is on it too)
 - **Last thing done:** phase 2 (Nov 13, 2026): `Readme.App`, a WinUI 3 reader that opens at the saved place, turns, restyles, goes full screen, and keeps the place and the window across a quit. See **Phase 2 findings**. Before that, phases 0 and 1: see **Spike findings** and **Phase 1 findings**
-- **Next step:** phase 3, the library shelf, replacing the stand-in book list. The Mac items left open (Swift tests, the golden `.readmelibrary`) wait until the Windows app is ready to test against the Mac
+- **Next step:** finish phase 3: tick its boxes and write its findings (import moves failed until BookScheme opened files with FileShare.Delete; one hidden WebView2 reused for imports; generated covers drawn in XAML, not Win2D), and check by hand drag-and-drop, the right-click menu, Ctrl/Shift-click and the last-spread picture on relaunch. Then phase 4
 - **Notes / blockers:** no .NET SDK on the Mac yet. `Readme.Core` can build and test on macOS, but everything WinUI 3 and WebView2 needs Windows. VS 2026 also installs the .NET 11 SDK, so `windows/global.json` pins 10.0.x. Developer Mode and long paths are on on the Windows machine
 
 ## Prerequisites

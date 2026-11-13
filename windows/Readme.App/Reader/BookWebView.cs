@@ -253,6 +253,25 @@ public sealed class BookWebView
         catch (Exception error) when (error is BookWebViewException or TimeoutException) { return (null, null); }
     }
 
+    /// <summary>The book's own cover image, as the file holds it, or null if it has none or it can't be read.</summary>
+    public async Task<byte[]?> CoverAsync()
+    {
+        try
+        {
+            var reply = await CallAsync("readmeBridge.cover()");
+            return reply.ValueKind == JsonValueKind.String ? Convert.FromBase64String(reply.GetString()!) : null;
+        }
+        catch (Exception error) when (error is BookWebViewException or TimeoutException or FormatException) { return null; }
+    }
+
+    /// <summary>Lets go of the book: nothing more is read or kept from it, until the next open.</summary>
+    public void Unload()
+    {
+        ++_openGeneration;
+        IsOpen = false;
+        CurrentLocation = null;
+    }
+
     // MARK: Styles
 
     /// <summary>

@@ -33,6 +33,7 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
             if (mode == "resume") await ResumeAsync();
             else if (mode == "calibrate") await CalibrateAsync(rest[1], rest[2]);
             else if (mode == "whole") await WholeBookAsync(rest[1]);
+            else if (mode == "shelf") await ShelfAsync(rest[1]);
             else await ReadAsync(rest.ElementAtOrDefault(1) ?? throw new ArgumentException("read needs a book"));
         }
         catch (Exception error)
@@ -46,7 +47,8 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
 
     async Task ReadAsync(string epub)
     {
-        Record("opened", await app.ImportAndOpenAsync(epub));
+        await app.ImportAndOpenAsync([epub]);
+        Record("opened", reader.Location != null);
         await Task.Delay(800);
         Record("atOpen", Where());
         await Shot("1-open");
@@ -120,7 +122,7 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
     /// </summary>
     async Task CalibrateAsync(string longBook, string wideBook)
     {
-        await app.ImportAndOpenAsync(longBook);
+        await app.ImportAndOpenAsync([longBook]);
         await Task.Delay(800);
         // As the Mac's LineLengthTests: the book view 1600 by 900, styled directly. Its character
         // widths were calibrated at this size, where the bridge's columns come out as asked.
@@ -195,7 +197,7 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
         Record("lineLengths", rows);
 
         reader.Change(new ReaderSettings { Theme = ThemeChoice.Paper, FontSize = 19 });
-        await app.ImportAndOpenAsync(wideBook);
+        await app.ImportAndOpenAsync([wideBook]);
         await Task.Delay(1000);
         for (var page = 0; page < 6; page++)
         {
@@ -218,10 +220,88 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
         }
     }
 
+    /// <summary>
+    /// The phase 3 "done when": import five books (and two that must be refused), see their covers,
+    /// open one, read, back to the shelf with Ctrl+L, switch to another; then pin, search, remove.
+    /// </summary>
+    async Task ShelfAsync(string fixtures)
+    {
+        string Fixture(string name) => Path.Combine(fixtures, name);
+        app.ShowLibrary(animated: false);
+        await Task.Delay(1000);
+        await Shot("s1-empty-shelf");
+
+        var five = new[] { "long.epub", "search.epub", "spreads.epub", "no-cover.epub", "wide-content.epub" };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var results = await app.Shelf.AddAsync(five.Concat(["drm.epub", "not-an-epub.epub"]).Select(Fixture).ToList());
+        Record("import", new
+        {
+            seconds = Math.Round(clock.Elapsed.TotalSeconds, 1),
+            books = results.Select(r => new { file = Path.GetFileName(r.Path), r.Book?.Title, r.Book?.Author, r.Book?.HasCover, error = r.Error?.ToString() }),
+        });
+        await Task.Delay(1200);
+        await Shot("s2-five-books");
+        Record("shelfAfterImport", app.Shelf.ShownTitles());
+
+        Book ById(string file) => library.Books.First(b => b.Id == results.First(r => Path.GetFileName(r.Path) == file).Book!.Id);
+        var search = ById("search.epub");
+        Record("openedSearch", await app.OpenAsync(search));
+        await Task.Delay(800);
+        for (var i = 0; i < 3; i++) await Key("ArrowRight", delay: 600);
+        Record("searchAt", Where());
+        await Key("l", ctrl: true, delay: 1200);
+        Record("ctrlLShowsShelf", app.IsShowingLibrary);
+        await Shot("s3-shelf-after-reading");
+        Record("ledgeAfterReading", library.Current?.Title);
+
+        var longBook = ById("long.epub");
+        Record("openedLong", await app.OpenAsync(longBook));
+        await Task.Delay(800);
+        await Key("ArrowRight", delay: 800);
+        Record("longAt", Where());
+        await Key("l", ctrl: true, delay: 1000);
+        Record("ledgeAfterSwitch", library.Current?.Title);
+
+        library.SetPinned([ById("no-cover.epub").Id], true);
+        await Task.Delay(800);
+        Record("orderWithPin", app.Shelf.ShownTitles());
+        await Shot("s4-pinned");
+
+        app.Shelf.Type("spread");
+        await Task.Delay(800);
+        Record("searchSpread", app.Shelf.ShownTitles());
+        await Shot("s5-search");
+        app.Shelf.Type("zzz");
+        await Task.Delay(600);
+        await Shot("s6-no-match");
+        app.Shelf.CloseSearch();
+        await Task.Delay(400);
+
+        var wide = ById("wide-content.epub");
+        library.Remove(wide.Id);
+        await Task.Delay(600);
+        Record("removed", new
+        {
+            gone = library.Book(wide.Id) == null,
+            copyGone = !File.Exists(library.FilePath(wide)),
+            coverGone = !File.Exists(library.CoverPath(wide)),
+            shelf = app.Shelf.ShownTitles(),
+        });
+
+        // Esc puts the shelf away over the book that's open.
+        app.HandleKey(new PageKey("Escape", Core.Reader.Modifiers.None, false));
+        await Task.Delay(800);
+        Record("escapeBackToBook", new { showingShelf = app.IsShowingLibrary, at = Where() });
+        await Key("ArrowRight", delay: 1500);
+        Record("lastSpreads", Directory.Exists(Path.Combine(library.Directory, "LastSpreads"))
+            ? Directory.GetFiles(Path.Combine(library.Directory, "LastSpreads")).Select(Path.GetFileName).ToList() : []);
+        Record("libraryFiles", Directory.GetFiles(library.BooksDirectory).Length);
+    }
+
     /// <summary>Reads the whole book with the arrow key, from the first page to the last, then back a few.</summary>
     async Task WholeBookAsync(string book)
     {
-        await app.ImportAndOpenAsync(book);
+        await app.ImportAndOpenAsync([book]);
         await Task.Delay(800);
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var turns = 0;
@@ -284,6 +364,7 @@ sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore libr
             "ArrowRight" => ("ArrowRight", 39), "ArrowLeft" => ("ArrowLeft", 37), " " => ("Space", 32),
             "Home" => ("Home", 36), "End" => ("End", 35), "F11" => ("F11", 122), "Escape" => ("Escape", 27),
             "=" => ("Equal", 187), "-" => ("Minus", 189),
+            { Length: 1 } letter when char.IsAsciiLetterLower(letter[0]) => ("Key" + letter.ToUpperInvariant(), letter[0] - 'a' + 65),
             _ => throw new ArgumentException(key),
         };
         var modifiers = ctrl ? 2 : 0;
