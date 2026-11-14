@@ -5,8 +5,9 @@ name: Windows
 #   - adding the label "run-tests" to a pull request (remove and add it again to rerun).
 #
 # Runs the Core tests, then reads a book in the real app (WebView2 comes with the runner's Edge),
-# then builds the MSIX packages for x64 and ARM64 and keeps them as artifacts. They're unsigned:
-# the Store signs what it's given. Install one for testing with Developer Mode on; see windows/README.md.
+# then builds the MSIX packages for x64 and ARM64 and the GitHub installers, and keeps them as
+# artifacts. All unsigned: the Store signs what it's given, and SmartScreen asks once before an
+# installer runs. Install an MSIX for testing with Developer Mode on; see windows/README.md.
 on:
   workflow_dispatch:
   pull_request:
@@ -67,6 +68,18 @@ jobs:
         run: |
           dotnet build -c Release -p:Platform=x64 -r win-x64 -p:ReadmePackage=true
           dotnet build -c Release -p:Platform=ARM64 -r win-arm64 -p:ReadmePackage=true
+
+      - name: Build the installers
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ }
+          if (-not $iscc) { choco install innosetup --no-progress -y }
+          scripts/windows-installer.ps1
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: installers
+          path: windows/dist/Readme-Setup-*
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v5
         with:

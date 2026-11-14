@@ -62,6 +62,23 @@ uses the same `Documents\Readme` library as the unpackaged one.
 packages into `windows/dist`; see `docs/releasing.md`, "Windows", and the listing draft in
 `docs/windows-store-listing.md`.
 
+## The GitHub installer
+
+`scripts/windows-installer.ps1` publishes the app self-contained (it carries .NET and the parts of
+the Windows App SDK it uses, so the PC needs nothing first) and wraps it with Inno Setup 6, from
+`windows/installer/Readme.iss`, into `windows/dist/Readme-Setup-<version>-x64.exe` and `-arm64.exe`.
+The installer:
+
+- installs for the current user into `%LOCALAPPDATA%\Programs\Readme`, with no administrator
+  rights, or for everyone into Program Files if chosen;
+- adds a Start menu entry, Readme to **Open with** for `.epub` (it never takes EPUBs over from
+  another app) and to **Default apps**, and opens `.readmelibrary` files;
+- closes a running Readme before updating it, and replaces the whole app folder;
+- on uninstall removes the app, its file types and `%LOCALAPPDATA%\Readme` (settings and
+  WebView2's cache), and keeps the library in `Documents\Readme`.
+
+The release workflow builds and attaches both on each tag.
+
 **Before the first Store upload:** reserve the name in Partner Center and copy its package identity
 (`Identity Name` and `Publisher`) and publisher display name into `Readme.App/Package.appxmanifest`;
 the ones there are placeholders. `Version` is the release script's to set, from the Mac's

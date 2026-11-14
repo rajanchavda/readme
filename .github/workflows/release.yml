@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a tag v<version> builds the DMG, publishes it as a GitHub release and points the
-# Homebrew cask in rajanchavda/homebrew-tap at it.
+# Homebrew cask in rajanchavda/homebrew-tap at it. Then the Windows installers are built and added
+# to the same release (scripts/windows-installer.ps1).
 #
 # Needs the repository secret:
 #   HOMEBREW_TAP_TOKEN   Token allowed to push to rajanchavda/homebrew-tap
@@ -77,3 +78,45 @@ jobs:
           # Another app's release may have pushed to the tap meanwhile.
           git pull --rebase
           git push
+
+  windows:
+    name: Windows installers
+    # After the release exists, so these are added to it rather than racing to make a second one.
+    needs: release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: windows/global.json
+
+      - name: Check the tag matches project.yml
+        run: |
+          $tag = $env:GITHUB_REF_NAME.TrimStart('v')
+          $line = Select-String -Path project.yml -Pattern '^\s*MARKETING_VERSION:\s*"?([0-9.]+)"?' | Select-Object -First 1
+          $version = $line.Matches[0].Groups[1].Value
+          if ($tag -ne $version) { throw "Tag $env:GITHUB_REF_NAME doesn't match MARKETING_VERSION $version in project.yml." }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Make sure Inno Setup is here
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ }
+          if (-not $iscc) { choco install innosetup --no-progress -y }
+
+      - name: Build the installers
+        run: scripts/windows-installer.ps1
+
+      - name: Add them to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            windows/dist/Readme-Setup-${{ env.VERSION }}-x64.exe
+            windows/dist/Readme-Setup-${{ env.VERSION }}-x64.exe.sha256
+            windows/dist/Readme-Setup-${{ env.VERSION }}-arm64.exe
+            windows/dist/Readme-Setup-${{ env.VERSION }}-arm64.exe.sha256

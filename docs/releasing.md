@@ -65,3 +65,16 @@ download or updater to look after. Its version follows the Mac's: `MARKETING_VER
 
 The Windows workflow (`.github/workflows/windows.yml`, run from the Actions tab) builds the same
 two packages as artifacts, for a check that they build on a clean machine.
+
+### The GitHub installers
+
+The tag that releases the Mac app also releases Windows on GitHub: once the Release workflow has
+published the DMG, its `windows` job runs `scripts/windows-installer.ps1` and adds
+`Readme-Setup-<version>-x64.exe` and `-arm64.exe`, each with a `.sha256`, to the same release.
+Nothing else to do. They aren't signed, so SmartScreen asks once before running them
+(`docs/install-windows.md`); a code-signing certificate would end that.
+
+To build them yourself, install Inno Setup 6 (`winget install JRSoftware.InnoSetup`) and run
+`powershell -ExecutionPolicy Bypass -File scripts\windows-installer.ps1`. Try one before tagging:
+run it, open a book from the Start menu entry, double-click an EPUB, then uninstall from
+Settings > Apps.

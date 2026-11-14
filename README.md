@@ -88,9 +88,14 @@ To check the download, put the `.sha256` file from the release next to the DMG a
 Readme for Windows needs Windows 11 (Intel, AMD or ARM). It does everything the Mac app does, with
 Ctrl in place of ⌘, and its library moves between a PC and a Mac in one `.readmelibrary` file.
 
-It's on its way to the Microsoft Store, which will install and update it. Until it's listed there,
-build it from source as `windows/README.md` describes. Installing, first steps and uninstalling are
-in [docs/install-windows.md](docs/install-windows.md).
+Download `Readme-Setup-<version>-x64.exe` (or `-arm64.exe` for an ARM PC) from the
+[latest release](https://github.com/rajanchavda/readme/releases/latest) and open it. It installs
+for you alone, with no administrator password, and adds Readme to the Start menu and to **Open
+with** for EPUBs. It isn't signed with a paid certificate yet, so Windows says **"Windows protected
+your PC"** the first time: click **More info**, then **Run anyway**. The full steps, updating and
+uninstalling are in [docs/install-windows.md](docs/install-windows.md).
+
+It's also on its way to the Microsoft Store, which will install and update it with no warning.
 
 **Private on Windows too.** No accounts and no tracking. Readme opens only the books you give it,
 keeps its library in `Documents\Readme`, and doesn't go online itself: a book can't load anything

@@ -13,6 +13,8 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <WindowsPackageType Condition="'$(ReadmePackage)' != 'true'">None</WindowsPackageType>
     <ApplicationIcon>Assets\Readme.ico</ApplicationIcon>
+    <!-- The app is in English only; other languages' copies of .NET's own messages would only add size. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64;ARM64</Platforms>
@@ -23,7 +25,16 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.*" />
+    <!--
+      The parts of the Windows App SDK the app uses, not the whole SDK, whose AI, ML, search and
+      widget runtimes would add about 80 MB to every download for nothing.
+    -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.Base" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.DWrite" Version="2.6.5" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Readme.Core\Readme.Core.csproj" />
