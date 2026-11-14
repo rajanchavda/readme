@@ -74,6 +74,30 @@ published the DMG, its `windows` job runs `scripts/windows-installer.ps1` and ad
 Nothing else to do. They aren't signed, so SmartScreen asks once before running them
 (`docs/install-windows.md`); a code-signing certificate would end that.
 
+### winget
+
+Readme goes into winget as `rajanchavda.Readme`, using the GitHub installers above. After they're on
+the release, the Release workflow's `winget` job runs `wingetcreate update` and opens a pull request
+to `microsoft/winget-pkgs` for the new version; Microsoft's checks and a moderator merge it, usually
+within a few days, and then `winget upgrade` offers it. Nothing to do per release, but it needs:
+
+- **The first version submitted by hand, once.** Until `manifests/r/rajanchavda/Readme` exists in
+  winget-pkgs the job only warns. On Windows, after a release has its installers:
+  1. `winget install Microsoft.WingetCreate`
+  2. `wingetcreate new https://github.com/rajanchavda/readme/releases/download/v1.6/Readme-Setup-1.6-x64.exe https://github.com/rajanchavda/readme/releases/download/v1.6/Readme-Setup-1.6-arm64.exe`
+  3. Answer its questions: identifier `rajanchavda.Readme`, publisher `Rajan Chavda`, name
+     `Readme`, license `Proprietary` (the repo has no LICENSE file; change it if one is added), the short description from the README.
+     If it asks per installer, the architectures are x64 and arm64, the type is `inno`, and the
+     scope is `user`. Let it submit; it signs in to GitHub and opens the pull request from your account.
+  4. Fix anything the winget-pkgs bots comment on. An unsigned installer is allowed, but its first
+     review can take longer.
+- **The `WINGET_TOKEN` repository secret:** a classic GitHub token with the `public_repo` scope from
+  the account that owns the winget-pkgs fork (Settings > Developer settings > Personal access
+  tokens). Without it the job warns and the release still succeeds.
+
+If a winget pull request ever fails its checks, fix it by hand with
+`wingetcreate update rajanchavda.Readme --version <version> --urls "<x64 url>|x64" "<arm64 url>|arm64" --submit`.
+
 To build them yourself, install Inno Setup 6 (`winget install JRSoftware.InnoSetup`) and run
 `powershell -ExecutionPolicy Bypass -File scripts\windows-installer.ps1`. Try one before tagging:
 run it, open a book from the Start menu entry, double-click an EPUB, then uninstall from
