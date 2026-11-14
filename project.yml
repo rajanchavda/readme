@@ -13,8 +13,8 @@ settings:
     DEVELOPMENT_TEAM: ""
     # What people see as the version, and the build number that must rise with every release.
     # Readme and its updater share them.
-    MARKETING_VERSION: "1.5"
-    CURRENT_PROJECT_VERSION: "7"
+    MARKETING_VERSION: "1.6"
+    CURRENT_PROJECT_VERSION: "8"
 targets:
   Readme:
     type: application

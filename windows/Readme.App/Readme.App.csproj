@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.22000.0</TargetPlatformMinVersion>
+    <RootNamespace>Readme.App</RootNamespace>
+    <AssemblyName>Readme</AssemblyName>
+    <UseWinUI>true</UseWinUI>
+    <!--
+      Single-project MSIX. A plain build is unpackaged, so it runs straight from dotnet and the
+      self-checks can give it a data folder; -p:ReadmePackage=true builds the package the Store gets.
+    -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType Condition="'$(ReadmePackage)' != 'true'">None</WindowsPackageType>
+    <ApplicationIcon>Assets\Readme.ico</ApplicationIcon>
+    <!-- The app is in English only; other languages' copies of .NET's own messages would only add size. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Program.cs is the entry point, for single-instance launching. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <!--
+      The parts of the Windows App SDK the app uses, not the whole SDK, whose AI, ML, search and
+      widget runtimes would add about 80 MB to every download for nothing.
+    -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.Base" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.DWrite" Version="2.6.5" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Readme.Core\Readme.Core.csproj" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(ReadmePackage)' == 'true'">
+    <!-- The Store signs the package, so it's built unsigned, for upload or for registering a test copy. -->
+    <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
+    <AppxBundle>Never</AppxBundle>
+    <!-- A plain .msix, which the Store takes as it is: the .msixupload wrapper needs Visual Studio's own MSBuild. -->
+    <UapAppxPackageBuildMode>SideloadOnly</UapAppxPackageBuildMode>
+    <GenerateAppxSymbolPackage>false</GenerateAppxSymbolPackage>
+    <AppxPackageDir>$(MSBuildProjectDirectory)\bin\Packages\</AppxPackageDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The one copy of the web layer, shared with the Mac app. -->
+    <Content Include="..\..\Readme\Web\**\*" Link="Web\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

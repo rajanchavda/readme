@@ -1,0 +1,1104 @@
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using Microsoft.UI;
+using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation.Peers;
+using Microsoft.UI.Xaml.Automation.Provider;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Readme.App.Reader;
+using Readme.Core.Curl;
+using Readme.Core.Library;
+using Readme.Core.Model;
+using Readme.Core.Reader;
+using Readme.Core.Storage;
+using Windows.Graphics;
+using Windows.Graphics.Imaging;
+using Windows.Storage.Streams;
+
+namespace Readme.App;
+
+/// <summary>
+/// <c>Readme.exe --checks &lt;dir&gt; read &lt;book.epub&gt;</c> reads a book the way a person would, with
+/// keys sent into the page through the DevTools protocol, then closes the way the close button does.
+/// <c>--checks &lt;dir&gt; resume</c> launches as usual and records where the book reopened. Each writes
+/// <c>&lt;mode&gt;.json</c> and window screenshots to the folder. Run with README_DATA_DIR set, so the
+/// reader's own library and settings are never touched.
+/// </summary>
+sealed class SelfChecks(AppCoordinator app, ReaderView reader, LibraryStore library, string outDir, string[] rest)
+{
+    readonly Dictionary<string, object?> _results = [];
+    static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    public async Task RunAsync()
+    {
+        Directory.CreateDirectory(outDir);
+        var mode = rest.FirstOrDefault() ?? "read";
+        try
+        {
+            if (mode == "resume") await ResumeAsync();
+            else if (mode == "calibrate") await CalibrateAsync(rest[1], rest[2]);
+            else if (mode == "whole") await WholeBookAsync(rest[1]);
+            else if (mode == "shelf") await ShelfAsync(rest[1]);
+            else if (mode == "tools") await ToolsAsync(rest[1]);
+            else if (mode == "bundles") await BundlesAsync(rest[1]);
+            else if (mode == "instance") await InstanceAsync(rest[1]);
+            else if (mode == "curl") await CurlAsync(rest[1]);
+            else await ReadAsync(rest.ElementAtOrDefault(1) ?? throw new ArgumentException("read needs a book"));
+        }
+        catch (Exception error)
+        {
+            Record("error", error.ToString());
+        }
+        Record("done", true);
+        Save(mode);
+        app.CloseAsUser();
+    }
+
+    async Task ReadAsync(string epub)
+    {
+        await app.ImportAndOpenAsync([epub]);
+        Record("opened", reader.Location != null);
+        await Task.Delay(800);
+        Record("atOpen", Where());
+        await Shot("1-open");
+
+        await Key("End", ctrl: true);
+        Record("afterCtrlEnd", Where());
+        await Key("Home", ctrl: true);
+        Record("afterCtrlHome", Where());
+
+        for (var i = 0; i < 25; i++) await Key("ArrowRight", delay: 350);
+        for (var i = 0; i < 3; i++) await Key("ArrowLeft", delay: 350);
+        await Key(" ", delay: 500);
+        Record("afterTurns", Where());
+        await Shot("2-turned");
+
+        // A wheel notch does nothing, down or sideways.
+        await Task.Delay(1000);
+        await reader.Book.SettleAsync();
+        var before = reader.Location?.Cfi;
+        foreach (var (dx, dy) in new[] { (0, 120), (0, -120), (120, 0) })
+            await reader.Book.DevToolsAsync("Input.dispatchMouseEvent", new { type = "mouseWheel", x = 400, y = 300, deltaX = dx, deltaY = dy });
+        await Task.Delay(1000);
+        await reader.Book.SettleAsync();
+        Record("wheelLeftThePageAlone", new { same = reader.Location?.Cfi == before, before, after = reader.Location?.Cfi });
+
+        var place = reader.Location;
+        await Key("=", ctrl: true, delay: 1500);
+        Record("afterBiggerText", Where());
+        Record("biggerTextKeptPlaceNear", Near(place, reader.Location));
+        await Key("-", ctrl: true, delay: 1500);
+
+        reader.Change(reader.Settings with { Theme = ThemeChoice.Sepia, Font = Core.Layout.BookFont.Fraunces });
+        await Task.Delay(1500);
+        await Shot("3-sepia-fraunces");
+        reader.Change(reader.Settings with { Theme = ThemeChoice.Night, Font = Core.Layout.BookFont.Literata });
+        await Task.Delay(1500);
+        await Shot("4-night-literata");
+
+        place = reader.Location;
+        Resize(760, 620);
+        await Task.Delay(1500);
+        Record("narrow", Where());
+        Record("narrowKeptPlaceNear", Near(place, reader.Location));
+        await Shot("5-narrow");
+        Resize(1048, 620);
+        await Task.Delay(1500);
+
+        place = reader.Location;
+        await Key("F11", delay: 2000);
+        Record("fullscreen", new { reader.IsFullscreen, presenter = app.AppWindow.Presenter.Kind.ToString(), at = Where() });
+        await Shot("6-fullscreen");
+        await Key("Escape", delay: 2000);
+        Record("leftFullscreen", new { reader.IsFullscreen, presenter = app.AppWindow.Presenter.Kind.ToString(), at = Where() });
+        Record("fullscreenKeptPlaceNear", Near(place, reader.Location));
+
+        reader.Change(reader.Settings with { Theme = ThemeChoice.Auto, Font = Core.Layout.BookFont.EbGaramond });
+        await Task.Delay(1200);
+        await Key("ArrowRight", delay: 800);
+        Record("final", Where());
+        Record("libraryCurrent", library.Current?.Title);
+        // Somewhere the next launch should put it back.
+        app.AppWindow.Move(new PointInt32(app.AppWindow.Position.X + 40, app.AppWindow.Position.Y + 30));
+        await Task.Delay(300);
+        Record("windowAtClose", new { app.AppWindow.Position.X, app.AppWindow.Position.Y, app.AppWindow.Size.Width, app.AppWindow.Size.Height });
+    }
+
+    /// <summary>
+    /// Characters per line for each font and line width in Chromium, as the Mac's LineLengthTests
+    /// measure them in WebKit: averaged over paragraphs of four lines or more, leaving out each last
+    /// line. Then pages through the wide-content fixture for the long-word, table and pre rules.
+    /// </summary>
+    async Task CalibrateAsync(string longBook, string wideBook)
+    {
+        await app.ImportAndOpenAsync([longBook]);
+        await Task.Delay(800);
+        // As the Mac's LineLengthTests: the book view 1600 by 900, styled directly. Its character
+        // widths were calibrated at this size, where the bridge's columns come out as asked.
+        reader.Book.Control.Width = 1600;
+        reader.Book.Control.Height = 900;
+        await Task.Delay(500);
+        await reader.Book.ResizedAsync(1600);
+        var rows = new List<object>();
+        foreach (var font in Enum.GetValues<Core.Layout.BookFont>())
+        {
+            foreach (var width in Enum.GetValues<Core.Layout.LineWidth>())
+            {
+                var settings = new ReaderSettings { Font = font, LineWidth = width, FontSize = 18, Theme = ThemeChoice.Paper };
+                var columns = Core.Layout.SpreadLayout.Columns(1600, 18, width, 900, font);
+                await reader.Book.ApplyStylesAsync(ReadingCss.Css(settings, Theme.Paper, false), columns,
+                    Core.Layout.SpreadLayout.ColumnWidth(18, font, width));
+                await Task.Delay(700);
+                await reader.Book.SettleAsync();
+                var measured = await reader.Book.EvaluateAsync("""
+                    (async () => {
+                        const doc = readmeBridge.currentDocument()
+                        for (const face of ['EB Garamond', 'Literata', 'Fraunces']) await doc.fonts.load(`18px "${face}"`)
+                        let characters = 0, lines = 0, rects = 0, width = 0, paragraphs = 0
+                        for (const p of doc.querySelectorAll('p')) {
+                            const range = doc.createRange()
+                            range.selectNodeContents(p)
+                            const all = [...range.getClientRects()]
+                            // A line is a row of boxes; Chromium may give several boxes for one line.
+                            const count = new Set(all.map(r => Math.round(r.top))).size
+                            if (count < 4) continue
+                            characters += p.textContent.length * (count - 1) / count
+                            lines += count - 1
+                            rects += all.length
+                            width += p.getBoundingClientRect().width
+                            paragraphs++
+                        }
+                        return {
+                            perLine: lines === 0 ? 0 : characters / lines,
+                            boxesPerLine: lines === 0 ? 0 : rects / (lines + paragraphs),
+                            textWidth: paragraphs ? width / paragraphs : 0,
+                            family: getComputedStyle(doc.body).fontFamily,
+                            hyphens: getComputedStyle(doc.body.querySelector('p')).hyphens,
+                            lang: doc.documentElement.lang,
+                            fontSize: getComputedStyle(doc.body.querySelector('p')).fontSize,
+                            columnCss: getComputedStyle(doc.documentElement).columnWidth,
+                            frame: doc.defaultView.frameElement?.getBoundingClientRect().width,
+                            renderer: document.querySelector('foliate-view').renderer.getBoundingClientRect().width,
+                            maxInline: document.querySelector('foliate-view').renderer.getAttribute('max-inline-size'),
+                            gap: document.querySelector('foliate-view').renderer.getAttribute('gap'),
+                            dpr: devicePixelRatio,
+                        }
+                    })()
+                    """);
+                var perLine = measured.GetProperty("perLine").GetDouble();
+                var target = Core.Layout.SpreadLayout.Characters(width);
+                rows.Add(new
+                {
+                    font = font.ToString(), width = width.ToString(), perLine = Math.Round(perLine, 1), target,
+                    // The character width that would have hit the target exactly.
+                    impliedCharacterWidth = perLine > 0 ? Math.Round(Core.Layout.SpreadLayout.CharacterWidth(font) * perLine / target, 3) : 0,
+                    family = measured.GetProperty("family").GetString(),
+                    boxesPerLine = Math.Round(measured.GetProperty("boxesPerLine").GetDouble(), 2),
+                    textWidth = Math.Round(measured.GetProperty("textWidth").GetDouble(), 1),
+                    askedColumnWidth = Math.Round(Core.Layout.SpreadLayout.ColumnWidth(18, font, width), 1),
+                    columns = reader.Book.Columns,
+                    probe = measured.ToString(),
+                    hyphens = measured.GetProperty("hyphens").GetString(),
+                    lang = measured.GetProperty("lang").GetString(),
+                });
+            }
+        }
+        Record("lineLengths", rows);
+
+        reader.Change(new ReaderSettings { Theme = ThemeChoice.Paper, FontSize = 19 });
+        await app.ImportAndOpenAsync([wideBook]);
+        await Task.Delay(1000);
+        for (var page = 0; page < 6; page++)
+        {
+            var overflow = await reader.Book.EvaluateAsync("""
+                (() => {
+                    const doc = readmeBridge.currentDocument()
+                    const view = doc.defaultView
+                    const columns = parseFloat(getComputedStyle(doc.documentElement).columnWidth) || 0
+                    let worst = 0, tag = null
+                    for (const el of doc.body.querySelectorAll('*')) {
+                        const over = el.scrollWidth - el.clientWidth
+                        if (over > worst && getComputedStyle(el).overflowX !== 'auto') { worst = over; tag = el.tagName }
+                    }
+                    return { columnWidth: columns, worstOverflow: worst, tag }
+                })()
+                """);
+            Record($"wide-{page}", new { at = Where(), overflow });
+            await Shot($"wide-{page}");
+            await Key("ArrowRight", delay: 900);
+        }
+    }
+
+    /// <summary>
+    /// The phase 3 "done when": import five books (and two that must be refused), see their covers,
+    /// open one, read, back to the shelf with Ctrl+L, switch to another; then pin, search, remove.
+    /// </summary>
+    async Task ShelfAsync(string fixtures)
+    {
+        string Fixture(string name) => Path.Combine(fixtures, name);
+        app.ShowLibrary(animated: false);
+        await Task.Delay(1000);
+        await Shot("s1-empty-shelf");
+
+        var five = new[] { "long.epub", "search.epub", "spreads.epub", "no-cover.epub", "wide-content.epub" };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var results = await app.Shelf.AddAsync(five.Concat(["drm.epub", "not-an-epub.epub"]).Select(Fixture).ToList());
+        Record("import", new
+        {
+            seconds = Math.Round(clock.Elapsed.TotalSeconds, 1),
+            books = results.Select(r => new { file = Path.GetFileName(r.Path), r.Book?.Title, r.Book?.Author, r.Book?.HasCover, error = r.Error?.ToString() }),
+        });
+        await Task.Delay(1200);
+        await Shot("s2-five-books");
+        Record("shelfAfterImport", app.Shelf.ShownTitles());
+
+        Book ById(string file) => library.Books.First(b => b.Id == results.First(r => Path.GetFileName(r.Path) == file).Book!.Id);
+        var search = ById("search.epub");
+        Record("openedSearch", await app.OpenAsync(search));
+        await Task.Delay(800);
+        for (var i = 0; i < 3; i++) await Key("ArrowRight", delay: 600);
+        Record("searchAt", Where());
+        await Key("l", ctrl: true, delay: 1200);
+        Record("ctrlLShowsShelf", app.IsShowingLibrary);
+        await Shot("s3-shelf-after-reading");
+        Record("ledgeAfterReading", library.Current?.Title);
+
+        var longBook = ById("long.epub");
+        Record("openedLong", await app.OpenAsync(longBook));
+        await Task.Delay(800);
+        await Key("ArrowRight", delay: 800);
+        Record("longAt", Where());
+        await Key("l", ctrl: true, delay: 1000);
+        Record("ledgeAfterSwitch", library.Current?.Title);
+
+        library.SetPinned([ById("no-cover.epub").Id], true);
+        await Task.Delay(800);
+        Record("orderWithPin", app.Shelf.ShownTitles());
+        await Shot("s4-pinned");
+
+        // Ctrl-click two books, then Shift-click a run, as the covers' own clicks do with keys held.
+        var shelfOrder = new[] { library.Current }.OfType<Book>().Concat(library.Others).ToList();
+        app.Shelf.Click(shelfOrder[1].Id, Core.Reader.Modifiers.Ctrl);
+        app.Shelf.Click(shelfOrder[3].Id, Core.Reader.Modifiers.Ctrl);
+        await Task.Delay(400);
+        Record("ctrlPicked", app.Shelf.PickedTitles());
+        Record("menuOnPicked", app.Shelf.MenuFor(shelfOrder[1].Id, show: true));
+        await Task.Delay(600);
+        await Shot("s4b-picked-with-menu");
+        app.Shelf.HideMenus();
+        Record("menuOnOther", app.Shelf.MenuFor(shelfOrder[2].Id, show: false));
+        app.Shelf.Click(shelfOrder[4].Id, Core.Reader.Modifiers.Shift);
+        await Task.Delay(300);
+        Record("shiftPicked", app.Shelf.PickedTitles());
+        Record("plainClick", app.Shelf.Click(shelfOrder[2].Id, Core.Reader.Modifiers.None).ToString());
+        Record("pickedAfterPlainClick", app.Shelf.PickedTitles());
+
+        app.Shelf.Type("spread");
+        await Task.Delay(800);
+        Record("searchSpread", app.Shelf.ShownTitles());
+        await Shot("s5-search");
+        app.Shelf.Type("zzz");
+        await Task.Delay(600);
+        await Shot("s6-no-match");
+        app.Shelf.CloseSearch();
+        await Task.Delay(400);
+
+        var wide = ById("wide-content.epub");
+        library.Remove(wide.Id);
+        await Task.Delay(600);
+        Record("removed", new
+        {
+            gone = library.Book(wide.Id) == null,
+            copyGone = !File.Exists(library.FilePath(wide)),
+            coverGone = !File.Exists(library.CoverPath(wide)),
+            shelf = app.Shelf.ShownTitles(),
+        });
+
+        // Esc puts the shelf away over the book that's open.
+        app.HandleKey(new PageKey("Escape", Core.Reader.Modifiers.None, false));
+        await Task.Delay(800);
+        Record("escapeBackToBook", new { showingShelf = app.IsShowingLibrary, at = Where() });
+        await Key("ArrowRight", delay: 1500);
+        Record("lastSpreads", Directory.Exists(Path.Combine(library.Directory, "LastSpreads"))
+            ? Directory.GetFiles(Path.Combine(library.Directory, "LastSpreads")).Select(Path.GetFileName).ToList() : []);
+        Record("libraryFiles", Directory.GetFiles(library.BooksDirectory).Length);
+    }
+
+    /// <summary>
+    /// The phase 4 "done when": every row of the plan's shortcut table, sent as keys into the page as a
+    /// person would press them, and the tools each opens: the toolbar, contents, go to page, the marker,
+    /// highlights, search, the shortcuts panel, full screen and the library.
+    /// </summary>
+    async Task ToolsAsync(string fixtures)
+    {
+        string Fixture(string name) => Path.Combine(fixtures, name);
+        reader.Change(new ReaderSettings { Theme = ThemeChoice.Paper });
+        await app.ImportAndOpenAsync([Fixture("long.epub")]);
+        await Task.Delay(1200);
+        Record("opened", Where());
+
+        // The toolbar wakes with the pointer and sleeps after it rests.
+        reader.WakeForChecks();
+        await Task.Delay(400);
+        Record("toolbar", new { awake = reader.IsToolbarAwake, buttons = reader.Toolbar.ButtonNames.ToList() });
+        await Shot("t1-toolbar");
+        await Task.Delay(2200);
+        Record("toolbarSleeps", !reader.IsToolbarAwake);
+
+        // Next and previous page: arrows and Space.
+        var start = reader.Location?.Page;
+        await Key("ArrowRight");
+        var afterRight = reader.Location?.Page;
+        await Key(" ");
+        var afterSpace = reader.Location?.Page;
+        await Key("ArrowLeft");
+        Record("turns", new { start, afterRight, afterSpace, afterLeft = reader.Location?.Page });
+
+        // Bigger and smaller text: Ctrl+ and Ctrl-.
+        var size = reader.Settings.FontSize;
+        await Key("=", ctrl: true, delay: 1500);
+        var bigger = reader.Settings.FontSize;
+        await Key("-", ctrl: true, delay: 1500);
+        Record("textSize", new { size, bigger, smaller = reader.Settings.FontSize });
+
+        // Start and end: Ctrl+Home and Ctrl+End, and Home and End.
+        await Key("End", ctrl: true, delay: 1500);
+        var ctrlEnd = reader.Location?.IsAtEnd;
+        await Key("Home", ctrl: true, delay: 1500);
+        var ctrlHome = reader.Location?.IsAtStart;
+        await Key("End", delay: 1500);
+        var end = reader.Location?.IsAtEnd;
+        await Key("Home", delay: 1500);
+        Record("startAndEnd", new { ctrlEnd, ctrlHome, end, home = reader.Location?.IsAtStart });
+
+        // Contents: Ctrl+T, Esc, and choosing a chapter.
+        await Key("ArrowRight", delay: 600);
+        await Key("t", ctrl: true, delay: 300);
+        await reader.ContentsLoadedAsync();
+        await Task.Delay(600);
+        var entries = reader.Contents.Entries;
+        Record("contents", new
+        {
+            shown = reader.IsShowingContents,
+            count = entries.Count,
+            current = Enumerable.Range(0, entries.Count).Where(reader.Contents.IsMarkedCurrent).Select(i => entries[i].Title).ToList(),
+            focused = reader.Contents.HasFocus,
+        });
+        await Shot("t2-contents");
+        app.HandleKey(new PageKey("Escape", Modifiers.None, false));
+        await Task.Delay(500);
+        var closedByEscape = !reader.IsShowingContents;
+        await Key("t", ctrl: true, delay: 300);
+        await reader.ContentsLoadedAsync();
+        await Task.Delay(500);
+        var chapter20 = entries.ToList().FindIndex(e => e.Title == "Chapter 20");
+        reader.Contents.Choose(chapter20);
+        await Task.Delay(1500);
+        Record("contentsChoose", new { closedByEscape, closedOnChoose = !reader.IsShowingContents, chapter = reader.Location?.ChapterTitle });
+
+        // Go to page: Ctrl+G.
+        await Key("g", ctrl: true, delay: 500);
+        var count = reader.Location?.PageCount ?? 0;
+        var placeholder = reader.PageField.Placeholder;
+        await Shot("t3-go-to-page");
+        var notAPage = reader.PageField.Enter("soon");
+        var stillOpen = reader.IsShowingPageField;
+        var went = reader.PageField.Enter((count / 2).ToString());
+        await Task.Delay(1500);
+        Record("goToPage", new { placeholder, notAPage, stillOpen, went, closed = !reader.IsShowingPageField, wanted = count / 2, page = reader.Location?.Page });
+
+        // The marker: Ctrl+D marks, Ctrl+Shift+D goes back to it, Ctrl+D again takes it away.
+        await Key("d", ctrl: true, delay: 300);
+        await reader.MarkedAsync();
+        await Task.Delay(500);
+        var marked = new
+        {
+            marker = reader.BookMarker?.Page,
+            stored = reader.BookId is { } id1 ? library.Markers.Marker(id1)?.Page : null,
+            ribbon = reader.IsRibbonShown,
+            notice = reader.NoticeText,
+            isMarked = reader.Location?.IsMarked,
+        };
+        await Shot("t4-marked");
+        await Key("End", ctrl: true, delay: 1500);
+        var ribbonAway = reader.IsRibbonShown;
+        await Key("D", ctrl: true, delay: 1500);
+        var back = new { page = reader.Location?.Page, isMarked = reader.Location?.IsMarked, ribbon = reader.IsRibbonShown };
+        await Key("d", ctrl: true, delay: 300);
+        await reader.MarkedAsync();
+        Record("marker", new
+        {
+            marked, ribbonAway, back,
+            removed = reader.BookMarker == null,
+            stored = reader.BookId is { } id2 ? library.Markers.Marker(id2) : null,
+            notice = reader.NoticeText,
+        });
+
+        // Highlights: select words, press Highlight; Ctrl+Shift+H lists them; then remove it.
+        var selected = (await SelectWordsAsync()).ToString();
+        await Task.Delay(800);
+        var bar = new { shown = reader.Bar.IsShown, mode = reader.Bar.Shown.ToString() };
+        await Shot("t5-highlight-bar");
+        reader.Bar.Press();
+        await reader.MarkedAsync();
+        await Task.Delay(800);
+        List<string> stored = reader.BookId is { } id3 ? library.Highlights.Highlights(id3).Select(h => h.Text).ToList() : [];
+        await Shot("t6-highlighted");
+        await Key("H", ctrl: true, delay: 800);
+        var panel = new { shown = reader.IsShowingHighlights, rows = reader.HighlightsPanel.Highlights.Count, focused = reader.HighlightsPanel.HasFocus };
+        await Shot("t7-highlights");
+        reader.HighlightsPanel.Choose(0);
+        await Task.Delay(1200);
+        var closedOnChoose = !reader.IsShowingHighlights;
+        await SelectWordsAsync();
+        await Task.Delay(800);
+        var removeMode = reader.Bar.IsShown ? reader.Bar.Shown.ToString() : null;
+        reader.Bar.Press();
+        await reader.MarkedAsync();
+        await Task.Delay(500);
+        Record("highlights", new { selected, bar, stored, panel, closedOnChoose, removeMode, left = reader.BookHighlights.Count });
+        await Key("H", ctrl: true, delay: 800);
+        await Shot("t8-no-highlights");
+        await Key("H", ctrl: true, delay: 600);
+        Record("highlightsToggle", !reader.IsShowingHighlights);
+
+        // Find: Ctrl+F, type, pick a match.
+        await Key("f", ctrl: true, delay: 500);
+        var searchShown = reader.IsShowingSearch;
+        reader.Search.Type("chapter");
+        await Task.Delay(600);
+        await reader.SearchedAsync();
+        await Task.Delay(300);
+        await Shot("t9-search");
+        var found = reader.SearchOutcome?.Matches.Count;
+        reader.Search.Pick(Math.Min(3, (found ?? 1) - 1));
+        await Task.Delay(1500);
+        var flashing = await reader.Book.EvaluateAsync("readmeBridge.flashing()");
+        Record("search", new { searchShown, found, rows = reader.Search.RowCount, closed = !reader.IsShowingSearch, at = Where(), flashing = flashing.ToString() });
+        await Shot("t10-search-match");
+
+        // Keyboard shortcuts: ? and Ctrl+/, Esc closes.
+        await Key("?", delay: 600);
+        var shortcuts = new { shown = reader.IsShowingShortcuts, rows = reader.ShortcutKeysShown.Count, keys = reader.ShortcutKeysShown.Select(k => string.Join(" ", k)).ToList() };
+        await Shot("t11-shortcuts");
+        await Key("Escape", delay: 600);
+        var closedByEsc = !reader.IsShowingShortcuts;
+        await Key("/", ctrl: true, delay: 600);
+        var ctrlSlash = reader.IsShowingShortcuts;
+        await Key("/", ctrl: true, delay: 600);
+        Record("shortcuts", new { shortcuts, closedByEsc, ctrlSlash, ctrlSlashCloses = !reader.IsShowingShortcuts });
+
+        // Full screen: F and F11; Esc leaves. The pointer hides with the toolbar there.
+        await Key("f", delay: 2000);
+        var fullscreen = reader.IsFullscreen;
+        reader.WakeForChecks();
+        await Task.Delay(300);
+        await Shot("t12-fullscreen-toolbar");
+        await Task.Delay(2200);
+        var pointerHidden = reader.IsPointerHidden;
+        await Key("Escape", delay: 2000);
+        var leftByEscape = !reader.IsFullscreen;
+        await Key("F11", delay: 2000);
+        var f11 = reader.IsFullscreen;
+        await Key("F11", delay: 2000);
+        Record("fullscreen", new { fullscreen, pointerHidden, leftByEscape, f11, f11Leaves = !reader.IsFullscreen, pointerBack = !reader.IsPointerHidden });
+
+        // The toolbar's buttons: a theme.
+        reader.WakeForChecks();
+        await Task.Delay(300);
+        var pressedSepia = reader.Toolbar.Press("Sepia");
+        await Task.Delay(1500);
+        var sepia = reader.Settings.Theme;
+        reader.WakeForChecks();
+        await Task.Delay(400);
+        await Shot("t13-sepia-toolbar");
+        reader.Toolbar.Press("Paper");
+        await Task.Delay(1200);
+        Record("toolbarButtons", new { pressedSepia, sepia = sepia.ToString(), now = reader.Settings.Theme.ToString() });
+
+        // Library: Ctrl+L; there, Ctrl+F searches the shelf and Esc clears it, then goes back.
+        await Key("l", ctrl: true, delay: 1200);
+        var shelf = app.IsShowingLibrary;
+        app.HandleKey(new PageKey("f", Modifiers.Ctrl, false));
+        await Task.Delay(500);
+        app.Shelf.Type("long");
+        await Task.Delay(600);
+        var filtered = app.Shelf.ShownTitles();
+        app.HandleKey(new PageKey("Escape", Modifiers.None, false));
+        await Task.Delay(500);
+        var cleared = app.Shelf.ShownTitles();
+        app.HandleKey(new PageKey("Escape", Modifiers.None, false));
+        await Task.Delay(900);
+        Record("library", new { shelf, filtered, cleared, backToBook = !app.IsShowingLibrary, toolbarStaysAsleep = !reader.IsToolbarAwake });
+    }
+
+    /// <summary>
+    /// Selects twenty characters of the words in the middle of the left-hand page, then lets go, as a
+    /// drag there would: the page's own selection reporting does the rest (HighlightBridgeTests.swift).
+    /// </summary>
+    Task<System.Text.Json.JsonElement> SelectWordsAsync() => reader.Book.EvaluateAsync("""
+        (() => {
+            const renderer = document.querySelector('foliate-view').renderer
+            const box = renderer.getBoundingClientRect()
+            for (const { doc } of renderer.getContents()) {
+                const frame = doc.defaultView.frameElement.getBoundingClientRect()
+                for (const share of [0.4, 0.5, 0.3, 0.6, 0.25, 0.7]) {
+                    const x = box.left + box.width * 0.25 - frame.left
+                    const y = box.top + box.height * share - frame.top
+                    const caret = doc.caretRangeFromPoint(x, y)
+                    const node = caret?.startContainer
+                    if (node?.nodeType !== Node.TEXT_NODE) continue
+                    // From the start of the word pointed at.
+                    let from = caret.startOffset
+                    while (from > 0 && /\S/.test(node.data[from - 1])) from--
+                    if (node.data.length - from < 20) continue
+                    const range = doc.createRange()
+                    range.setStart(node, from)
+                    range.setEnd(node, from + 20)
+                    const selection = doc.defaultView.getSelection()
+                    selection.removeAllRanges()
+                    selection.addRange(range)
+                    doc.dispatchEvent(new Event('pointerup'))
+                    return range.toString()
+                }
+            }
+            return null
+        })()
+        """);
+
+    /// <summary>Reads the whole book with the arrow key, from the first page to the last, then back a few.</summary>
+    async Task WholeBookAsync(string book)
+    {
+        await app.ImportAndOpenAsync([book]);
+        await Task.Delay(800);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var turns = 0;
+        var pages = new List<int>();
+        while (reader.Location is { IsAtEnd: false } && turns < 600)
+        {
+            await Key("ArrowRight", delay: 500);
+            turns++;
+            if (reader.Location is { } at) pages.Add(at.Page);
+        }
+        await reader.Book.SettleAsync();
+        Record("whole", new
+        {
+            turns,
+            seconds = Math.Round(clock.Elapsed.TotalSeconds, 1),
+            reachedEnd = reader.Location?.IsAtEnd,
+            // Pages only ever go forward while turning forward.
+            backwardSteps = pages.Zip(pages.Skip(1)).Count(p => p.Second < p.First),
+            at = Where(),
+        });
+        for (var i = 0; i < 5; i++) await Key("ArrowLeft", delay: 400);
+        Record("final", Where());
+    }
+
+    async Task ResumeAsync()
+    {
+        for (var i = 0; i < 100 && reader.Location == null; i++) await Task.Delay(150);
+        await Task.Delay(800);
+        Record("reopened", Where());
+        Record("window", new { app.AppWindow.Position.X, app.AppWindow.Position.Y, app.AppWindow.Size.Width, app.AppWindow.Size.Height });
+        await Shot("7-reopened");
+        // Where the saved place lands once everything has loaded, against where the reopen put it.
+        if (reader.BookId is { } id && library.Positions.Location(id) is { } saved)
+        {
+            Record("saved", new { saved.Page, saved.Cfi });
+            Record("placeAfterOpen", await reader.Book.PlaceAsync());
+            await reader.Book.GoToCfiAsync(saved.Cfi);
+            await reader.Book.SettleAsync();
+            Record("goToSavedAgain", Where());
+            var probe = await reader.Book.EvaluateAsync("""
+                ({ fontsLoaded: [...readmeBridge.currentDocument().fonts].map(f => f.family + ':' + f.status).join(' '),
+                   size: (() => { const r = document.querySelector('foliate-view').renderer.getBoundingClientRect(); return r.width + 'x' + r.height })() })
+                """);
+            Record("probe", probe.ToString());
+        }
+    }
+
+    /// <summary>
+    /// The phase 5 "done when", on one machine: books read, marked and highlighted are exported, the
+    /// library is changed the way another machine's would be, and the bundle is imported back, through
+    /// the Keep Mine / Combine question as a person would answer it. Then the bundle Windows writes for
+    /// the Mac's tests, a newer format refused, and the shelf's menus.
+    /// </summary>
+    async Task BundlesAsync(string fixtures)
+    {
+        string Fixture(string name) => Path.Combine(fixtures, name);
+        reader.Change(new ReaderSettings { Theme = ThemeChoice.Paper });
+        app.ShowLibrary(animated: false);
+        await Task.Delay(800);
+        Record("menuEmpty", app.Shelf.MoreMenu());
+        var results = await app.Shelf.AddAsync(new[] { "long.epub", "search.epub", "no-cover.epub" }.Select(Fixture).ToList());
+        Book ById(string file) => library.Book(results.First(r => Path.GetFileName(r.Path) == file).Book!.Id)!;
+        var longBook = ById("long.epub");
+        var search = ById("search.epub");
+        var noCover = ById("no-cover.epub");
+
+        // Reading long.epub: some pages in, a highlight, a marker.
+        await app.OpenAsync(longBook);
+        await Task.Delay(800);
+        for (var i = 0; i < 6; i++) await Key("ArrowRight", delay: 500);
+        await SelectWordsAsync();
+        await Task.Delay(500);
+        reader.Bar.Press();
+        await Task.Delay(500);
+        await Key("d", ctrl: true, delay: 600);
+        for (var i = 0; i < 2; i++) await Key("ArrowRight", delay: 500);
+        await reader.PlacesKeptAsync();
+        var exportedPlace = library.Positions.Location(longBook.Id);
+        var exportedHighlights = library.Highlights.Highlights(longBook.Id).Select(h => h.Cfi).ToList();
+        var exportedMarker = library.Markers.Marker(longBook.Id);
+        library.SetPinned([search.Id], true);
+        Record("beforeExport", new
+        {
+            place = exportedPlace == null ? null : new { exportedPlace.Page, exportedPlace.Fraction, exportedPlace.Cfi },
+            highlights = exportedHighlights.Count,
+            marker = exportedMarker?.Cfi,
+        });
+        await Key("l", ctrl: true, delay: 1000);
+
+        Record("menuWithBooks", app.Shelf.MoreMenu());
+        Record("bookMenu", app.Shelf.MenuFor(search.Id, show: false));
+        app.Shelf.Click(search.Id, Core.Reader.Modifiers.Ctrl);
+        app.Shelf.Click(noCover.Id, Core.Reader.Modifiers.Ctrl);
+        Record("pickedMenu", app.Shelf.MenuFor(search.Id, show: true));
+        await Task.Delay(500);
+        await Shot("b1-export-menu");
+        app.Shelf.HideMenus();
+        app.Shelf.Escape(() => { });
+
+        var all = Path.Combine(outDir, "all.readmelibrary");
+        var exporting = app.ExportAsync(library.Books, all);
+        await Task.Delay(30);
+        var working = app.Shelf.NoticeLines();
+        await exporting;
+        await Task.Delay(300);
+        Record("exported", new { lines = app.Shelf.NoticeLines(), whileWorking = working, size = new FileInfo(all).Length });
+        await Shot("b2-exported");
+        var one = Path.Combine(outDir, "one.readmelibrary");
+        await app.ExportAsync([longBook], one);
+        Record("exportedOne", LibraryBundle.Open(one).Manifest.BookIds.Count);
+        Record("safeFileName", AppCoordinator.SafeFileName("What: a <Title>?."));
+
+        // Now this library is as another machine's might be: search.epub gone, long.epub further back,
+        // with a highlight of its own and no marker.
+        library.Remove(search.Id);
+        library.Positions.Save(exportedPlace! with { Fraction = 0.01, Page = 1 }, longBook.Id);
+        library.Markers.Remove(longBook.Id);
+        foreach (var h in library.Highlights.Highlights(longBook.Id)) library.Highlights.Remove(h.Id, longBook.Id);
+        library.Highlights.Add(Highlight.Create("epubcfi(/6/2!/4/2,/1:0,/1:1)", "mine", 0.001), longBook.Id);
+        await app.OpenAsync(longBook);
+        await Task.Delay(600);
+        Record("openBeforeImport", reader.Record?.Title);
+        await Key("l", ctrl: true, delay: 800);
+
+        // Import, and answer the question as a person would: Combine.
+        var importing = app.ImportBundlesAsync([all]);
+        ContentDialog? dialog = null;
+        for (var i = 0; i < 50 && (dialog = app.OpenDialog) == null; i++) await Task.Delay(100);
+        await Task.Delay(500);
+        await Shot("b3-question");
+        Record("question", dialog == null ? null : new { title = dialog.Title, dialog.PrimaryButtonText, dialog.SecondaryButtonText, dialog.CloseButtonText });
+        if (dialog != null) Press(dialog, "Combine");
+        await importing;
+        await Task.Delay(300);
+        var back = library.Book(search.Id);
+        Record("combined", new
+        {
+            lines = app.Shelf.NoticeLines(),
+            readerClosed = reader.Record == null,
+            searchBack = back == null ? null : new { back.Title, pinned = back.PinnedAt != null, file = File.Exists(library.FilePath(back)), cover = File.Exists(library.CoverPath(back)) },
+            highlights = library.Highlights.Highlights(longBook.Id).Select(h => h.Text).ToList(),
+            highlightsBack = exportedHighlights.All(c => library.Highlights.Highlights(longBook.Id).Any(h => h.Cfi == c)),
+            placeIsTheFurther = library.Positions.Location(longBook.Id)?.Cfi == exportedPlace.Cfi,
+            markerBack = library.Markers.Marker(longBook.Id)?.Cfi == exportedMarker?.Cfi,
+        });
+        await Shot("b4-combined");
+
+        // Opened again, it starts where the import left it, with the marker and both highlights.
+        await app.OpenAsync(longBook);
+        await Task.Delay(1200);
+        Record("reopened", new { at = Where(), sameCfi = reader.Location?.Cfi == exportedPlace.Cfi, marked = reader.Location?.IsMarked, shown = reader.BookHighlights.Count });
+        await Shot("b5-reopened");
+        await Key("l", ctrl: true, delay: 800);
+
+        // Keep Mine, then Cancel: nothing changes.
+        library.Positions.Save(exportedPlace with { Fraction = 0.01, Page = 1 }, longBook.Id);
+        var before = library.Books;
+        await app.ImportBundlesAsync([all], _ => ImportChoice.KeepMine);
+        Record("keptMine", new { lines = app.Shelf.NoticeLines(), same = before.SequenceEqual(library.Books), place = library.Positions.Location(longBook.Id)?.Fraction });
+        await app.ImportBundlesAsync([all], _ => null);
+        Record("cancelled", before.SequenceEqual(library.Books));
+
+        // The bundle the Mac's tests read, written by this app's own code; and one from a newer Readme.
+        library.Remove(noCover.Id);
+        await app.ImportBundlesAsync([Fixture(Path.Combine("Golden", "windows.readmelibrary"))]);
+        var golden = library.Book(noCover.Id);
+        Record("golden", new
+        {
+            lines = app.Shelf.NoticeLines(),
+            golden?.Title,
+            golden?.Author,
+            pinned = golden?.PinnedAt,
+            highlights = library.Highlights.Highlights(noCover.Id).Select(h => h.Text).ToList(),
+            marker = library.Markers.Marker(noCover.Id)?.Page,
+            place = library.Positions.Location(noCover.Id)?.Fraction,
+        });
+        var newer = Path.Combine(outDir, "newer.readmelibrary");
+        using (var writer = new Core.Zip.ZipWriter(newer))
+        {
+            writer.Add("manifest.json", """{"formatVersion":2,"exportedAt":"2026-01-01T00:00:00Z","bookIDs":[]}"""u8);
+            writer.Finish();
+        }
+        await Task.Delay(4500);
+        await app.ImportBundlesAsync([newer]);
+        Record("newer", app.Shelf.NoticeLines());
+        await app.ImportBundlesAsync([Fixture("long.epub")]);
+        Record("notABundle", app.Shelf.NoticeLines());
+        await Task.Delay(300);
+        await Shot("b6-refused");
+    }
+
+    /// <summary>Presses the dialog's button with this text, as a click would, through its automation peer.</summary>
+    static void Press(ContentDialog dialog, string text)
+    {
+        foreach (var popup in VisualTreeHelper.GetOpenPopupsForXamlRoot(dialog.XamlRoot))
+            if (Find(popup.Child, text) is { } button && new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke) is IInvokeProvider invoke)
+            {
+                invoke.Invoke();
+                return;
+            }
+    }
+
+    static Button? Find(DependencyObject? element, string text)
+    {
+        if (element == null) return null;
+        if (element is Button { Content: string content } button && content == text) return button;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+            if (Find(VisualTreeHelper.GetChild(element, i), text) is { } found) return found;
+        return null;
+    }
+
+    /// <summary>
+    /// The phase 6 "done when", from a command line: a second launch with a book, a library and
+    /// nothing at all, each handed to this app, which is still the only one running.
+    /// </summary>
+    async Task InstanceAsync(string fixtures)
+    {
+        app.ShowLibrary(animated: false);
+        await Task.Delay(800);
+        var exe = Environment.ProcessPath!;
+        async Task<object> Launch(string? file)
+        {
+            var handed = new TaskCompletionSource<IReadOnlyList<string>>();
+            void Done(IReadOnlyList<string> paths) => handed.TrySetResult(paths);
+            app.Redirected += Done;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            using var second = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe) { ArgumentList = { }, UseShellExecute = false }.With(file));
+            var exited = second!.WaitForExit(20000);
+            var exitedAfter = clock.ElapsedMilliseconds;
+            var paths = await Task.WhenAny(handed.Task, Task.Delay(20000)) == handed.Task ? handed.Task.Result : null;
+            app.Redirected -= Done;
+            await Task.Delay(1500);
+            return new
+            {
+                exited,
+                exitCode = exited ? second.ExitCode : (int?)null,
+                exitedAfter,
+                handed = paths,
+                running = System.Diagnostics.Process.GetProcessesByName("Readme").Count(p => { try { return p.MainModule?.FileName == exe; } catch { return false; } }),
+                showingLibrary = app.IsShowingLibrary,
+                open = reader.Record?.Title,
+                at = Where(),
+                books = library.Books.Select(b => b.Title).ToList(),
+                lines = app.Shelf.NoticeLines(),
+            };
+        }
+        Record("withBook", await Launch(Path.Combine(fixtures, "long.epub")));
+        await Shot("i1-book-handed-on");
+        Record("withBundle", await Launch(Path.Combine(fixtures, "Golden", "windows.readmelibrary")));
+        await Shot("i2-bundle-handed-on");
+        Record("withNothing", await Launch(null));
+        Record("withSpaces", await LaunchCopy(fixtures, Launch));
+    }
+
+    /// <summary>A book whose path has spaces in it, which the command line must keep whole.</summary>
+    async Task<object> LaunchCopy(string fixtures, Func<string?, Task<object>> launch)
+    {
+        var folder = Path.Combine(outDir, "a folder with spaces");
+        Directory.CreateDirectory(folder);
+        var copy = Path.Combine(folder, "search book.epub");
+        File.Copy(Path.Combine(fixtures, "search.epub"), copy, overwrite: true);
+        return await launch(copy);
+    }
+
+    /// <summary>
+    /// The phase 7 "done when": the curl at normal reading pace, pictured mid-turn, then fast presses, a
+    /// held key, touchpad swipes that turn, fall back and flick, a mouse wheel that does nothing, one page
+    /// across, and less motion's crossfade. Each turn's frames, from the UI thread, are recorded.
+    /// </summary>
+    async Task CurlAsync(string book)
+    {
+        reader.Change(new ReaderSettings { Theme = ThemeChoice.Paper });
+        await app.ImportAndOpenAsync([book]);
+        await Task.Delay(800);
+        var curl = reader.CurlForChecks;
+        var cache = reader.SpreadsForChecks;
+        var turns = reader.TurnsForChecks;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var moves = 0;
+        turns.Moving += _ => moves++;
+        await cache.NeighboursReadyAsync();
+        Record("cacheReady", new { seconds = Math.Round(clock.Elapsed.TotalSeconds, 2), spreads = cache.Count });
+
+        async Task<object> Landed()
+        {
+            await turns.LandedAsync();
+            for (var i = 0; i < 100 && curl.IsShowing; i++) await Task.Delay(10);
+            return new { page = reader.Location?.Page, curlOff = !curl.IsShowing };
+        }
+
+        // Normal pace, with pictures mid-turn.
+        var normal = new List<object>();
+        for (var i = 0; i < 6; i++)
+        {
+            await cache.NeighboursReadyAsync();
+            var before = reader.Location?.Page;
+            var ready = cache.Image(SpreadSlot.Next) != null;
+            await Key("ArrowRight", delay: 0);
+            var curled = curl.IsShowing;
+            if (i == 1)
+            {
+                await Task.Delay(110);
+                await Shot("c1-curl-quarter");
+                await Task.Delay(130);
+                await Shot("c2-curl-half");
+                await Task.Delay(120);
+                await Shot("c3-curl-three-quarters");
+            }
+            var landed = await Landed();
+            normal.Add(new { before, ready, curled, landed, frames = curl.LastPlay.Frames, longestMs = Math.Round(curl.LastPlay.LongestMs, 1) });
+            await Task.Delay(700);
+        }
+        Record("normalPace", normal);
+        await Shot("c4-landed");
+
+        // Backward too.
+        await cache.NeighboursReadyAsync();
+        var back = reader.Location?.Page;
+        await Key("ArrowLeft", delay: 0);
+        var backCurled = curl.IsShowing;
+        await Task.Delay(260);
+        await Shot("c5-curl-back-half");
+        Record("backward", new { from = back, backCurled, landed = await Landed() });
+
+        // Fast presses, 120 ms apart: every one counts.
+        await cache.NeighboursReadyAsync();
+        var start = reader.Location?.Page ?? 0;
+        var movesBefore = moves;
+        var curls = 0;
+        for (var i = 0; i < 10; i++)
+        {
+            await Key("ArrowRight", delay: 0);
+            if (curl.IsShowing) curls++;
+            await Task.Delay(120);
+        }
+        var fast = await Landed();
+        Record("fastPresses", new { start, pressed = 10, curls, fast, turned = moves - movesBefore });
+
+        // A held key: a press, then repeats every 33 ms for 2 s, then let go.
+        await cache.NeighboursReadyAsync();
+        start = reader.Location?.Page ?? 0;
+        movesBefore = moves;
+        await Key("ArrowRight", delay: 0);
+        var held = System.Diagnostics.Stopwatch.StartNew();
+        var repeats = 0;
+        while (held.ElapsedMilliseconds < 2000)
+        {
+            await RepeatKey("ArrowRight");
+            repeats++;
+            await Task.Delay(33);
+        }
+        var released = System.Diagnostics.Stopwatch.StartNew();
+        await turns.LandedAsync();
+        var stoppedAfter = released.ElapsedMilliseconds;
+        var heldEnd = await Landed();
+        Record("heldKey", new { start, repeats, heldEnd, turned = moves - movesBefore, stoppedAfterMs = stoppedAfter });
+
+        // Touchpad swipes, as Windows sends them: small deltas every 8 ms, then a pause.
+        async Task<object> Swipe(double total, int steps, string? shot = null)
+        {
+            await cache.NeighboursReadyAsync();
+            var from = reader.Location?.Page;
+            for (var i = 0; i < steps; i++)
+            {
+                reader.WheelForChecks(total / steps, 0);
+                await Task.Delay(8);
+                if (shot != null && i == steps / 2) await Shot(shot);
+            }
+            var heldProgress = curl.Progress;
+            var showing = curl.IsShowing;
+            await Task.Delay(300);
+            var result = await Landed();
+            return new { from, showing, heldProgress = Math.Round(heldProgress, 2), result };
+        }
+        var width = reader.Book.Control.Width / 2;
+        Record("swipeSlowForward", await Swipe(width * 0.8, 40, "c6-swipe-held"));
+        Record("swipeShortFallsBack", await Swipe(width * 0.25, 30));
+        Record("swipeBackward", await Swipe(-width * 0.7, 35));
+        Record("swipeFlick", await Swipe(width * 0.3, 6));
+        // A mouse wheel's notches.
+        var wheelFrom = reader.Location?.Page;
+        foreach (var delta in new[] { 120.0, 120, -240 }) { reader.WheelForChecks(delta, 0); await Task.Delay(40); }
+        reader.WheelForChecks(0, 120);
+        await Task.Delay(500);
+        Record("mouseWheel", new { same = reader.Location?.Page == wheelFrom, curlShown = curl.IsShowing });
+
+        // One page across.
+        Resize(700, 620);
+        await Task.Delay(1800);
+        await cache.NeighboursReadyAsync();
+        var single = reader.Location?.Page;
+        await Key("ArrowRight", delay: 0);
+        var singleCurled = curl.IsShowing;
+        await Task.Delay(200);
+        await Shot("c7-single-page");
+        Record("singlePage", new { columns = reader.Book.Columns, from = single, singleCurled, landed = await Landed() });
+        Resize(1048, 620);
+        await Task.Delay(1800);
+
+        // Night: the pictures follow the look.
+        reader.Change(reader.Settings with { Theme = ThemeChoice.Night });
+        await Task.Delay(1500);
+        await cache.NeighboursReadyAsync();
+        await Key("ArrowRight", delay: 0);
+        await Task.Delay(250);
+        await Shot("c8-night-curl");
+        Record("night", new { landed = await Landed() });
+
+        // A jump, then a turn from where it landed.
+        await Key("End", ctrl: true, delay: 0);
+        await turns.LandedAsync();
+        await Task.Delay(500);
+        var end = reader.Location;
+        await Key("ArrowRight", delay: 300);
+        Record("atTheEnd", new { end?.IsAtEnd, page = end?.Page, after = reader.Location?.Page, curl = curl.IsShowing });
+        long privateBytes;
+        using (var me = System.Diagnostics.Process.GetCurrentProcess()) privateBytes = me.PrivateMemorySize64;
+        Record("memoryMb", privateBytes / (1 << 20));
+    }
+
+    /// <summary>A held key's repeat, as the keyboard sends it while the key stays down.</summary>
+    async Task RepeatKey(string key)
+    {
+        var vk = key == "ArrowRight" ? 39 : 37;
+        await reader.Book.DevToolsAsync("Input.dispatchKeyEvent", new { type = "rawKeyDown", key, code = key, windowsVirtualKeyCode = vk, nativeVirtualKeyCode = vk, autoRepeat = true });
+    }
+
+    object? Where() => reader.Location is { } l
+        ? new { l.Page, l.PageCount, l.Cfi, l.ChapterTitle, l.IsAtStart, l.IsAtEnd, l.Fraction, columns = reader.Book.Columns }
+        : null;
+
+    /// <summary>Within a page or two either way: pages are runs of text, so a layout change keeps the number.</summary>
+    static bool Near(ReaderLocation? before, ReaderLocation? after) =>
+        before != null && after != null && Math.Abs(before.Page - after.Page) <= 2;
+
+    async Task Key(string key, bool ctrl = false, int delay = 900, bool shift = false)
+    {
+        var (code, vk) = key switch
+        {
+            "ArrowRight" => ("ArrowRight", 39), "ArrowLeft" => ("ArrowLeft", 37), " " => ("Space", 32),
+            "Home" => ("Home", 36), "End" => ("End", 35), "F11" => ("F11", 122), "Escape" => ("Escape", 27),
+            "=" => ("Equal", 187), "-" => ("Minus", 189), "/" or "?" => ("Slash", 191),
+            { Length: 1 } letter when char.IsAsciiLetter(letter[0]) => ("Key" + letter.ToUpperInvariant(), char.ToLowerInvariant(letter[0]) - 'a' + 65),
+            _ => throw new ArgumentException(key),
+        };
+        var shifted = shift || key == "?" || (key.Length == 1 && char.IsAsciiLetterUpper(key[0]));
+        var modifiers = (ctrl ? 2 : 0) | (shifted ? 8 : 0);
+        await reader.Book.DevToolsAsync("Input.dispatchKeyEvent", new { type = "rawKeyDown", key, code, windowsVirtualKeyCode = vk, nativeVirtualKeyCode = vk, modifiers });
+        await reader.Book.DevToolsAsync("Input.dispatchKeyEvent", new { type = "keyUp", key, code, windowsVirtualKeyCode = vk, nativeVirtualKeyCode = vk, modifiers });
+        await Task.Delay(delay);
+    }
+
+    void Resize(int width, int height)
+    {
+        var scale = GetDpiForWindow(Hwnd) / 96.0;
+        app.AppWindow.ResizeClient(new SizeInt32((int)(width * scale), (int)(height * scale)));
+    }
+
+    nint Hwnd => Win32Interop.GetWindowFromWindowId(app.AppWindow.Id);
+
+    void Record(string name, object? value) => _results[name] = value;
+
+    void Save(string mode) => File.WriteAllText(Path.Combine(outDir, mode + ".json"), JsonSerializer.Serialize(_results, Indented));
+
+    /// <summary>The whole window, WebView2 included, as a PNG.</summary>
+    async Task Shot(string name)
+    {
+        try
+        {
+            GetClientRect(Hwnd, out var rect);
+            int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+            var screen = GetDC(Hwnd);
+            var memory = CreateCompatibleDC(screen);
+            var bitmap = CreateCompatibleBitmap(screen, width, height);
+            var old = SelectObject(memory, bitmap);
+            PrintWindow(Hwnd, memory, 0x1 | 0x2); // client area, full content
+            var info = new BITMAPINFOHEADER { biSize = 40, biWidth = width, biHeight = -height, biPlanes = 1, biBitCount = 32 };
+            var pixels = new byte[width * height * 4];
+            GetDIBits(memory, bitmap, 0, (uint)height, pixels, ref info, 0);
+            SelectObject(memory, old);
+            DeleteObject(bitmap);
+            DeleteDC(memory);
+            ReleaseDC(Hwnd, screen);
+            for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
+            using var stream = new InMemoryRandomAccessStream();
+            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream);
+            encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, (uint)width, (uint)height, 96, 96, pixels);
+            await encoder.FlushAsync();
+            var bytes = new byte[stream.Size];
+            stream.Seek(0);
+            using var data = new DataReader(stream);
+            await data.LoadAsync((uint)stream.Size);
+            data.ReadBytes(bytes);
+            await File.WriteAllBytesAsync(Path.Combine(outDir, name + ".png"), bytes);
+        }
+        catch (Exception error)
+        {
+            Record("shotError-" + name, error.Message);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct BITMAPINFOHEADER
+    {
+        public uint biSize; public int biWidth, biHeight; public ushort biPlanes, biBitCount;
+        public uint biCompression, biSizeImage; public int biXPelsPerMeter, biYPelsPerMeter; public uint biClrUsed, biClrImportant;
+    }
+    [DllImport("user32.dll")] static extern bool GetClientRect(nint hwnd, out RECT rect);
+    [DllImport("user32.dll")] static extern nint GetDC(nint hwnd);
+    [DllImport("user32.dll")] static extern int ReleaseDC(nint hwnd, nint dc);
+    [DllImport("user32.dll")] static extern bool PrintWindow(nint hwnd, nint dc, uint flags);
+    [DllImport("user32.dll")] static extern uint GetDpiForWindow(nint hwnd);
+    [DllImport("gdi32.dll")] static extern nint CreateCompatibleDC(nint dc);
+    [DllImport("gdi32.dll")] static extern nint CreateCompatibleBitmap(nint dc, int width, int height);
+    [DllImport("gdi32.dll")] static extern nint SelectObject(nint dc, nint obj);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(nint obj);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(nint dc);
+    [DllImport("gdi32.dll")] static extern int GetDIBits(nint dc, nint bitmap, uint start, uint lines, byte[] bits, ref BITMAPINFOHEADER info, uint usage);
+}
+
+static class StartInfoExtensions
+{
+    /// <summary>The start info with <paramref name="argument"/> added, if there is one.</summary>
+    public static System.Diagnostics.ProcessStartInfo With(this System.Diagnostics.ProcessStartInfo info, string? argument)
+    {
+        if (argument != null) info.ArgumentList.Add(argument);
+        return info;
+    }
+}

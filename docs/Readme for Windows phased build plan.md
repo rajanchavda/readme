@@ -199,13 +199,13 @@ Three things are shared between the apps, and each needs one rule so they don't 
 
 One difference to design for: Swift awaits page functions with `callAsyncJavaScript`. WebView2's script call doesn't wait for a promise, so async calls on Windows need a request id sent in and the result posted back as a message, or a DevTools-protocol evaluate call, which can await a promise.
 
-**2. On-disk stores.** Same folder shape as under Application Support on Mac, rooted at the app's local data folder (`ApplicationData.Current.LocalFolder` for an MSIX app; Windows redirects a packaged app's writes to a plain `%LOCALAPPDATA%\Readme\` path). One behaviour differs from Mac: uninstalling an MSIX app deletes this folder, so an uninstall removes the library. The install docs should say so and point to Export first.
+**2. On-disk stores.** Same folder shape as under Application Support on Mac, rooted at `Documents\Readme` (amended Nov 13, 2026: an MSIX app's own data folder is deleted on uninstall, and the library must survive that; settings and WebView2 data stay in app data). Every JSON file is written atomically, since OneDrive or a backup tool may read Documents mid-write.
 
 - `library.json`, `Books/`, `Covers/<id>.png`
 - `Highlights/`, `Markers/`, `Positions/` as one JSON file per book
 - `LastSpreads/`
 
-Field names must match the Swift `Codable` structs exactly, dates are ISO 8601, and book ids come from the same SHA-256 scheme, so a book has the same id on both platforms. Treat the page number and page count in a saved position as a cache: they come from the engine's pagination, so after a cross-platform import they are stale until the book is next opened. The CFI is what counts.
+Field names must match the Swift `Codable` structs exactly, dates are written as each Mac file writes them (amended after phase 1: `library.json` and positions use seconds since 1 Jan 2001 as a number; highlights, markers and bundles use ISO 8601 in whole seconds, which the Mac's decoder requires; see `ReadmeTests/Fixtures/Golden/README.md`), and book ids come from the same SHA-256 scheme, so a book has the same id on both platforms. Treat the page number and page count in a saved position as a cache: they come from the engine's pagination, so after a cross-platform import they are stale until the book is next opened. The CFI is what counts.
 
 **3. The `.readmelibrary` bundle.** A zip with `manifest.json` (with `formatVersion`) and `books/<id>/` holding `book.json`, `book.epub`, `highlights.json`, and optional `marker.json` and `position.json`. Write this down as a short spec in `docs/`, and bump `formatVersion` in both apps together.
 
@@ -234,18 +234,18 @@ To enforce all three: commit a few golden files (a `library.json`, a highlights 
 
 Three more risks, added on review:
 
-- **Hidden web views arrive early.** Import opens each book in an offscreen web view, so a WebView2 that works without being shown is needed in phase 3, not only for the curl in phase 7. Test it in the phase 0 spike.
+- **Hidden web views arrive early.** Import opens each book in an offscreen web view, so a WebView2 that works without being shown is needed in phase 3, not only for the curl in phase 7. Test it in the phase 0 spike. Amended after the spike: a truly offscreen view doesn't work under WinUI 3 (a bare controller fails, a collapsed or never-shown one hangs), so the hidden view is a XAML `WebView2` at opacity 0 behind the reader, created once and reused, since closing one mid-session crashed the app in about 1 run in 3.
 - **Mouse wheel vs touchpad.** On Mac only a trackpad gesture turns the page and a mouse wheel does nothing. Windows wheel events don't cleanly tell the two apart, so the behaviour needs a decision.
 - **UI tests need the real thing.** 26 of the 48 Swift test files drive a real window and web view. Their Windows versions need the WinUI test app host and the WebView2 runtime on the CI runner, and will be slower to port than the Core tests.
 
-Open decisions:
+Decisions (settled Nov 13, 2026 except where open; the checklist has the reasoning):
 
-- [ ] Minimum Windows version: Windows 10 or Windows 11 only?
-- [ ] Distribution: Microsoft Store, paid-signed direct download, or both?
+- [x] Minimum Windows version: Windows 10 or Windows 11 only? **Windows 11 only.**
+- [x] Distribution: Microsoft Store, paid-signed direct download, or both? **Microsoft Store.**
 - [ ] Ship v1 after phase 6 with a simple page slide, or wait for the curl in phase 7?
-- [ ] Freeze Mac features until Windows reaches parity?
+- [x] Freeze Mac features until Windows reaches parity? **A soft freeze until phase 6: fixes only, and shared-contract changes land on both apps together. Pinning and shelf search came first and are ported.**
 
-* [ ] Mouse wheel: should one notch turn a page on Windows, or do nothing as on Mac?
-* [ ] Uninstall deletes the library under MSIX: accept and document, or store the library in Documents instead?
+- [x] Mouse wheel: should one notch turn a page on Windows, or do nothing as on Mac? **Nothing, as on Mac; only a touchpad swipe turns the page.**
+- [x] Uninstall deletes the library under MSIX: accept and document, or store the library in Documents instead? **Documents (`Documents\Readme`).**
 
-- [ ] Packaging: MSIX, or an unpackaged build with a classic installer? Unpackaged can ship unsigned with a SmartScreen warning, as the Mac build does today, and keeps the library on uninstall. The cost is doing file associations and updates by hand.
+- [x] Packaging: MSIX, or an unpackaged build with a classic installer? **MSIX, through the Microsoft Store, which signs it for free.**
