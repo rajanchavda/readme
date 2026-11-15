@@ -20,8 +20,8 @@ enum UpdatePrompt: Equatable {
         switch self {
         case let .newer(_, current):
             """
-            You have \(current). Readme will quit, install the update and open again. Your place and \
-            notes are saved first.
+            You have \(current). The update downloads while you keep reading, then Readme asks to \
+            restart to finish. Your place and notes are saved first.
             """
         case let .upToDate(current): "You have the latest version, \(current)."
         case .failed: "GitHub couldn't be reached. Check your internet connection and try again."
@@ -35,7 +35,7 @@ enum UpdatePrompt: Equatable {
 
     var buttons: [String] {
         switch self {
-        case .newer: ["Update and Restart", "Not Now"]
+        case .newer: ["Download Update", "Not Now"]
         case .upToDate, .failed: ["OK"]
         case .askAutomatic: ["Check Automatically", "Don't Check"]
         }
@@ -53,15 +53,23 @@ final class UpdateController {
     let checker: UpdateChecker
     private let show: Show
     private let install: @MainActor (Release) -> Void
+    private let isUpdating: @MainActor () -> Bool
+    private let reveal: @MainActor () -> Void
     private let now: () -> Date
     private var isChecking = false
 
+    /// `isUpdating` says whether an update is already downloading or waiting to be installed, and
+    /// `reveal` brings it forward.
     init(checker: UpdateChecker, show: @escaping Show,
          install: @escaping @MainActor (Release) -> Void = SelfUpdate.start,
+         isUpdating: @escaping @MainActor () -> Bool = { SelfUpdate.isRunning },
+         reveal: @escaping @MainActor () -> Void = SelfUpdate.reveal,
          now: @escaping () -> Date = Date.init) {
         self.checker = checker
         self.show = show
         self.install = install
+        self.isUpdating = isUpdating
+        self.reveal = reveal
         self.now = now
     }
 
@@ -80,7 +88,9 @@ final class UpdateController {
     }
 
     /// Check for Updates… in the Readme menu.
+    /// With an update already under way, it's shown instead.
     func checkNow() async {
+        if isUpdating() { return reveal() }
         guard !isChecking else { return }
         isChecking = true
         defer { isChecking = false }
@@ -92,7 +102,7 @@ final class UpdateController {
     }
 
     func checkIfDue() async {
-        guard !isChecking, checker.isDue(now: now()) else { return }
+        guard !isChecking, !isUpdating(), checker.isDue(now: now()) else { return }
         isChecking = true
         defer { isChecking = false }
         guard case let .newer(release) = await checker.check(now: now()),
@@ -145,25 +155,22 @@ final class UpdateController {
     }
 }
 
-/// Runs an action, such as quitting, on a later turn of the main run loop, so that main-actor tasks can
-/// still run while it waits. `NSApp.terminate` waits in a nested run loop for the reply that
-/// `applicationShouldTerminate` sends from a main-actor task. Called from inside a main-actor task,
-/// that reply can never run, as the main actor is busy with the task doing the waiting, and the app hangs.
-enum QuitLater {
-    @MainActor
-    static func run(_ action: @escaping @MainActor () -> Void) {
-        RunLoop.main.perform { MainActor.assumeIsolated(action) }
-    }
-}
-
-/// Hands the update to Readme Updater, which sits inside the app, and quits so it can be replaced.
+/// Hands the update to Readme Updater, which sits inside the app. Readme stays open while it
+/// downloads; the updater asks to restart once it's ready, and quits Readme itself then.
 /// The updater isn't sandboxed and Readme is, so it's started through Launch Services, which gives
 /// it its own (absent) sandbox instead of Readme's. It's given nothing: it finds the app it's in and
 /// asks GitHub itself. If it can't be started, the release page opens instead.
 @MainActor
 enum SelfUpdate {
+    static let identifier = "com.rajanchavda.Readme.Updater"
+
     static var updater: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Readme Updater.app", isDirectory: true)
+    }
+
+    /// Whether the updater is downloading or holding an update for the next restart.
+    static var isRunning: Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: identifier).isEmpty
     }
 
     static func start(_ release: Release) {
@@ -171,16 +178,20 @@ enum SelfUpdate {
             NSWorkspace.shared.open(release.page)
             return
         }
+        open { if !$0 { NSWorkspace.shared.open(release.page) } }
+    }
+
+    /// Opening the updater while it runs brings its window back.
+    static func reveal() {
+        open { _ in }
+    }
+
+    private static func open(_ done: @escaping @MainActor (Bool) -> Void) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         NSWorkspace.shared.openApplication(at: updater, configuration: configuration) { app, _ in
-            Task { @MainActor in
-                if app == nil {
-                    NSWorkspace.shared.open(release.page)
-                } else {
-                    QuitLater.run { NSApp.terminate(nil) }
-                }
-            }
+            let opened = app != nil
+            Task { @MainActor in done(opened) }
         }
     }
 }

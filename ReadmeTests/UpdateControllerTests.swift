@@ -11,6 +11,8 @@ private final class Scene {
     private(set) var shown: [UpdatePrompt] = []
     private(set) var installed: [Release] = []
     private(set) var asked = 0
+    var updating = false
+    private(set) var revealed = 0
 
     func click(_ prompt: UpdatePrompt) -> Int? {
         shown.append(prompt)
@@ -18,6 +20,7 @@ private final class Scene {
     }
 
     func install(_ release: Release) { installed.append(release) }
+    func reveal() { revealed += 1 }
 }
 
 private struct Offline: Error {}
@@ -44,6 +47,8 @@ private struct Offline: Error {}
             checker: checker,
             show: { prompt, _ in scene.click(prompt) },
             install: { scene.install($0) },
+            isUpdating: { scene.updating },
+            reveal: { scene.reveal() },
             now: { [now] in now })
     }
 
@@ -82,6 +87,30 @@ private struct Offline: Error {}
         scene.online = false
         await controller().checkNow()
         #expect(scene.shown == [.failed])
+    }
+
+    // MARK: An update under way
+
+    /// Asking again while an update downloads or waits for a restart brings it forward.
+    @Test func askingDuringAnUpdateShowsIt() async {
+        defer { clean() }
+        scene.latest = "v1.2"
+        scene.updating = true
+        await controller().checkNow()
+        #expect(scene.revealed == 1)
+        #expect(scene.shown.isEmpty)
+        #expect(scene.installed.isEmpty)
+    }
+
+    @Test func automaticChecksWaitWhileAnUpdateIsUnderWay() async {
+        defer { clean() }
+        scene.latest = "v1.2"
+        scene.updating = true
+        let updates = controller()
+        updates.checker.automatic = true
+        await updates.checkIfDue()
+        #expect(scene.shown.isEmpty)
+        #expect(scene.revealed == 0)
     }
 
     // MARK: On its own
@@ -163,10 +192,10 @@ private struct Offline: Error {}
         let prompt = UpdatePrompt.newer(newer, current: AppVersion("1.1")!)
         #expect(prompt.message == "Readme 1.2 is available")
         #expect(prompt.informative == """
-            You have 1.1. Readme will quit, install the update and open again. Your place and \
-            notes are saved first.
+            You have 1.1. The update downloads while you keep reading, then Readme asks to \
+            restart to finish. Your place and notes are saved first.
             """)
-        #expect(prompt.buttons == ["Update and Restart", "Not Now"])
+        #expect(prompt.buttons == ["Download Update", "Not Now"])
     }
 
     @Test func theOtherAlerts() {

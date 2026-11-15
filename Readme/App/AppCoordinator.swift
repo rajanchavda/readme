@@ -187,10 +187,16 @@ final class AppCoordinator {
         case .library:
             reader.showLibrary(animated: false)
             reader.show()
+            reader.restoreFullscreen()
         case let .read(book, cfi):
             reader.showLastSpread(of: book)
             reader.show()
-            Task { await open(book, at: cfi) }
+            // Once the book is open, so its place is kept through the change, as when the reader
+            // goes into full screen themselves.
+            Task {
+                await open(book, at: cfi)
+                reader.restoreFullscreen()
+            }
         }
     }
 

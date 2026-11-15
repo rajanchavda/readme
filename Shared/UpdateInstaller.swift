@@ -33,8 +33,8 @@ enum InstallError: Error, Equatable {
 struct InstallWorld: Sendable {
     /// Fetches something small: the API's answer, or a checksum file.
     var fetch: @Sendable (URL) async throws -> Data
-    /// Downloads a file to a place on disk.
-    var download: @Sendable (URL, URL) async throws -> Void
+    /// Downloads a file to a place on disk, telling how far it has got, from 0 to 1, as it goes.
+    var download: @Sendable (URL, URL, @escaping @Sendable (Double) -> Void) async throws -> Void
     /// Runs a tool and gives its exit status and what it printed.
     var run: @Sendable (URL, [String]) async throws -> (status: Int32, output: String)
 }
@@ -129,11 +129,27 @@ enum Homebrew {
     }
 }
 
+/// An update that's downloaded and checked, waiting to be put in place.
+struct PreparedUpdate: Equatable, Sendable {
+    enum Source: Equatable, Sendable {
+        /// The release's disk image, mounted here, with a checked Readme.app inside.
+        case disk(mount: URL)
+        /// Homebrew, which has fetched the release into its cache.
+        case homebrew(brew: URL)
+    }
+
+    let version: AppVersion
+    let source: Source
+}
+
 /// Replaces a Readme.app with GitHub's latest release. It takes no instructions: the app is the
 /// one it sits inside, and the version, download and checksum come from GitHub. The copy in
 /// Applications, when Homebrew installed Readme, is upgraded with brew, so Homebrew keeps track of
 /// it; any other is replaced from the release's disk image, once its checksum, identifier, version
 /// and signature check out.
+///
+/// It goes in two steps, so the slow one can happen while Readme is still open: `prepare` downloads
+/// and checks the release, and `finish` puts it in place once Readme has quit.
 struct UpdateInstaller {
     let app: URL
     var homebrewRoots = Homebrew.roots
@@ -147,19 +163,63 @@ struct UpdateInstaller {
     private static let xattr = URL(fileURLWithPath: "/usr/bin/xattr")
 
     /// Installs the latest release and gives its version.
-    func install() async throws -> AppVersion {
-        guard let installed = AppBundleInfo(app), installed.identifier == AppBundleInfo.readme else {
-            throw InstallError.notReadme
-        }
+    func install(progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> AppVersion {
+        try await finish(prepare(progress: progress))
+    }
+
+    /// Downloads the latest release and checks it, leaving the installed app as it is.
+    func prepare(progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> PreparedUpdate {
+        let installed = try installedVersion()
         guard let release = LatestRelease.decode(try await world.fetch(LatestRelease.api)),
               release.isPublished else { throw InstallError.noRelease }
-        guard release.version > installed.version else { throw InstallError.upToDate }
+        guard release.version > installed else { throw InstallError.upToDate }
 
         if homebrewApps.contains(where: { $0.standardizedFileURL == app.standardizedFileURL }),
            let brew = Homebrew.find(in: homebrewRoots) {
-            return try await upgrade(with: brew, to: release.version)
+            // Only to have it downloaded ahead. If it fails, the upgrade fetches it, or says why not.
+            _ = try? await world.run(brew, ["fetch", "--cask", "readme"])
+            return PreparedUpdate(version: release.version, source: .homebrew(brew: brew))
         }
-        return try await replace(with: release)
+        return try await download(release, progress: progress)
+    }
+
+    /// Puts a prepared update in place of the app, which must have quit, and gives its version.
+    func finish(_ prepared: PreparedUpdate) async throws -> AppVersion {
+        // It may have waited a while, and the app may have been updated another way meanwhile.
+        guard let installed = try? installedVersion(), installed < prepared.version else {
+            await discard(prepared)
+            throw InstallError.upToDate
+        }
+        switch prepared.source {
+        case let .homebrew(brew):
+            return try await upgrade(with: brew, to: prepared.version)
+        case let .disk(mount):
+            do {
+                try AppSwap.replace(app, with: mount.appendingPathComponent("Readme.app", isDirectory: true))
+            } catch {
+                await discard(prepared)
+                throw error
+            }
+            await discard(prepared)
+            // Nothing here downloads with quarantine, but a copy that picked it up mustn't be blocked.
+            _ = try? await world.run(Self.xattr, ["-dr", "com.apple.quarantine", app.path])
+            return prepared.version
+        }
+    }
+
+    /// Lets go of a prepared update without installing it: the disk image is unmounted and removed.
+    func discard(_ prepared: PreparedUpdate) async {
+        if case let .disk(mount) = prepared.source {
+            _ = try? await world.run(Self.hdiutil, ["detach", mount.path, "-force"])
+        }
+        try? FileManager.default.removeItem(at: scratch)
+    }
+
+    private func installedVersion() throws -> AppVersion {
+        guard let installed = AppBundleInfo(app), installed.identifier == AppBundleInfo.readme else {
+            throw InstallError.notReadme
+        }
+        return installed.version
     }
 
     private func upgrade(with brew: URL, to version: AppVersion) async throws -> AppVersion {
@@ -173,7 +233,9 @@ struct UpdateInstaller {
         return now.version
     }
 
-    private func replace(with release: LatestRelease) async throws -> AppVersion {
+    /// Downloads the disk image, checks it and mounts it, and checks the app inside. On any failure
+    /// nothing is left behind.
+    private func download(_ release: LatestRelease, progress: @escaping @Sendable (Double) -> Void) async throws -> PreparedUpdate {
         guard let disk = release.disk, let checksum = release.checksum else { throw InstallError.noRelease }
         let folder = app.deletingLastPathComponent()
         guard FileManager.default.isWritableFile(atPath: folder.path) else {
@@ -186,34 +248,31 @@ struct UpdateInstaller {
         let files = FileManager.default
         try? files.removeItem(at: scratch)
         try files.createDirectory(at: scratch, withIntermediateDirectories: true)
-        defer { try? files.removeItem(at: scratch) }
-
-        let image = scratch.appendingPathComponent("Readme.dmg")
-        try await world.download(disk, image)
-        guard try Checksum.sha256(ofFile: image) == expected else { throw InstallError.checksumMismatch }
-
         let mount = scratch.appendingPathComponent("mount", isDirectory: true)
-        try files.createDirectory(at: mount, withIntermediateDirectories: true)
-        let attach = try await world.run(Self.hdiutil, [
-            "attach", image.path, "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", mount.path,
-        ])
-        guard attach.status == 0 else { throw InstallError.cantOpenDisk }
-
+        var isMounted = false
         do {
+            let image = scratch.appendingPathComponent("Readme.dmg")
+            try await world.download(disk, image, progress)
+            guard try Checksum.sha256(ofFile: image) == expected else { throw InstallError.checksumMismatch }
+
+            try files.createDirectory(at: mount, withIntermediateDirectories: true)
+            let attach = try await world.run(Self.hdiutil, [
+                "attach", image.path, "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", mount.path,
+            ])
+            guard attach.status == 0 else { throw InstallError.cantOpenDisk }
+            isMounted = true
+
             let new = mount.appendingPathComponent("Readme.app", isDirectory: true)
             guard AppBundleInfo(new) == AppBundleInfo(identifier: AppBundleInfo.readme, version: release.version),
                   try await world.run(Self.codesign, ["--verify", "--strict", "--deep", new.path]).status == 0 else {
                 throw InstallError.notTheRelease
             }
-            try AppSwap.replace(app, with: new)
+            return PreparedUpdate(version: release.version, source: .disk(mount: mount))
         } catch {
-            _ = try? await world.run(Self.hdiutil, ["detach", mount.path, "-force"])
+            if isMounted { _ = try? await world.run(Self.hdiutil, ["detach", mount.path, "-force"]) }
+            try? files.removeItem(at: scratch)
             throw error
         }
-        _ = try? await world.run(Self.hdiutil, ["detach", mount.path, "-force"])
-        // Nothing here downloads with quarantine, but a copy that picked it up mustn't be blocked.
-        _ = try? await world.run(Self.xattr, ["-dr", "com.apple.quarantine", app.path])
-        return release.version
     }
 }
 

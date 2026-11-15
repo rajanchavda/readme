@@ -338,6 +338,18 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    static let fullscreenKey = "reader.fullscreen"
+
+    /// Whether the window was in full screen when Readme last quit, as after Restart Now for an update.
+    var wasFullscreen: Bool { defaults.bool(forKey: Self.fullscreenKey) }
+
+    /// Goes back into full screen if the window was there when Readme last quit. Full screen makes the
+    /// text bigger, so coming back without it would look like the text size had been lost.
+    func restoreFullscreen() {
+        guard wasFullscreen, !isFullscreen, let window, window.isVisible else { return }
+        window.toggleFullScreen(nil)
+    }
+
     /// Asks for one or more EPUBs in a sheet, and hands them to `chosen`.
     func chooseBook(_ chosen: @escaping ([URL]) -> Void) {
         guard let window, window.attachedSheet == nil else { return }
@@ -1835,6 +1847,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
+        defaults.set(true, forKey: Self.fullscreenKey)
         endLayoutChange()
     }
 
@@ -1846,6 +1859,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
+        defaults.set(false, forKey: Self.fullscreenKey)
         endLayoutChange()
         showTrafficLights(isShowingLibrary, animated: true)
     }

@@ -50,6 +50,20 @@ private func defaults() -> UserDefaults {
         #expect(ReaderSettings.load(store) == settings)
     }
 
+    /// Full screen makes the text bigger, so it's remembered too: an update's restart coming back
+    /// without it would look like the text size had been lost.
+    @MainActor @Test func fullscreenIsRememberedForTheNextLaunch() {
+        let name = "ReaderSettingsTests-\(UUID().uuidString)"
+        let store = UserDefaults(suiteName: name)!
+        defer { store.removePersistentDomain(forName: name) }
+        let reader = ReaderWindowController(defaults: store)
+        #expect(!reader.wasFullscreen)
+        reader.windowDidEnterFullScreen(Notification(name: NSWindow.didEnterFullScreenNotification))
+        #expect(ReaderWindowController(defaults: store).wasFullscreen)
+        reader.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification))
+        #expect(!ReaderWindowController(defaults: store).wasFullscreen)
+    }
+
     @Test func loadsDefaultsWhenNothingSavedOrUnreadable() {
         let store = defaults()
         #expect(ReaderSettings.load(store) == ReaderSettings())

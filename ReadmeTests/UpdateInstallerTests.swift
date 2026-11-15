@@ -41,6 +41,7 @@ private final class FakeWorld: @unchecked Sendable {
     var diskAppVersion: String?
     var codesignStatus: Int32 = 0
     var brewStatus: Int32 = 0
+    var brewFetchStatus: Int32 = 0
     /// What brew does to the app when it runs, if it succeeds.
     var brewInstalls: ((URL) throws -> Void)?
     var app: URL?
@@ -52,7 +53,10 @@ private final class FakeWorld: @unchecked Sendable {
     var world: InstallWorld {
         InstallWorld(
             fetch: { url in try self.fetch(url) },
-            download: { url, file in try self.download(url, to: file) },
+            download: { url, file, progress in
+                try self.download(url, to: file)
+                progress(1)
+            },
             run: { tool, arguments in try self.run(tool, arguments) })
     }
 
@@ -81,6 +85,8 @@ private final class FakeWorld: @unchecked Sendable {
         case "hdiutil": return (0, "")
         case "codesign": return (codesignStatus, codesignStatus == 0 ? "" : "invalid signature")
         case "xattr": return (0, "")
+        case "brew" where arguments.first == "fetch":
+            return (brewFetchStatus, "")
         case "brew":
             if brewStatus == 0, let app { try brewInstalls?(app) }
             return (brewStatus, brewStatus == 0 ? "" : "Error: it went wrong")
@@ -231,6 +237,89 @@ private final class FakeWorld: @unchecked Sendable {
         #expect(fake.downloaded.isEmpty)
     }
 
+    // MARK: Downloading ahead
+
+    /// Readme is still open while it downloads, so nothing of it may change until `finish`.
+    @Test func preparingDownloadsAndChecksButLeavesTheAppAlone() async throws {
+        defer { clean() }
+        let fractions = Fractions()
+        let prepared = try await installer().prepare { fractions.add($0) }
+        #expect(prepared.version == AppVersion("1.3"))
+        #expect(binary(of: app) == "readme 1.2")
+        #expect(fake.ran.contains { $0.first == "codesign" })
+        #expect(!fake.ran.contains { $0.prefix(2) == ["hdiutil", "detach"] })
+        #expect(fractions.values == [1])
+        guard case let .disk(mount) = prepared.source else { Issue.record("not a disk image"); return }
+        #expect(FileManager.default.fileExists(atPath: mount.appendingPathComponent("Readme.app").path))
+    }
+
+    @Test func finishingPutsThePreparedUpdateInPlaceAndCleansUp() async throws {
+        defer { clean() }
+        let updater = try installer()
+        let prepared = try await updater.prepare()
+        #expect(try await updater.finish(prepared) == AppVersion("1.3"))
+        #expect(binary(of: app) == "readme 1.3")
+        #expect(fake.ran.contains { $0.prefix(2) == ["hdiutil", "detach"] })
+        #expect(!FileManager.default.fileExists(atPath: updater.scratch.path))
+    }
+
+    @Test func discardingLeavesTheAppAndCleansUp() async throws {
+        defer { clean() }
+        let updater = try installer()
+        await updater.discard(try await updater.prepare())
+        #expect(binary(of: app) == "readme 1.2")
+        #expect(fake.ran.contains { $0.prefix(2) == ["hdiutil", "detach"] })
+        #expect(!FileManager.default.fileExists(atPath: updater.scratch.path))
+    }
+
+    /// An update held for Later mustn't go over a newer copy put there another way meanwhile.
+    @Test func aPreparedUpdateDoesntReplaceANewerApp() async throws {
+        defer { clean() }
+        let updater = try installer()
+        let prepared = try await updater.prepare()
+        try FileManager.default.removeItem(at: app)
+        try makeApp(at: app, version: "1.3")
+        try Data("installed by hand".utf8).write(to: app.appendingPathComponent("Contents/MacOS/Readme"))
+        await #expect(throws: InstallError.upToDate) { try await updater.finish(prepared) }
+        #expect(binary(of: app) == "installed by hand")
+        #expect(!FileManager.default.fileExists(atPath: updater.scratch.path))
+    }
+
+    @Test func aFailedCheckLeavesNothingMounted() async throws {
+        defer { clean() }
+        let updater = try installer()
+        fake.codesignStatus = 1
+        await #expect(throws: InstallError.notTheRelease) { try await updater.prepare() }
+        #expect(fake.ran.contains { $0.prefix(2) == ["hdiutil", "detach"] })
+        #expect(!FileManager.default.fileExists(atPath: updater.scratch.path))
+    }
+
+    @Test func homebrewFetchesAheadAndUpgradesAtTheEnd() async throws {
+        defer { clean() }
+        fake.brewInstalls = { app in
+            try FileManager.default.removeItem(at: app)
+            try makeApp(at: app, version: "1.3")
+        }
+        let updater = try installer(homebrew: true)
+        let prepared = try await updater.prepare()
+        #expect(fake.ran.contains(["brew", "fetch", "--cask", "readme"]))
+        #expect(!fake.ran.contains(["brew", "upgrade", "--cask", "readme"]))
+        #expect(binary(of: app) == "readme 1.2")
+        #expect(try await updater.finish(prepared) == AppVersion("1.3"))
+        #expect(fake.ran.contains(["brew", "upgrade", "--cask", "readme"]))
+    }
+
+    /// Fetching ahead is only to save time. The upgrade fetches it anyway, or says what's wrong.
+    @Test func aFailedBrewFetchIsntAFailure() async throws {
+        defer { clean() }
+        fake.brewFetchStatus = 1
+        fake.brewInstalls = { app in
+            try FileManager.default.removeItem(at: app)
+            try makeApp(at: app, version: "1.3")
+        }
+        #expect(try await installer(homebrew: true).install() == AppVersion("1.3"))
+    }
+
     // MARK: Installing with Homebrew
 
     @Test func homebrewInstallsUpgradeWithBrew() async throws {
@@ -274,4 +363,12 @@ private final class FakeWorld: @unchecked Sendable {
         #expect(InstallError.homebrewFailed("Error: x").message
             == "Homebrew couldn't upgrade Readme:\n\nError: x\n\nRun brew upgrade --cask readme in Terminal to see more.")
     }
+}
+
+/// The progress a download reported.
+private final class Fractions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [Double] = []
+    var values: [Double] { lock.withLock { list } }
+    func add(_ value: Double) { lock.withLock { list.append(value) } }
 }
