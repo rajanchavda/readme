@@ -2,10 +2,12 @@ name: Release
 
 # Pushing a tag v<version> builds the DMG, publishes it as a GitHub release and points the
 # Homebrew cask in rajanchavda/homebrew-tap at it. Then the Windows installers are built and added
-# to the same release (scripts/windows-installer.ps1).
+# to the same release (scripts/windows-installer.ps1), and winget is offered the new version.
 #
-# Needs the repository secret:
+# Needs the repository secrets:
 #   HOMEBREW_TAP_TOKEN   Token allowed to push to rajanchavda/homebrew-tap
+#   WINGET_TOKEN         Classic token with public_repo, for the winget-pkgs pull request
+#                        (optional: without it the winget job only warns)
 
 on:
   push:
@@ -120,3 +122,42 @@ jobs:
             windows/dist/Readme-Setup-${{ env.VERSION }}-x64.exe.sha256
             windows/dist/Readme-Setup-${{ env.VERSION }}-arm64.exe
             windows/dist/Readme-Setup-${{ env.VERSION }}-arm64.exe.sha256
+
+  winget:
+    name: winget
+    # Once the installers are on the release, opens a pull request to microsoft/winget-pkgs that
+    # moves rajanchavda.Readme to this version. The first version had to be submitted by hand
+    # (docs/releasing.md, "winget"); until that's merged, or without the token, this only warns.
+    needs: windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PACKAGE_ID: rajanchavda.Readme
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - name: Open the winget pull request
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            "::warning::WINGET_TOKEN is not set, so winget wasn't updated. See docs/releasing.md, winget."
+            exit 0
+          }
+          $headers = @{ Authorization = "Bearer $env:WINGET_TOKEN"; 'User-Agent' = 'readme-release' }
+          try {
+            Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/r/rajanchavda/Readme' | Out-Null
+          } catch {
+            if ($_.Exception.Response.StatusCode.value__ -eq 404) {
+              "::warning::$env:PACKAGE_ID isn't in winget-pkgs yet, so there's nothing to update. Submit the first version by hand: docs/releasing.md, winget."
+              exit 0
+            }
+            throw
+          }
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME"
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          # "|x64" and "|arm64" name each installer's architecture, which an Inno Setup .exe doesn't say.
+          .\wingetcreate.exe update $env:PACKAGE_ID --version $version `
+            --urls "$base/Readme-Setup-$version-x64.exe|x64" "$base/Readme-Setup-$version-arm64.exe|arm64" `
+            --submit --token $env:WINGET_TOKEN
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate failed with exit code $LASTEXITCODE" }
