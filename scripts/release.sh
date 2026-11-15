@@ -28,20 +28,17 @@ cask "readme" do
   desc "EPUB reader for the Mac"
   homepage "https://github.com/$repo"
 
-  depends_on macos: ">= :sonoma"
   depends_on arch: :arm64
+  depends_on macos: :sonoma
 
   app "Readme.app"
 
   # The app isn't signed with an Apple developer account, so Gatekeeper would block it.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Readme.app"]
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Readme.app"]
   end
 
-  zap trash: [
-    "~/Library/Containers/com.rajanchavda.Readme",
-  ]
+  zap trash: "~/Library/Containers/com.rajanchavda.Readme"
 end
 CASK
 
