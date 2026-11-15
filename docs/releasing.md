@@ -81,7 +81,7 @@ the release, the Release workflow's `winget` job runs `wingetcreate update` and 
 to `microsoft/winget-pkgs` for the new version; Microsoft's checks and a moderator merge it, usually
 within a few days, and then `winget upgrade` offers it. Nothing to do per release, but it needs:
 
-- **The first version submitted by hand, once.** Until `manifests/r/rajanchavda/Readme` exists in
+- **The first version submitted by hand, once** (step by step in `docs/winget-setup.md`). Until `manifests/r/rajanchavda/Readme` exists in
   winget-pkgs the job only warns. On Windows, after a release has its installers:
   1. `winget install Microsoft.WingetCreate`
   2. `wingetcreate new https://github.com/rajanchavda/readme/releases/download/v1.6/Readme-Setup-1.6-x64.exe https://github.com/rajanchavda/readme/releases/download/v1.6/Readme-Setup-1.6-arm64.exe`
