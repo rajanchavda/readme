@@ -26,8 +26,8 @@ with a page curl, set in a proper book typeface, with highlights, a page marker 
 - **Picks up where you left off.** Your place in every book is remembered.
 - **Export and import.** Take your books, with their highlights, page marker and place, to another
   Mac in one `.readmelibrary` file. Importing never replaces a book you already have.
-- **Updates itself.** **Readme > Check for Updates…** finds a new version, and **Update and
-  Restart** installs it and opens Readme again. If you agree when asked, it checks once a day on
+- **Updates itself.** **Readme > Check for Updates…** finds a new version, and **Download
+  Update** fetches it while you keep reading, then asks to restart Readme to finish. If you agree when asked, it checks once a day on
   its own, and always asks before installing.
 - **Private.** No accounts and no tracking. The app is sandboxed, and books, highlights and
   settings stay on your Mac. The update check only asks GitHub for the latest release. Installing
