@@ -77,6 +77,8 @@ private struct Started {
         let x = try #require(spot["x"]), y = try #require(spot["y"])
         let point = { (y: Double) in NSPoint(x: x, y: view.isFlipped ? y : view.bounds.height - y) }
 
+        #expect(await view.takesClick(at: point(1)) == false)
+        #expect(await view.takesClick(at: point(y)))
         #expect(await view.followLink(at: point(1)) == false)
         let before = view.currentLocation?.cfi
         #expect(await view.followLink(at: point(y)))

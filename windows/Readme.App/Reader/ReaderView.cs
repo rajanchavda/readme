@@ -26,7 +26,6 @@ public sealed partial class ReaderView
     /// <summary>How long the window has to keep its size before a resize counts as over.</summary>
     static readonly TimeSpan ResizeQuiet = TimeSpan.FromMilliseconds(150);
     static readonly TimeSpan NoticeDuration = TimeSpan.FromSeconds(4);
-    const double EdgeShare = 0.2;
 
     readonly LibraryStore _library;
     readonly PlaceWriter _writer;
@@ -37,8 +36,9 @@ public sealed partial class ReaderView
     readonly Border _bookHost = new();
     readonly Rectangle _spineLeft = new() { IsHitTestVisible = false };
     readonly Rectangle _spineRight = new() { IsHitTestVisible = false };
-    readonly Border _edgeBack = new() { Background = new SolidColorBrush(Colors.Transparent) };
-    readonly Border _edgeForward = new() { Background = new SolidColorBrush(Colors.Transparent) };
+    readonly EdgeClick _edgeClick = new();
+    /// <summary>An edge click's turn, waiting out the double-click time in case it's the start of a run.</summary>
+    CancellationTokenSource? _pendingTurn;
     readonly Image _cover = new() { IsHitTestVisible = false, Stretch = Stretch.Fill, Visibility = Visibility.Collapsed };
     /// <summary>The last spread a book was left on, shown under its page until the page is ready.</summary>
     readonly Image _placeholder = new() { IsHitTestVisible = false, Stretch = Stretch.Fill, Visibility = Visibility.Collapsed };
@@ -100,8 +100,6 @@ public sealed partial class ReaderView
         _desk.Children.Add(_cover);
         _desk.Children.Add(_spineLeft);
         _desk.Children.Add(_spineRight);
-        _desk.Children.Add(_edgeBack);
-        _desk.Children.Add(_edgeForward);
         _root.Children.Add(_desk);
         _root.Children.Add(_progress);
         _root.Children.Add(_notice);
@@ -109,8 +107,19 @@ public sealed partial class ReaderView
         BuildTools();
 
         _root.SizeChanged += (_, _) => Resized();
-        _edgeBack.PointerPressed += (_, e) => EdgeClicked(TurnDirection.Backward, e);
-        _edgeForward.PointerPressed += (_, e) => EdgeClicked(TurnDirection.Forward, e);
+        // The page keeps every click, so text near the edges can be selected; it tells the window
+        // about the button, and a plain click near an edge turns the page.
+        _book.Pressed += (x, y, count, plain) =>
+        {
+            _pendingTurn?.Cancel();
+            _pendingTurn = null;
+            _edgeClick.Press(x, y, EdgeClick.TurnAt(x, y, _book.Control.Width, _book.Control.Height), count, plain);
+        };
+        _book.Dragged += (x, y) => _edgeClick.Drag(x, y);
+        _book.Released += (x, y, count) =>
+        {
+            if (_edgeClick.Release(x, y, count) is { } direction) EdgeClicked(direction, x, y);
+        };
         _book.Relocated += location =>
         {
             Show(location);
@@ -453,15 +462,25 @@ public sealed partial class ReaderView
         }
     }
 
-    /// <summary>A click on a page's edge follows a link there, and turns the page only if there's none.</summary>
-    async void EdgeClicked(TurnDirection direction, PointerRoutedEventArgs e)
+    /// <summary>
+    /// A plain click on a page's edge turns the page once the double-click time has passed with no
+    /// second click, unless the page took it itself: it was on a link, which the page follows, or on a
+    /// highlight, which it shows.
+    /// </summary>
+    async void EdgeClicked(TurnDirection direction, double x, double y)
     {
+        var wait = new CancellationTokenSource();
+        _pendingTurn = wait;
+        try { await Task.Delay(TimeSpan.FromMilliseconds(GetDoubleClickTime()), wait.Token); }
+        catch (OperationCanceledException) { return; }
+        if (_pendingTurn == wait) _pendingTurn = null;
         if (_isCovered || !_book.IsOpen) return;
-        var point = e.GetCurrentPoint(_book.Control).Position;
-        e.Handled = true;
-        if (await _book.FollowLinkAtAsync(point.X, point.Y)) return;
+        if (await _book.TakesClickAtAsync(x, y)) return;
         Turn(direction);
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern uint GetDoubleClickTime();
 
     /// <summary>
     /// Turns a page with the curl, through the turn coordinator: every press counts, a press that
@@ -624,9 +643,6 @@ public sealed partial class ReaderView
         var spineShown = _layout.Columns == 2 && (_book.IsOpen || IsShowingLastSpread) ? Visibility.Visible : Visibility.Collapsed;
         _spineLeft.Visibility = _spineRight.Visibility = spineShown;
         PlaceTools();
-        var edge = frame.Width * EdgeShare;
-        Put(_edgeBack, new Box(frame.X, frame.Y, edge, frame.Height));
-        Put(_edgeForward, new Box(frame.Right - edge, frame.Y, edge, frame.Height));
         if (_book.CurrentLocation is { } location && _book.IsOpen) PlaceProgress(location);
         else _progress.Width = 0;
     }

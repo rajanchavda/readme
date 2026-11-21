@@ -324,6 +324,17 @@ final class BookWebView: NSView {
         return followed ?? false
     }
 
+    /// Whether a click at `point` is the page's own, as one on a link or a highlight is.
+    func takesClick(at point: NSPoint) async -> Bool {
+        let local = webView.convert(point, from: self)
+        let y = webView.isFlipped ? local.y : webView.bounds.height - local.y
+        let taken = try? await call(
+            "return readmeBridge.takesClickAt(x, y)",
+            arguments: ["x": Double(local.x), "y": Double(y)],
+            as: Bool.self)
+        return taken ?? false
+    }
+
     func clearSelection() async {
         _ = try? await call("readmeBridge.clearSelection()", as: Bool.self)
     }

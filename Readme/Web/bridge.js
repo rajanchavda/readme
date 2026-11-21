@@ -81,6 +81,34 @@ const forwardInput = target => {
         lastPointer = event.timeStamp
         postToApp({ type: 'pointer' })
     })
+    // The left button, for the app to tell a plain click near an edge, which turns the page, from a
+    // drag or a double or triple click, which select. On Mac the app's mouse monitor sees it. Points
+    // are in the reader page, as the app places the book by it, and a drag is told once, when it's
+    // gone further than EdgeClick.Slop.
+    const pagePoint = event => {
+        const r = target.defaultView?.frameElement?.getBoundingClientRect() ?? { left: 0, top: 0 }
+        return { x: event.clientX + r.left, y: event.clientY + r.top }
+    }
+    let pressed = null
+    target.addEventListener('mousedown', event => {
+        if (event.button !== 0) return
+        pressed = { x: event.clientX, y: event.clientY }
+        postToApp({
+            type: 'press', ...pagePoint(event), count: event.detail,
+            plain: !(event.shiftKey || event.ctrlKey || event.altKey || event.metaKey),
+        })
+    })
+    target.addEventListener('mousemove', event => {
+        if (!pressed || !(event.buttons & 1)) return
+        if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) <= 4) return
+        pressed = null
+        postToApp({ type: 'drag', ...pagePoint(event) })
+    })
+    target.addEventListener('mouseup', event => {
+        if (event.button !== 0) return
+        pressed = null
+        postToApp({ type: 'release', ...pagePoint(event), count: event.detail })
+    })
 }
 forwardInput(document)
 
@@ -800,6 +828,21 @@ globalThis.readmeBridge = {
             if (!link) continue
             link.click()
             return true
+        }
+        return false
+    },
+    // Whether a click at `x`, `y` in the page is the page's own: on a link, which it follows, or on a
+    // highlight, which it shows. The app turns the page for an edge click only when it isn't.
+    takesClickAt: (x, y) => {
+        for (const { doc, overlayer } of view?.renderer?.getContents?.() ?? []) {
+            const frame = doc?.defaultView?.frameElement
+            if (!frame) continue
+            const r = frame.getBoundingClientRect()
+            if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue
+            const inX = x - r.left, inY = y - r.top
+            if (doc.elementFromPoint(inX, inY)?.closest?.('a[href]')) return true
+            const [value] = overlayer?.hitTest?.({ x: inX, y: inY }) ?? []
+            return !!value && highlights.has(value)
         }
         return false
     },

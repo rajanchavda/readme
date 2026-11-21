@@ -415,3 +415,55 @@ public sealed class SpineShadowTests
         Assert.IsTrue(SpineShadow.ShareAt(5) > SpineShadow.ShareAt(10));
     }
 }
+
+/// <summary>Ported from onlyAPlainClickOnAnEdgeTurns and aClickTrembleIsStillAClick in ReaderWindowTests.swift.</summary>
+[TestClass]
+public sealed class EdgeClickTests
+{
+    [TestMethod]
+    public void TheOuterFifthOfTheBookTurns()
+    {
+        Assert.AreEqual(TurnDirection.Backward, EdgeClick.TurnAt(10, 300, 1000, 600));
+        Assert.AreEqual(TurnDirection.Forward, EdgeClick.TurnAt(990, 300, 1000, 600));
+        Assert.IsNull(EdgeClick.TurnAt(500, 300, 1000, 600));
+        Assert.IsNull(EdgeClick.TurnAt(-1, 300, 1000, 600));
+        Assert.IsNull(EdgeClick.TurnAt(10, 601, 1000, 600));
+    }
+
+    [TestMethod]
+    public void OnlyAPlainSingleClickTurns()
+    {
+        var click = new EdgeClick();
+        click.Press(10, 300, TurnDirection.Backward, 1, isPlain: true);
+        Assert.AreEqual(TurnDirection.Backward, click.Release(10, 300, 1));
+
+        click.Press(10, 300, TurnDirection.Backward, 1, isPlain: true);
+        click.Drag(300, 300);
+        Assert.IsNull(click.Release(300, 300, 1), "a drag selects");
+
+        for (var count = 2; count <= 3; count++)
+        {
+            click.Press(990, 300, TurnDirection.Forward, count, isPlain: true);
+            Assert.IsNull(click.Release(990, 300, count), "a double or triple click selects");
+        }
+
+        click.Press(990, 300, TurnDirection.Forward, 1, isPlain: false);
+        Assert.IsNull(click.Release(990, 300, 1), "Shift extends a selection");
+
+        click.Press(500, 300, null, 1, isPlain: true);
+        Assert.IsNull(click.Release(500, 300, 1), "the middle of the book doesn't turn");
+    }
+
+    [TestMethod]
+    public void AClickTrembleIsStillAClick()
+    {
+        var click = new EdgeClick();
+        click.Press(40, 300, TurnDirection.Backward, 1, isPlain: true);
+        click.Drag(42, 302);
+        Assert.AreEqual(TurnDirection.Backward, click.Release(43, 301, 1));
+        click.Press(40, 300, TurnDirection.Backward, 1, isPlain: true);
+        click.Drag(50, 300);
+        click.Drag(40, 300);
+        Assert.IsNull(click.Release(40, 300, 1));
+    }
+}

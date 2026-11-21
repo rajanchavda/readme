@@ -213,26 +213,105 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
     }
 
     /// The toolbar can overlap the page's outer band, and a click on it mustn't turn the page.
-    @Test func chromeOverAnEdgeTakesTheClick() {
+    @Test func chromeOverAnEdgeTakesTheClick() async {
         let frame = NSRect(x: 0, y: 0, width: 1048, height: 620)
-        let desk = DeskView(frame: frame, bookFrame: frame.insetBy(dx: 34, dy: 34))
+        let (desk, turns) = edgeDesk(frame)
         let toolbar = NSView(frame: NSRect(x: 30, y: 560, width: 300, height: 40))
         desk.addSubview(toolbar)
         desk.chrome = [toolbar]
         #expect(desk.hitTest(NSPoint(x: 40, y: 570)) === toolbar)
-        #expect(desk.hitTest(NSPoint(x: 40, y: 300)) === desk)
+        await click(desk, at: NSPoint(x: 40, y: 570))
+        #expect(turns().isEmpty)
         toolbar.isHidden = true
-        #expect(desk.hitTest(NSPoint(x: 40, y: 570)) === desk)
+        await click(desk, at: NSPoint(x: 40, y: 570))
+        #expect(turns() == [.backward])
     }
 
     /// Chrome that lets clicks through, as the sleeping toolbar does, leaves the edge to turn pages.
-    @Test func chromeThatLetsClicksThroughLeavesTheEdge() {
-        let frame = NSRect(x: 0, y: 0, width: 1048, height: 620)
-        let desk = DeskView(frame: frame, bookFrame: frame.insetBy(dx: 34, dy: 34))
+    @Test func chromeThatLetsClicksThroughLeavesTheEdge() async {
+        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620))
         let sleeping = PassThroughView(frame: NSRect(x: 30, y: 560, width: 300, height: 40))
         desk.addSubview(sleeping)
         desk.chrome = [sleeping]
-        #expect(desk.hitTest(NSPoint(x: 40, y: 570)) === desk)
+        await click(desk, at: NSPoint(x: 40, y: 570))
+        #expect(turns() == [.backward])
+    }
+
+    /// The page under the edges keeps its clicks, so text there can be selected.
+    @Test func theBookUnderAnEdgeHasTheClick() {
+        let frame = NSRect(x: 0, y: 0, width: 1048, height: 620)
+        let desk = DeskView(frame: frame, bookFrame: frame.insetBy(dx: 34, dy: 34))
+        let book = NSView(frame: frame.insetBy(dx: 34, dy: 34))
+        desk.addSubview(book)
+        #expect(desk.hitTest(NSPoint(x: 40, y: 300)) === book)
+        #expect(desk.hitTest(NSPoint(x: 1000, y: 300)) === book)
+    }
+
+    /// A drag from an edge selects, and a double or triple click there selects a word or a paragraph:
+    /// none of them turns the page. A plain click turns it once.
+    @Test func onlyAPlainClickOnAnEdgeTurns() async {
+        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620))
+        let left = NSPoint(x: 40, y: 300), right = NSPoint(x: 1000, y: 300)
+
+        desk.follow(mouse(.leftMouseDown, at: left, in: desk))
+        desk.follow(mouse(.leftMouseDragged, at: NSPoint(x: 300, y: 300), in: desk))
+        desk.follow(mouse(.leftMouseUp, at: NSPoint(x: 300, y: 300), in: desk), doubleClickInterval: 0)
+        await settle()
+        #expect(turns().isEmpty)
+
+        for count in 1...3 {
+            desk.follow(mouse(.leftMouseDown, at: right, clicks: count, in: desk))
+            desk.follow(mouse(.leftMouseUp, at: right, clicks: count, in: desk), doubleClickInterval: 0.05)
+        }
+        await settle()
+        #expect(turns().isEmpty)
+
+        desk.follow(mouse(.leftMouseDown, at: right, .shift, in: desk))
+        desk.follow(mouse(.leftMouseUp, at: right, .shift, in: desk), doubleClickInterval: 0)
+        await settle()
+        #expect(turns().isEmpty)
+
+        await click(desk, at: right)
+        #expect(turns() == [.forward])
+        await click(desk, at: NSPoint(x: 524, y: 300))
+        #expect(turns() == [.forward])
+    }
+
+    @Test func aClickTrembleIsStillAClick() {
+        var click = EdgeClick()
+        click.press(at: NSPoint(x: 40, y: 300), direction: .backward, clickCount: 1, isPlain: true)
+        click.drag(to: NSPoint(x: 42, y: 302))
+        #expect(click.release(at: NSPoint(x: 43, y: 301), clickCount: 1)?.0 == .backward)
+        click.press(at: NSPoint(x: 40, y: 300), direction: .backward, clickCount: 1, isPlain: true)
+        click.drag(to: NSPoint(x: 50, y: 300))
+        click.drag(to: NSPoint(x: 40, y: 300))
+        #expect(click.release(at: NSPoint(x: 40, y: 300), clickCount: 1) == nil)
+    }
+
+    private func edgeDesk(_ frame: NSRect) -> (DeskView, () -> [TurnDirection]) {
+        let desk = DeskView(frame: frame, bookFrame: frame.insetBy(dx: 34, dy: 34))
+        var turns: [TurnDirection] = []
+        desk.onEdgeClick = { direction, _ in turns.append(direction) }
+        return (desk, { turns })
+    }
+
+    private func click(_ desk: DeskView, at point: NSPoint) async {
+        desk.follow(mouse(.leftMouseDown, at: point, in: desk))
+        desk.follow(mouse(.leftMouseUp, at: point, in: desk), doubleClickInterval: 0)
+        await settle()
+    }
+
+    private func settle() async {
+        try? await Task.sleep(for: .milliseconds(150))
+    }
+
+    private func mouse(
+        _ type: NSEvent.EventType, at point: NSPoint, clicks: Int = 1, _ modifiers: NSEvent.ModifierFlags = [],
+        in desk: DeskView
+    ) -> NSEvent {
+        NSEvent.mouseEvent(
+            with: type, location: desk.convert(point, to: nil), modifierFlags: modifiers, timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 0, clickCount: clicks, pressure: 1)!
     }
 
     /// The spine's shadow belongs to the pages, so the turning page passes over it.

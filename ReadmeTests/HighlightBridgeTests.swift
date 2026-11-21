@@ -133,4 +133,22 @@ private func fixture(_ name: String) throws -> URL {
         await waitFor { clicked != nil }
         #expect(clicked == info.cfi)
     }
+
+    /// An edge click on a highlight shows it, so the app mustn't turn the page for it too.
+    @Test func aHighlightTakesItsClick() async throws {
+        _ = try await view.open(fixture("long.epub"), at: nil)
+        var heard: BookWebView.SelectionInfo?
+        view.onSelection = { heard = $0 ?? heard }
+        try await selectFirstWords()
+        await waitFor { heard != nil }
+        let info = try #require(heard)
+        let point = { (x: Double, y: Double) in
+            NSPoint(x: x, y: self.view.isFlipped ? y : self.view.bounds.height - y)
+        }
+        let middle = point(info.rect.midX, info.rect.midY)
+        #expect(await view.takesClick(at: middle) == false)
+        await view.addHighlight(info.cfi)
+        #expect(await view.takesClick(at: middle))
+        #expect(await view.takesClick(at: point(info.rect.midX, info.rect.maxY + 200)) == false)
+    }
 }

@@ -26,9 +26,42 @@ enum ScrollRoute: Equatable {
     }
 }
 
-/// The surface the book lies on. It takes clicks on the outer parts of the book, which turn pages,
-/// and leaves the rest of the book to the web view, so text can still be selected. Clicks on the bare
-/// desk do nothing. It also reads swipes from scrolling, wherever over the window that happens, and
+/// Follows a click near the book's outer edges, to tell a plain click there, which turns the page, from
+/// one that selects text: a drag, or the first click of a double or triple click.
+struct EdgeClick {
+    /// How far the pointer may wander between pressing and letting go and still make a click.
+    static let slop: CGFloat = 4
+
+    private var pressed: (direction: TurnDirection, point: NSPoint)?
+
+    /// `direction` is which way the page there would turn, if it would. Only a plain first click counts:
+    /// a later one is part of a double or triple click, and a modifier means something else, such as
+    /// Shift extending a selection.
+    mutating func press(at point: NSPoint, direction: TurnDirection?, clickCount: Int, isPlain: Bool) {
+        pressed = clickCount == 1 && isPlain ? direction.map { ($0, point) } : nil
+    }
+
+    /// Pulling away from where it was pressed makes a selection, not a click.
+    mutating func drag(to point: NSPoint) {
+        guard let pressed, Self.distance(pressed.point, point) > Self.slop else { return }
+        self.pressed = nil
+    }
+
+    /// The turn a click asks for once it's let go, if it was a click near an edge.
+    mutating func release(at point: NSPoint, clickCount: Int) -> (TurnDirection, NSPoint)? {
+        defer { pressed = nil }
+        guard let pressed, clickCount == 1, Self.distance(pressed.point, point) <= Self.slop else { return nil }
+        return (pressed.direction, pressed.point)
+    }
+
+    private static func distance(_ a: NSPoint, _ b: NSPoint) -> CGFloat {
+        hypot(a.x - b.x, a.y - b.y)
+    }
+}
+
+/// The surface the book lies on. A plain click on the outer parts of the book turns the page, once
+/// it's clear it isn't the start of a double or triple click. The web view still has every click, so
+/// text can be selected anywhere on the page, edges too. Clicks on the bare desk do nothing. It also reads swipes from scrolling, wherever over the window that happens, and
 /// hears the mouse move anywhere over it, which wakes the toolbar.
 final class DeskView: NSView {
     private static let edgeShare: CGFloat = 0.2
@@ -44,6 +77,8 @@ final class DeskView: NSView {
     /// Controls laid over the book, such as the toolbar, which take a click before the page's edge does.
     var chrome: [NSView] = []
     private var gesture = SwipeGesture()
+    private var edgeClick = EdgeClick()
+    private var pendingTurn: DispatchWorkItem?
 
     init(frame: NSRect, bookFrame: NSRect) {
         self.bookFrame = bookFrame
@@ -77,13 +112,36 @@ final class DeskView: NSView {
         for view in chrome where !view.isHidden {
             if let hit = view.hitTest(local) { return hit }
         }
-        return turn(at: local) != nil ? self : super.hitTest(point)
+        return super.hitTest(point)
     }
 
-    override func mouseUp(with event: NSEvent) {
+    /// Hears the left button over the window, wherever it went, as the web view keeps clicks on the
+    /// page to itself. A plain click near an edge turns the page after the double-click time, unless
+    /// another click comes first.
+    func follow(_ event: NSEvent, doubleClickInterval: TimeInterval = NSEvent.doubleClickInterval) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let direction = turn(at: point) else { return }
-        onEdgeClick?(direction, point)
+        switch event.type {
+        case .leftMouseDown:
+            pendingTurn?.cancel()
+            pendingTurn = nil
+            let onChrome = chrome.contains { !$0.isHidden && $0.hitTest(point) != nil }
+            let isPlain = event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty
+            edgeClick.press(
+                at: point, direction: onChrome ? nil : turn(at: point), clickCount: event.clickCount,
+                isPlain: isPlain)
+        case .leftMouseDragged:
+            edgeClick.drag(to: point)
+        case .leftMouseUp:
+            guard let (direction, at) = edgeClick.release(at: point, clickCount: event.clickCount) else { return }
+            let turn = DispatchWorkItem { [weak self] in
+                self?.pendingTurn = nil
+                self?.onEdgeClick?(direction, at)
+            }
+            pendingTurn = turn
+            DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: turn)
+        default:
+            break
+        }
     }
 
     override func mouseMoved(with event: NSEvent) {

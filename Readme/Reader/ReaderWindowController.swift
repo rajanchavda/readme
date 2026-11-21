@@ -120,6 +120,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var isFullscreen = false
     private var keyMonitor: Any?
     private var scrollMonitor: Any?
+    private var clickMonitor: Any?
     private var opening: Task<Void, Never>?
     /// The book being opened, until it's settled at its place.
     private var openingBook: BookWebView?
@@ -310,6 +311,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         // A monitor, because the web view takes keys once it's been clicked.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handle(event) == true ? nil : event
+        }
+        // A monitor, because the web view takes clicks on the book, and should: they select its text.
+        clickMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            guard let self, event.window === self.window, !self.isShowingLibrary else { return event }
+            self.desk.follow(event)
+            return event
         }
         // A monitor, because the web view takes scrolling over the book. Nothing in it scrolls, as
         // the book's in pages.
@@ -1076,14 +1085,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
-    /// A click on a page's edge follows a link there, such as a page number in the contents, and
-    /// turns the page only if there's none.
+    /// A click on a page's edge turns the page, unless the page took it itself: it was on a link, such
+    /// as a page number in the contents, which the page follows, or on a highlight, which it shows.
     private func edgeClicked(_ direction: TurnDirection, at point: NSPoint) {
         guard !isCovered, let book = session?.book else { return }
         Task { [weak self, weak book] in
             guard let book else { return }
-            let followed = await book.followLink(at: book.convert(point, from: self?.desk))
-            guard let self, !followed, self.session?.book === book else { return }
+            let taken = await book.takesClick(at: book.convert(point, from: self?.desk))
+            guard let self, !taken, self.session?.book === book else { return }
             self.turn(direction)
         }
     }
@@ -1880,11 +1889,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     /// Monitors would keep acting for a window that's gone. `show` puts them back.
     func windowWillClose(_ notification: Notification) {
-        for monitor in [keyMonitor, scrollMonitor].compactMap({ $0 }) {
+        for monitor in [keyMonitor, scrollMonitor, clickMonitor].compactMap({ $0 }) {
             NSEvent.removeMonitor(monitor)
         }
         keyMonitor = nil
         scrollMonitor = nil
+        clickMonitor = nil
     }
 
     /// The end of a gesture may never reach a window that's lost the keyboard, and no page should stay
