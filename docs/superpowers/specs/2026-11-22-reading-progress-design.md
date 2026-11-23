@@ -17,8 +17,13 @@ The shelf shows where you are only for the current book: its chapter and time le
 
 - A thin bar under the cover, not on it, the cover's width, showing how far through the book you are. Covers stay clean.
 - Books you haven't opened have no bar. The missing bar is how you tell a new book.
-- Finished books show no bar. They get the check badge instead (see below).
-- No number under the covers. A percentage under every book is noisy. Hovering a cover shows a tooltip: "42% · Chapter 7".
+- Finished books show no bar. They get the double tick instead (see below).
+- No number under the covers. A percentage under every book is noisy.
+- Hovering a cover shows the standard macOS tooltip (`.help`), on two lines: the title and author, then where you are.
+  - A started book: "The Psychology of Money — Morgan Housel" / "64% · Chapter 12".
+  - A finished book: the title and author / "Finished 18 Nov".
+  - A book you haven't opened: the title and author only.
+  - The ledge's book has no tooltip, since its title is already written beside it.
 - On the ledge, the current book's line gains the percentage: "42% · Chapter 7 · 12 min left in chapter".
 - Bar colour: the same colour as the reader's place marker and the pin ribbon, at low contrast, so it reads as a detail, not a warning.
 
@@ -29,15 +34,16 @@ Automatic, with a manual override.
 - **Automatic.** A book becomes finished when its place goes from below 95% to 95% or more, or reaches `isAtEnd`, **by turning pages**. Most books end with notes, acknowledgements or an index that nobody reads, so waiting for the last page would leave most books unfinished.
 - **Jumps don't count.** Going to the end through the contents, Go to Page, the End key or a link doesn't finish a book. Only turning pages does. The reader knows why the place moved, so it passes that along to `markRead`.
 - **Crossing, not being past.** It finishes on the turn that crosses 95%, not on every turn above it. So after Mark as Not Finished, reading on from 97% doesn't finish the book again straight away.
-- **By hand.** Right-click → **Mark as Finished** or **Mark as Not Finished**, acting on the multi-selection as Pin does. A mixed selection gets Mark as Finished, which finishes the ones that aren't finished and leaves the existing dates alone.
+- **By hand.** Right-click → **Mark as Finished** or **Mark as Not Finished**, placed after Pin to Front, acting on the multi-selection as Pin does. A mixed selection gets Mark as Finished, which finishes the ones that aren't finished and leaves the existing dates alone.
 - Marking by hand never moves the reading place. Mark as Not Finished clears the finished date and nothing else.
 - Reopening a finished book, or reading it again from the start, doesn't unmark it. A reread is still a finished book.
 
 ## How finished books look
 
-- A small check badge in the bottom-right corner of the cover: a filled circle with a check, in the marker colour. The pin ribbon is at the top, so a pinned, finished book shows both without overlap.
+- A white double tick in the bottom-right corner of the cover, like the read ticks on a message. Behind it, a small dark shade fades out from the corner (about 34 × 30 pt, black from 50% to clear), so the ticks read on pale and dark covers alike. No circle, no hard edge.
+- The pin ribbon is at the top, so a pinned, finished book shows both without overlap.
 - Finished covers are not faded. Faded covers look disabled, and finished books are often the ones people are proudest of.
-- The badge lifts with the cover on hover, as the ribbon does.
+- The ticks lift with the cover on hover, as the ribbon does.
 
 ## Order on the shelf
 
@@ -73,8 +79,8 @@ This brings in the "smart collections" the Collections spec left out of scope.
 
 - A book's VoiceOver label ends with ", 42% read", or ", finished". It joins ", pinned" when both apply.
 - Books get a Mark as Finished or Mark as Not Finished action, as they have Pin to Front.
-- The progress bar and badge are hidden from VoiceOver, as the label already says it.
-- With Reduce Motion, the badge doesn't animate when a book is finished.
+- The progress bar and the ticks are hidden from VoiceOver, as the label already says it.
+- With Reduce Motion, the ticks don't animate when a book is finished.
 
 ## Out of scope
 
@@ -96,9 +102,11 @@ This brings in the "smart collections" the Collections spec left out of scope.
 ## Windows port
 
 - `Readme.Core` first: the fields in `Book.cs`, the finish rule and `setFinished` in `LibraryStore.cs`, the bundle key, and the same tests. The finish rule should live in Core so both apps decide it the same way.
-- Then the app: the bar and badge in `BookCoverView.cs`, the menu items, and the built-in chips in `LibraryView.cs`.
+- Then the app: the bar and the ticks in `BookCoverView.cs`, the menu items, and the built-in chips in `LibraryView.cs`.
 - Ship it after Collections, or together with it, since the chips depend on the chip row.
 
 ## Open questions
+
+- Settled with mockups: the double tick for finished books, and the macOS tooltip on hover.
 
 - Is 95% the right threshold? It could be checked against a few real books: where does the main text end in a typical non-fiction EPUB with notes and an index?
