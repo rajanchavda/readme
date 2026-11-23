@@ -97,6 +97,19 @@ func bundleDate(_ seconds: Double) -> Date { Date(timeIntervalSince1970: seconds
         #expect(throws: BundleError.notABundle) { try LibraryBundle.open(url) }
     }
 
+    @Test func finishedAtKeyLeftOutWhenNone() throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let none = BundledBook(title: "Long", author: nil, addedAt: bundleDate(1000), lastReadAt: nil)
+        #expect(!String(decoding: try encoder.encode(none), as: UTF8.self).contains("finishedAt"))
+        var finished = none
+        finished.finishedAt = bundleDate(2000)
+        let back = try OpenedBundle.decoder.decode(BundledBook.self, from: try encoder.encode(finished))
+        #expect(back.finishedAt == bundleDate(2000))
+        let old = #"{"title":"Long","addedAt":"1970-01-01T00:16:40Z"}"#
+        #expect(try OpenedBundle.decoder.decode(BundledBook.self, from: Data(old.utf8)).finishedAt == nil)
+    }
+
     @Test func collectionsKeyLeftOutWhenNone() throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

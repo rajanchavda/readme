@@ -27,6 +27,9 @@ struct BundledBook: Codable, Equatable, Sendable {
     /// The names of the collections it's in, not their IDs, which mean something only in one
     /// library. Left out when it's in none, and missing from bundles from before collections.
     var collections: [String]? = nil
+    /// When it was finished. Left out when it isn't, and missing from bundles from before reading
+    /// progress. How far through it is isn't kept here: `position.json` already has the place.
+    var finishedAt: Date? = nil
 }
 
 /// One book to put in a bundle.
