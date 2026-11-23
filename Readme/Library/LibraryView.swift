@@ -126,6 +126,7 @@ struct LibraryView: View {
         .animation(.easeOut(duration: 0.25), value: drops.adding)
         .animation(.easeOut(duration: 0.25), value: drops.working)
         .environment(\.colorScheme, .dark)
+        .onChange(of: filter) { collections.settle(in: library) }
         .environmentObject(collections)
         .sheet(item: $collections.sheet) { sheet in
             CollectionNameSheet(sheet: sheet, library: library)

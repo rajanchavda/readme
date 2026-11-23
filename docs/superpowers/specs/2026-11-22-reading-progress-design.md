@@ -32,7 +32,7 @@ The shelf shows where you are only for the current book: its chapter and time le
 Automatic, with a manual override.
 
 - **Automatic.** A book becomes finished when its place goes from below 95% to 95% or more, or reaches `isAtEnd`, **by turning pages**. Most books end with notes, acknowledgements or an index that nobody reads, so waiting for the last page would leave most books unfinished.
-- **Jumps don't count.** Going to the end through the contents, Go to Page, the End key or a link doesn't finish a book. Only turning pages does. The reader knows why the place moved, so it passes that along to `markRead`.
+- **Jumps don't count.** Going to the end through the contents, Go to Page, the End key or a link doesn't finish a book. Only turning pages does. The reader knows why the place moved: a place reached while a jump or a link is landing is a jump, and any other is a page turned. It decides whether that move finished the book, and tells `markRead`. (It decides, rather than `markRead`, because the library saves the place at most every 2 seconds, and a crossing could fall between saves.)
 - **Crossing, not being past.** It finishes on the turn that crosses 95%, not on every turn above it. So after Mark as Not Finished, reading on from 97% doesn't finish the book again straight away.
 - **By hand.** Right-click → **Mark as Finished** or **Mark as Not Finished**, placed after Pin to Front, acting on the multi-selection as Pin does. A mixed selection gets Mark as Finished, which finishes the ones that aren't finished and leaves the existing dates alone.
 - Marking by hand never moves the reading place. Mark as Not Finished clears the finished date and nothing else.
@@ -64,7 +64,7 @@ This brings in the "smart collections" the Collections spec left out of scope.
 
 - `Book` gets `progress: Double?` (0 to 1, copied from the place in `markRead`) and `finishedAt: Date?`. Both are optional, so `library.json` files from before still load. Nothing is finished and the bars fill in as each book is next opened.
 - On first launch after this ships, fill `progress` for every book from its saved place in `PositionStore`, once, so the bars show up straight away instead of only after each book is opened. Don't auto-finish during this backfill: a book left at 98% a year ago might not have been finished.
-- `markRead` takes the reason the place moved (page turn or jump) and sets `finishedAt` when the rule above is met and the book isn't finished already.
+- `markRead` takes whether the move finished the book (the reader applies the rule above, in `FinishRule`) and sets `finishedAt` when it did and the book isn't finished already. Of several places saved together, the book finishes if any of them did.
 - `LibraryStore.setFinished(ids:finished:)` for the menu: sets `finishedAt` to now on books that aren't finished, or clears it.
 - Removing a book takes its finished date with it, as with pins.
 

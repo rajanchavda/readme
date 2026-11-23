@@ -151,9 +151,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var isContentsShown = false
     private var isPageFieldShown = false
     private var jumping: Task<Void, Never>?
-    /// Whether the last move asked for was a page turn rather than a jump, which is what may finish
-    /// a book.
-    private var movedByTurning = false
+    /// The jumps going on now, from the moment each starts moving the book (after the turns before
+    /// it) until it has landed. A place reached meanwhile is a jump's, and never finishes a book.
+    private var jumpsLanding = 0
+    /// Whether a link in the book is being followed, from its click until it has landed.
+    private var followingLink = false
     /// The place before the one just arrived at, to see whether that move crossed the finish line.
     private var lastPlace: ReaderLocation?
 
@@ -263,7 +265,6 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                 self.desk.cancelEdgeTurn()
                 self.closeShortcuts()
                 self.places.turned()
-                self.movedByTurning = true
                 self.turnBegan()
             case .release, .abandon:
                 session.turns.follow(signal)
@@ -504,7 +505,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let turns = TurnCoordinator(book: book, cache: cache, curl: curl)
         desk.cancelEdgeTurn()
         session = Session(book: book, curl: curl, cache: cache, turns: turns, record: record)
-        movedByTurning = false
+        jumpsLanding = 0
+        followingLink = false
         lastPlace = nil
         openingBook = book
         places.moved(to: nil)
@@ -522,12 +524,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         }
         // A link is a jump the window didn't make, so it counts as one: when it's followed and when
         // it lands.
-        book.onLink = { [weak self, weak book] _ in
+        book.onLink = { [weak self, weak book] landed in
             guard let self, let book, self.session?.book === book else { return }
             // An edge click on a link that's still waiting to turn the page would turn the new one.
             self.desk.cancelEdgeTurn()
             self.places.turned()
-            self.movedByTurning = false
+            self.followingLink = !landed
         }
         hint.isHidden = true
         placeViews()
@@ -852,7 +854,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         show(location)
         updateRibbon(animated: true)
         // While laying out too, so the place a book opens on is the one its first turn starts from.
-        let finishing = FinishRule.finishes(from: lastPlace, to: location, byTurning: movedByTurning)
+        // Outside laying out, a place no jump or link brought is a page turned, by key, click or swipe.
+        let byTurning = jumpsLanding == 0 && !followingLink
+        let finishing = FinishRule.finishes(from: lastPlace, to: location, byTurning: byTurning)
         lastPlace = location
         if !isLayingOut { keep(location, in: book, finishing: finishing) }
     }
@@ -1137,7 +1141,6 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     func turn(_ direction: TurnDirection, isRepeat: Bool = false) {
         guard !isCovered, let session else { return }
         places.turned()
-        movedByTurning = true
         turnBegan()
         session.turns.turn(direction, isRepeat: isRepeat)
         watchTurnLanding()
@@ -1156,9 +1159,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         closePageField()
         closeSearch()
         places.turned()
-        movedByTurning = false
         jumping = Task { [weak self] in
-            _ = await session.turns.jump { await go(session.book) }
+            // Counted from when the jump moves the book, not when it's asked for: a turn asked for
+            // before it lands first, and one asked for after it waits for it to land.
+            _ = await session.turns.jump { [weak self] in
+                self?.jumpsLanding += 1
+                defer { self?.jumpsLanding -= 1 }
+                return await go(session.book)
+            }
             self?.places.turned()
         }
     }

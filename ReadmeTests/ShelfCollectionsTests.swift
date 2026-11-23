@@ -153,6 +153,25 @@ private func book(_ id: String, in collections: [UUID] = []) -> Book {
         #expect(collections.filter(in: library) == .all)
     }
 
+    /// Once its chip has gone, a built-in filter is let go of, so it doesn't come back on by itself
+    /// when the chip does.
+    @Test func anEmptiedBuiltInIsLetGo() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let library = LibraryStore(directory: folder)
+        library.add(reading("half", 0.4))
+        library.add(reading("new", nil))
+        let collections = ShelfCollections()
+        collections.filter = .reading
+        library.setFinished(ids: ["half"], finished: true)
+        collections.settle(in: library)
+        #expect(collections.filter == .all)
+        library.markRead(id: "new", location: ReaderLocation(
+            cfi: "epubcfi(/6/2!/4)", fraction: 0.1, chapterTitle: nil, chapterMinutesLeft: 1,
+            isAtStart: false, isAtEnd: false, page: 1, pageCount: 10))
+        #expect(collections.filter(in: library) == .all)
+    }
+
     @Test func activeIDFollowsTheFilter() {
         let collections = ShelfCollections()
         let x = UUID()

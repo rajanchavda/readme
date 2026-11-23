@@ -58,4 +58,22 @@ import Testing
         #expect(!record.reads.isEmpty)
         #expect(record.reads.allSatisfy { !$0.finishing })
     }
+
+    /// A turn asked for while a jump is on its way waits for it to land, so the jump's landing isn't
+    /// the turn's, and doesn't finish the book.
+    @Test func aTurnPressedDuringAJumpDoesntMakeItATurn() async throws {
+        let saved = ReaderSettings.store.data(forKey: ReaderSettings.key)
+        defer { ReaderSettings.store.set(saved, forKey: ReaderSettings.key) }
+        let folder = try positionsFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let (reader, record) = try await opened(in: folder)
+        defer { reader.window?.close() }
+        record.reads = []
+        reader.perform(.goToEnd)
+        reader.turn(.backward)
+        await reader.settled()
+        await reader.placesKept()
+        #expect(!record.reads.isEmpty)
+        #expect(record.reads.allSatisfy { !$0.finishing })
+    }
 }

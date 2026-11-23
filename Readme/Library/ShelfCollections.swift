@@ -51,6 +51,12 @@ final class ShelfCollections: ObservableObject {
         filter = .all
     }
 
+    /// Lets go of a chip that's gone, as deleting a collection does, so an emptied Reading or Finished
+    /// doesn't come back on by itself when it has books again.
+    func settle(in library: LibraryStore) {
+        if filter(in: library) != filter { filter = .all }
+    }
+
     /// Deletes the collection, and goes back to All if it was the one showing.
     func delete(_ id: UUID, from library: LibraryStore) {
         if activeID == id { activeID = nil }
