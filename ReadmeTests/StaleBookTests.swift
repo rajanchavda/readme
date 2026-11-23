@@ -130,7 +130,7 @@ func spreadImage() throws -> CGImage {
 
     @Test func theFirstReadIsMarkedAtOnceAndTheRestAtMostOncePerInterval() {
         var marked: [(String, ReaderLocation)] = []
-        let marker = ReadMarker(interval: .seconds(3600)) { marked.append(($0, $1)) }
+        let marker = ReadMarker(interval: .seconds(3600)) { marked.append(($0, $1)); _ = $2 }
         marker.read(id: "a", location: here)
         #expect(marked.map(\.0) == ["a"])
         var later = here
@@ -150,6 +150,26 @@ func spreadImage() throws -> CGImage {
         #expect(marked[3].1.chapterTitle == "Two")
         marker.flush()
         #expect(marked.count == 4)
+    }
+
+    @Test func finishingSurvivesCoalescing() {
+        var marked: [(String, ReaderLocation, Bool)] = []
+        let marker = ReadMarker(interval: .seconds(3600)) { marked.append(($0, $1, $2)) }
+        marker.read(id: "a", location: here)
+        var crossed = here
+        crossed.fraction = 0.96
+        marker.read(id: "a", location: crossed, finishing: true)
+        var jumped = here
+        jumped.fraction = 0.3
+        marker.read(id: "a", location: jumped)
+        marker.flush()
+        #expect(marked.count == 2)
+        #expect(marked[1].1.fraction == 0.3)
+        #expect(marked[1].2)
+        // The next one starts afresh.
+        marker.read(id: "a", location: here)
+        marker.flush()
+        #expect(marked.last?.2 == false)
     }
 
     @Test func openingABookMarksItReadAndQuittingWritesWhereItWasLeft() async throws {

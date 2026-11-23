@@ -5,23 +5,24 @@ import SwiftUI
 /// Tells the library where the reader is, so the shelf's "Continue reading" and the next launch are
 /// right, without rewriting the library file on every page: a book's first place is passed on at once,
 /// and after that at most once an `interval`, the newest place waiting until then. Another book's place
-/// is passed on at once, after the first book's last.
+/// is passed on at once, after the first book's last. A place that finished the book finishes it
+/// even if a later one is what's passed on.
 @MainActor
 final class ReadMarker {
     private let interval: Duration
-    private let mark: (String, ReaderLocation) -> Void
-    private var pending: (id: String, location: ReaderLocation)?
+    private let mark: (String, ReaderLocation, Bool) -> Void
+    private var pending: (id: String, location: ReaderLocation, finishing: Bool)?
     private var lastMarked: (id: String, at: ContinuousClock.Instant)?
     private var timer: Task<Void, Never>?
 
-    init(interval: Duration = .seconds(2), mark: @escaping (String, ReaderLocation) -> Void) {
+    init(interval: Duration = .seconds(2), mark: @escaping (String, ReaderLocation, Bool) -> Void) {
         self.interval = interval
         self.mark = mark
     }
 
-    func read(id: String, location: ReaderLocation) {
+    func read(id: String, location: ReaderLocation, finishing: Bool = false) {
         if let pending, pending.id != id { flush() }
-        pending = (id, location)
+        pending = (id, location, finishing || pending?.finishing == true)
         guard let lastMarked, lastMarked.id == id else {
             flush()
             return
@@ -46,7 +47,7 @@ final class ReadMarker {
         guard let pending else { return }
         self.pending = nil
         lastMarked = (pending.id, .now)
-        mark(pending.id, pending.location)
+        mark(pending.id, pending.location, pending.finishing)
     }
 }
 
@@ -96,8 +97,8 @@ final class AppCoordinator {
     private var waitingForCombine: [CheckedContinuation<Void, Never>] = []
     private var watchingBooks: AnyCancellable?
     private let positions: PositionStore
-    private lazy var marker = ReadMarker { [weak library] id, location in
-        library?.markRead(id: id, location: location)
+    private lazy var marker = ReadMarker { [weak library] id, location, finishing in
+        library?.markRead(id: id, location: location, finishing: finishing)
     }
     private var hasLaunched = false
     /// The book being opened, from the moment it's asked for until it has landed or failed.
@@ -141,7 +142,9 @@ final class AppCoordinator {
         shelf.sizingOptions = []
         reader.setLibrary(shelf)
         reader.onShowLibrary = { [weak self] in self?.showLibrary() }
-        reader.onRead = { [weak self] id, location in self?.marker.read(id: id, location: location) }
+        reader.onRead = { [weak self] id, location, finishing in
+            self?.marker.read(id: id, location: location, finishing: finishing)
+        }
         reader.onShowingLibraryChange = { [weak self] showing in
             guard let self else { return }
             self.state.isShowingLibrary = showing
