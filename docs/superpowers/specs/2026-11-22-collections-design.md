@@ -22,16 +22,21 @@ Use **Collections**, not Shelves or Labels.
 - It acts on the multi-selection, as Pin and Export do (`selection.targets(rightClicked:)`).
 - A collection has a checkmark when every targeted book is in it. A mixed selection shows no checkmark.
 - Choosing a collection adds all the targeted books when at least one isn't in it yet, and removes all of them when every one already is. This is the same rule Pin uses.
-- **New Collection…** opens a small sheet with a name field and suggestions (see Names). **Create** makes the collection and adds the targeted books to it.
+- **New Collection…** opens a small sheet with a name field and suggestions (see Names). **Create** makes the collection and adds the targeted books to it. The sheet says what it will add at the bottom: "Adds the 2 selected books." for a selection, "Adds this book." for one, and nothing when it was opened from **+**.
 - While a collection's chip is active, the context menu also shows **Remove from Self-Help** at the top level, so you don't have to open the submenu.
+- The book's menu, top to bottom: **Remove from Self-Help** (only with a collection active) and a separator, then **Add to Collection ▸**, **Export…**, **Pin to Front**, a separator, and **Remove**.
 
 ## The chip row
 
-- A single row above the shelf: **All**, then each collection alphabetically, then **+**.
+- A single row at the top of the window, on the same line as the search: **All**, then each collection alphabetically, then **+**. It starts just after the window buttons and ends where the search begins, and the shelf sits right under it.
 - The row appears once at least one collection exists. Until then the shelf looks exactly as it does today, and the only way in is right-click → New Collection….
 - One chip is active at a time. **All** is the default, and the app always opens on All. A filtered shelf at launch would look like books had gone missing.
-- When there are too many chips to fit, the row scrolls sideways. It doesn't wrap.
+- Opening the search grows the field leftward to its full width, and the row's right edge pulls back with it in the same animation. Closing the search gives the space back.
+- When there are too many chips to fit, the row shows as many as fit, then a **5 more ▾** chip that opens a menu of the rest, in the same order. **+** always stays visible after it. The row doesn't scroll or wrap: a plain mouse wheel can't scroll sideways, and hidden chips with no hint are easy to miss.
+- The active chip is always on the row. Choosing a collection from the More menu puts it in the last visible spot, and the chip that was there moves into the menu.
+- What fits is worked out again whenever the space changes: the window resizes, or the search opens or closes.
 - Chips show the name only. No counts in v1.
+- Chips are capsules the same height as the search field, in the shelf's serif. The active chip is filled cream with dark text. The others are outlined, with the soft text colour.
 - **+** opens the New Collection sheet with no books, which makes an empty collection.
 - Right-click a chip for **Rename…** and **Delete Collection**. Deleting a collection with books asks first: "Delete Self-Help? The 12 books in it stay in your library." Deleting an empty one doesn't ask.
 - If the active collection is deleted, the shelf goes back to All.
@@ -87,14 +92,15 @@ Use **Collections**, not Shelves or Labels.
 - Filtering: shelf order with a collection active, with the current book in and out of it, and combined with search.
 - A book imported while a collection is active joins it.
 - `ShelfSelection` menu titles and checkmark states: one book, several, all in, mixed.
+- Chip row fitting: everything fits; some go to More; the active chip moved onto the row from More; less room with the search open.
 - Bundle round-trip: a new book keeps its collections; an existing book gets the union; names match across case; a bundle without the key imports with no collections.
 
 ## Windows port
 
 - `Readme.Core` first: the field in `Book.cs`, the store methods in `LibraryStore.cs`, the bundle key in `LibraryBundle.cs`, and name folding shared with `ShelfSearch.cs`, all with the same tests in `Readme.Core.Tests`.
-- Then the app: the chip row in `LibraryView.cs`, the submenu as a flyout with toggle items, and New Collection as a `ContentDialog`.
+- Then the app: the chip row in `LibraryView.cs`, the submenu as a flyout with toggle items, the More chip as a `MenuFlyout`, and New Collection as a `ContentDialog`.
 - The bundle format is shared, so either land both apps in one PR, or add the Windows side to the checklist as a follow-up before the next release.
 
 ## Open questions
 
-- Does the chip row share a line with the search field, or sit on its own line beneath it? A quick mockup of both would settle it.
+- None. The chip row's place was settled with mockups: it shares the search's line, with a More menu for chips that don't fit.
