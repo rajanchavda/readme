@@ -127,6 +127,9 @@ struct LibraryView: View {
         .animation(.easeOut(duration: 0.25), value: drops.working)
         .environment(\.colorScheme, .dark)
         .environmentObject(collections)
+        .sheet(item: $collections.sheet) { sheet in
+            CollectionNameSheet(sheet: sheet, library: library)
+        }
         .alert(
             deleteText?.title ?? "", isPresented: confirmingDelete, presenting: collections.confirmingDelete
         ) { id in

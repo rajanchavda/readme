@@ -60,4 +60,14 @@ final class ShelfSelection: ObservableObject {
         case (false, false): "Pin to Front"
         }
     }
+
+    /// Whether every one of the books is in the collection, which ticks it in Add to Collection. None
+    /// at all isn't.
+    static func isEveryBook(_ books: [Book], in collection: UUID) -> Bool {
+        !books.isEmpty && books.allSatisfy { $0.collectionIDs.contains(collection) }
+    }
+
+    static func removeFromTitle(name: String) -> String {
+        "Remove from \(name)"
+    }
 }

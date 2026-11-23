@@ -66,6 +66,7 @@ struct ShelfBook: View {
     let onRemove: (Book) -> Void
     let onExport: ([Book]) -> Void
 
+    @EnvironmentObject private var collections: ShelfCollections
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -102,10 +103,18 @@ struct ShelfBook: View {
         .animation(reduceMotion ? nil : ShelfStyle.lift, value: hovering)
         .onHover { hovering = $0 }
         .contextMenu {
+            if let active = collections.active(in: library) {
+                Button(ShelfSelection.removeFromTitle(name: active.name)) {
+                    library.setCollection(active.id, member: false, ids: targetIDs)
+                }
+                Divider()
+            }
+            collectionMenu
             Button(selection.menuTitle(rightClicked: book.id)) {
-                onExport(selection.targets(rightClicked: book.id, order: order).compactMap(library.book(id:)))
+                onExport(targetIDs.compactMap(library.book(id:)))
             }
             pinButton
+            Divider()
             Button("Remove", role: .destructive) { onRemove(book) }
         }
         .accessibilityLabel(
@@ -115,6 +124,27 @@ struct ShelfBook: View {
             library.setPinned(ids: [book.id], pinned: book.pinnedAt == nil)
         }
         .accessibilityAction(named: "Remove") { onRemove(book) }
+    }
+
+    /// What a right-click here acts on: the selection if this book is in it, else this book.
+    private var targetIDs: [String] {
+        selection.targets(rightClicked: book.id, order: order)
+    }
+
+    /// Every collection, ticked when all the books acted on are in it. Choosing one puts them all in,
+    /// unless they're all in already, when it takes them all out, as Pin does.
+    private var collectionMenu: some View {
+        let targets = targetIDs.compactMap(library.book(id:))
+        return Menu("Add to Collection") {
+            ForEach(library.collections) { collection in
+                let allIn = ShelfSelection.isEveryBook(targets, in: collection.id)
+                Toggle(collection.name, isOn: Binding(
+                    get: { allIn },
+                    set: { _ in library.setCollection(collection.id, member: !allIn, ids: targets.map(\.id)) }))
+            }
+            if !library.collections.isEmpty { Divider() }
+            Button("New Collection…") { collections.sheet = .create(bookIDs: targets.map(\.id)) }
+        }
     }
 
     /// Pins or unpins what a right-click here acts on: the selection if this book is in it, else this book.

@@ -63,4 +63,18 @@ import Testing
         _ = selection.click("a", modifiers: .shift, order: order)
         #expect(selection.ids == ["a"])
     }
+
+    @Test func collectionCheckmark() {
+        let x = UUID()
+        func book(_ id: String, _ ids: [UUID]) -> Book {
+            Book(
+                id: id, title: id, author: nil, fileName: "\(id).epub", hasCover: false, addedAt: Date(),
+                lastReadAt: nil, chapterTitle: nil, chapterMinutesLeft: nil, collectionIDs: ids)
+        }
+        #expect(ShelfSelection.isEveryBook([book("a", [x])], in: x))
+        #expect(ShelfSelection.isEveryBook([book("a", [x]), book("b", [UUID(), x])], in: x))
+        #expect(!ShelfSelection.isEveryBook([book("a", [x]), book("b", [])], in: x))
+        #expect(!ShelfSelection.isEveryBook([], in: x))
+        #expect(ShelfSelection.removeFromTitle(name: "Self-Help") == "Remove from Self-Help")
+    }
 }
