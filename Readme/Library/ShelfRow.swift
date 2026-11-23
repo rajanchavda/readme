@@ -72,7 +72,7 @@ struct ShelfBook: View {
 
     /// The books as the shelf shows them.
     private var order: [String] {
-        ([library.current].compactMap { $0 } + library.others).map(\.id)
+        ShelfCollections.shelfOrder(library, collection: collections.active(in: library)?.id)
     }
 
     var body: some View {

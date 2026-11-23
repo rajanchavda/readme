@@ -62,6 +62,33 @@ private func book(_ id: String, in collections: [UUID] = []) -> Book {
         #expect(library.book(id: "b")?.collectionIDs == [])
     }
 
+    @Test func importedByIDJoinTheActive() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let library = LibraryStore(directory: folder)
+        library.add(book("a"))
+        let x = try #require(library.createCollection(name: "X"))
+        let collections = ShelfCollections()
+        collections.activeID = x.id
+        collections.addImported(ids: ["a", "not-here"], to: library)
+        #expect(library.book(id: "a")?.collectionIDs == [x.id])
+    }
+
+    /// Shift-click picks the run of books the shelf shows, so it can't take in books a collection hides.
+    @Test func shelfOrderIsWhatShows() throws {
+        let folder = try libraryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let library = LibraryStore(directory: folder)
+        let x = try #require(library.createCollection(name: "X"))
+        for (id, read) in [("current", 50.0), ("in1", 40), ("out", 30), ("in2", 20)] {
+            var b = book(id, in: id.hasPrefix("in") ? [x.id] : [])
+            b.lastReadAt = Date(timeIntervalSince1970: read)
+            library.add(b)
+        }
+        #expect(ShelfCollections.shelfOrder(library, collection: nil) == ["current", "in1", "out", "in2"])
+        #expect(ShelfCollections.shelfOrder(library, collection: x.id) == ["in1", "in2"])
+    }
+
     @Test func escapeOrder() {
         let search = ShelfSearch()
         let selection = ShelfSelection()

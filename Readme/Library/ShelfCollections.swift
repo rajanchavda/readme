@@ -42,12 +42,22 @@ final class ShelfCollections: ObservableObject {
 
     /// Books added while a collection shows go into it, or they'd vanish as they were added.
     func addImported(_ results: [Result<Book, ImportError>], to library: LibraryStore) {
-        guard let active = active(in: library) else { return }
-        let ids = results.compactMap { result -> String? in
+        addImported(ids: results.compactMap { result -> String? in
             if case .success(let book) = result { return book.id }
             return nil
-        }
+        }, to: library)
+    }
+
+    /// The same, for books a library bundle added.
+    func addImported(ids: [String], to library: LibraryStore) {
+        guard let active = active(in: library) else { return }
         library.setCollection(active.id, member: true, ids: ids)
+    }
+
+    /// The books as the shelf shows them, the current one first, for picking out a run with Shift-click:
+    /// only those in `collection` while it's showing.
+    static func shelfOrder(_ library: LibraryStore, collection: UUID?) -> [String] {
+        shown([library.current].compactMap { $0 } + library.others, in: collection).map(\.id)
     }
 
     /// The books in `collection`, in the order they came; all of them for nil.

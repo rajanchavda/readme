@@ -340,6 +340,8 @@ final class AppCoordinator {
             if choice == .combine { combiningIDs = Set(prepared.existingIDs) }
             drops.setWorking(ShelfDrops.workingLine("Importing", prepared.bundle.manifest.bookIDs.count))
             let summary = await libraryImporter.run(prepared, choice: choice)
+            // Books new here join the collection showing, or they'd seem not to have arrived.
+            collections.addImported(ids: prepared.newIDs, to: library)
             combiningIDs = []
             let waiting = waitingForCombine
             waitingForCombine = []
