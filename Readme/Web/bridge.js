@@ -84,7 +84,8 @@ const forwardInput = target => {
     // The left button, for the app to tell a plain click near an edge, which turns the page, from a
     // drag or a double or triple click, which select. On Mac the app's mouse monitor sees it. Points
     // are in the reader page, as the app places the book by it, and a drag is told once, when it's
-    // gone further than EdgeClick.Slop.
+    // gone further than EdgeClick.Slop. A press says what's under it (see `spotAt`), found now,
+    // before the click can follow a link and change the page.
     const pagePoint = event => {
         const r = target.defaultView?.frameElement?.getBoundingClientRect() ?? { left: 0, top: 0 }
         return { x: event.clientX + r.left, y: event.clientY + r.top }
@@ -93,8 +94,9 @@ const forwardInput = target => {
     target.addEventListener('mousedown', event => {
         if (event.button !== 0) return
         pressed = { x: event.clientX, y: event.clientY }
+        const point = pagePoint(event)
         postToApp({
-            type: 'press', ...pagePoint(event), count: event.detail,
+            type: 'press', ...point, count: event.detail, spot: spotAt(point.x, point.y),
             plain: !(event.shiftKey || event.ctrlKey || event.altKey || event.metaKey),
         })
     })
@@ -111,6 +113,48 @@ const forwardInput = target => {
     })
 }
 forwardInput(document)
+
+// Whether the point `x`, `y` in a section's page is on a line of its text, where a double or triple
+// click selects a word or a paragraph: the empty end of a line too, as the browser selects from
+// there as well. The gaps between lines and paragraphs, and the margins beside the text, are not.
+// The caret lands in the nearest text even well away from any, so its lines have to hold the point.
+const isOnText = (doc, x, y) => {
+    const at = doc.caretPositionFromPoint?.(x, y) ?? doc.caretRangeFromPoint?.(x, y)
+    const node = at?.offsetNode ?? at?.startContainer
+    if (node?.nodeType !== 3) return false
+    let block = node.parentElement
+    while (block && doc.defaultView.getComputedStyle(block).display.startsWith('inline')) block = block.parentElement
+    const area = block?.getBoundingClientRect()
+    if (!area || x < area.left || x > area.right) return false
+    const range = doc.createRange()
+    range.selectNodeContents(node)
+    for (const line of range.getClientRects())
+        if (y >= line.top && y <= line.bottom) return true
+    return false
+}
+
+// What's under the point `x`, `y` in the reader page, for a click near an edge: 'own' when the
+// page takes the click itself (a link, which it follows, a highlight, which it shows, or anywhere
+// while text is selected, as the click only puts the selection away), 'text' when a double or
+// triple click there would select, or 'blank'. The app turns the page at once for 'blank', after
+// the double-click time for 'text', and never for 'own'. Asked as the button goes down, before
+// the click clears any selection.
+const spotAt = (x, y) => {
+    const contents = view?.renderer?.getContents?.() ?? []
+    if (contents.some(({ doc }) => doc?.getSelection()?.isCollapsed === false)) return 'own'
+    for (const { doc, overlayer } of contents) {
+        const frame = doc?.defaultView?.frameElement
+        if (!frame) continue
+        const r = frame.getBoundingClientRect()
+        if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue
+        const inX = x - r.left, inY = y - r.top
+        if (doc.elementFromPoint(inX, inY)?.closest?.('a[href]')) return 'own'
+        const [value] = overlayer?.hitTest?.({ x: inX, y: inY }) ?? []
+        if (value && highlights.has(value)) return 'own'
+        return isOnText(doc, inX, inY) ? 'text' : 'blank'
+    }
+    return 'blank'
+}
 
 // Whether the visible spread holds the marker: it's at or after the spread's start, and before its
 // end, which is where the next spread starts. A spread with nothing in it to span, such as a lone
@@ -815,37 +859,7 @@ globalThis.readmeBridge = {
         const location = await navigate(async () => { resolved = !!(await view.goTo(href)) })
         return { resolved, location }
     },
-    // Follows the link at `x`, `y` in the page, if there is one, by clicking it, so it goes the way
-    // any link does. The app asks before an edge click turns the page, as the edges cover links too,
-    // such as the page numbers in a table of contents. Answers whether there was a link.
-    followLinkAt: (x, y) => {
-        for (const { doc } of view?.renderer?.getContents?.() ?? []) {
-            const frame = doc?.defaultView?.frameElement
-            if (!frame) continue
-            const r = frame.getBoundingClientRect()
-            if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue
-            const link = doc.elementFromPoint(x - r.left, y - r.top)?.closest?.('a[href]')
-            if (!link) continue
-            link.click()
-            return true
-        }
-        return false
-    },
-    // Whether a click at `x`, `y` in the page is the page's own: on a link, which it follows, or on a
-    // highlight, which it shows. The app turns the page for an edge click only when it isn't.
-    takesClickAt: (x, y) => {
-        for (const { doc, overlayer } of view?.renderer?.getContents?.() ?? []) {
-            const frame = doc?.defaultView?.frameElement
-            if (!frame) continue
-            const r = frame.getBoundingClientRect()
-            if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue
-            const inX = x - r.left, inY = y - r.top
-            if (doc.elementFromPoint(inX, inY)?.closest?.('a[href]')) return true
-            const [value] = overlayer?.hitTest?.({ x: inX, y: inY }) ?? []
-            return !!value && highlights.has(value)
-        }
-        return false
-    },
+    spotAt: (x, y) => spotAt(x, y),
     goToPage: page => navigate(() => goToPage(page)),
     goToStart: () => navigate(() => goToEdge(false)),
     goToEnd: () => navigate(() => goToEdge(true)),

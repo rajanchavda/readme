@@ -146,9 +146,17 @@ private func fixture(_ name: String) throws -> URL {
             NSPoint(x: x, y: self.view.isFlipped ? y : self.view.bounds.height - y)
         }
         let middle = point(info.rect.midX, info.rect.midY)
-        #expect(await view.takesClick(at: middle) == false)
+        let below = point(info.rect.midX, info.rect.maxY + 200)
+        // While words are selected, a click anywhere only puts them away.
+        #expect(await view.spot(at: below).value == .own)
+        await view.clearSelection()
+        #expect(await view.spot(at: middle).value == .text)
         await view.addHighlight(info.cfi)
-        #expect(await view.takesClick(at: middle))
-        #expect(await view.takesClick(at: point(info.rect.midX, info.rect.maxY + 200)) == false)
+        #expect(await view.spot(at: middle).value == .own)
+        #expect(await view.spot(at: below).value != .own)
+        // No bridge, a script error or a stray answer leaves the page alone.
+        #expect(BookWebView.spot(fromReply: nil) == .own)
+        #expect(BookWebView.spot(fromReply: #"{"value":null}"#) == .own)
+        #expect(BookWebView.spot(fromReply: #"{"value":"blank"}"#) == .blank)
     }
 }

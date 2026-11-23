@@ -247,10 +247,11 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(desk.hitTest(NSPoint(x: 1000, y: 300)) === book)
     }
 
-    /// A drag from an edge selects, and a double or triple click there selects a word or a paragraph:
-    /// none of them turns the page. A plain click turns it once.
+    /// A drag from an edge selects, and a double or triple click on text there selects a word or a
+    /// paragraph: none of them turns the page. A plain click on text turns it once, after the
+    /// double-click time.
     @Test func onlyAPlainClickOnAnEdgeTurns() async {
-        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620))
+        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620), spot: .text)
         let left = NSPoint(x: 40, y: 300), right = NSPoint(x: 1000, y: 300)
 
         desk.follow(mouse(.leftMouseDown, at: left, in: desk))
@@ -262,6 +263,7 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         for count in 1...3 {
             desk.follow(mouse(.leftMouseDown, at: right, clicks: count, in: desk))
             desk.follow(mouse(.leftMouseUp, at: right, clicks: count, in: desk), doubleClickInterval: 0.05)
+            await Task.yield()
         }
         await settle()
         #expect(turns().isEmpty)
@@ -277,21 +279,154 @@ private func key(_ code: Int) -> String { String(UnicodeScalar(UInt16(code))!) }
         #expect(turns() == [.forward])
     }
 
+    /// With nothing to select under it, a click near an edge turns at once, and so does every click of
+    /// a quick run, so the pages flip as fast as the clicks come.
+    @Test func quickClicksOnABlankEdgeEachTurn() async {
+        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620), spot: .blank)
+        let right = NSPoint(x: 1000, y: 300)
+        for count in 1...3 {
+            desk.follow(mouse(.leftMouseDown, at: right, clicks: count, in: desk))
+            desk.follow(mouse(.leftMouseUp, at: right, clicks: count, in: desk), doubleClickInterval: 10)
+            await settle()
+        }
+        #expect(turns() == [.forward, .forward, .forward])
+    }
+
+    /// A slow page doesn't cost turns: a blank click answered after the next press still turns.
+    @Test func quickClicksOnASlowBlankEdgeEachTurn() async {
+        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620))
+        desk.spotAt = { _ in
+            Task {
+                try? await Task.sleep(for: .milliseconds(50))
+                return .blank
+            }
+        }
+        let right = NSPoint(x: 1000, y: 300)
+        for count in 1...3 {
+            desk.follow(mouse(.leftMouseDown, at: right, clicks: count, in: desk))
+            desk.follow(mouse(.leftMouseUp, at: right, clicks: count, in: desk), doubleClickInterval: 10)
+        }
+        await settle()
+        #expect(turns() == [.forward, .forward, .forward])
+    }
+
+    /// A quick run that started on a margin keeps turning when the new page has text under the pointer.
+    @Test func aRunThatTurnedKeepsTurningOverText() async {
+        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620))
+        var spots: [EdgeSpot] = [.blank, .text, .text]
+        desk.spotAt = { _ in
+            let spot = spots.removeFirst()
+            return Task { spot }
+        }
+        let right = NSPoint(x: 1000, y: 300)
+        for count in 1...3 {
+            desk.follow(mouse(.leftMouseDown, at: right, clicks: count, in: desk))
+            desk.follow(mouse(.leftMouseUp, at: right, clicks: count, in: desk), doubleClickInterval: 10)
+            await settle()
+        }
+        #expect(turns() == [.forward, .forward, .forward])
+    }
+
+    /// A blank click answered late doesn't turn the page under a drag that started meanwhile.
+    @Test func aLateTurnDoesntLandInADrag() async {
+        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620))
+        desk.spotAt = { _ in
+            Task {
+                try? await Task.sleep(for: .milliseconds(50))
+                return .blank
+            }
+        }
+        let left = NSPoint(x: 40, y: 300)
+        desk.follow(mouse(.leftMouseDown, at: left, in: desk))
+        desk.follow(mouse(.leftMouseUp, at: left, in: desk), doubleClickInterval: 10)
+        desk.follow(mouse(.leftMouseDown, at: NSPoint(x: 524, y: 300), in: desk))
+        desk.follow(mouse(.leftMouseDragged, at: NSPoint(x: 700, y: 300), in: desk))
+        await settle()
+        #expect(turns().isEmpty)
+    }
+
+    /// A link or a highlight has the click, so the page never turns for it: not even once a link has
+    /// shown another page under the pointer.
+    @Test func aClickThePageTakesNeverTurns() async {
+        let (desk, turns) = edgeDesk(NSRect(x: 0, y: 0, width: 1048, height: 620), spot: .own)
+        await click(desk, at: NSPoint(x: 1000, y: 300))
+        #expect(turns().isEmpty)
+    }
+
+    /// What's under the click is asked as the button goes down, before a link can change the page.
+    @Test func theSpotIsAskedOnThePress() async {
+        let frame = NSRect(x: 0, y: 0, width: 1048, height: 620)
+        let (desk, turns) = edgeDesk(frame, spot: .blank)
+        var asked: [NSPoint] = []
+        var spot = EdgeSpot.own
+        desk.spotAt = { point in
+            asked.append(point)
+            let answer = spot
+            return Task { answer }
+        }
+        let right = NSPoint(x: 1000, y: 300)
+        desk.follow(mouse(.leftMouseDown, at: right, in: desk))
+        #expect(asked == [right])
+        spot = .blank
+        desk.follow(mouse(.leftMouseUp, at: right, in: desk), doubleClickInterval: 0)
+        await settle()
+        #expect(asked == [right])
+        #expect(turns().isEmpty)
+    }
+
+    /// A turn that's waiting out the double-click time goes when the reader moves on, but not for a
+    /// press on the toolbar.
+    @Test func aWaitingTurnCanBeDropped() async {
+        let frame = NSRect(x: 0, y: 0, width: 1048, height: 620)
+        let (desk, turns) = edgeDesk(frame, spot: .text)
+        let toolbar = NSView(frame: NSRect(x: 30, y: 560, width: 300, height: 40))
+        desk.addSubview(toolbar)
+        desk.chrome = [toolbar]
+        let right = NSPoint(x: 1000, y: 300)
+
+        desk.follow(mouse(.leftMouseDown, at: right, in: desk))
+        desk.follow(mouse(.leftMouseUp, at: right, in: desk), doubleClickInterval: 0.1)
+        await Task.yield()
+        desk.follow(mouse(.leftMouseDown, at: NSPoint(x: 40, y: 570), clicks: 2, in: desk))
+        desk.follow(mouse(.leftMouseUp, at: NSPoint(x: 40, y: 570), clicks: 2, in: desk))
+        await settle()
+        #expect(turns() == [.forward])
+
+        desk.follow(mouse(.leftMouseDown, at: right, in: desk))
+        desk.follow(mouse(.leftMouseUp, at: right, in: desk), doubleClickInterval: 0.1)
+        await Task.yield()
+        desk.cancelEdgeTurn()
+        await settle()
+        #expect(turns() == [.forward])
+    }
+
+    @Test func whatAnEdgeClickDoesGoesByWhatsUnderIt() {
+        #expect(EdgeClick.turn(for: .own, clickCount: 1) == .none)
+        #expect(EdgeClick.turn(for: .blank, clickCount: 1) == .now)
+        #expect(EdgeClick.turn(for: .blank, clickCount: 3) == .now)
+        #expect(EdgeClick.turn(for: .text, clickCount: 1) == .afterDoubleClick)
+        #expect(EdgeClick.turn(for: .text, clickCount: 2) == .none)
+        #expect(EdgeClick.turn(for: .text, clickCount: 2, runHasTurned: true) == .now)
+        #expect(EdgeClick.turn(for: .text, clickCount: 1, runHasTurned: true) == .afterDoubleClick)
+        #expect(EdgeClick.turn(for: .own, clickCount: 2, runHasTurned: true) == .none)
+    }
+
     @Test func aClickTrembleIsStillAClick() {
         var click = EdgeClick()
         click.press(at: NSPoint(x: 40, y: 300), direction: .backward, clickCount: 1, isPlain: true)
         click.drag(to: NSPoint(x: 42, y: 302))
-        #expect(click.release(at: NSPoint(x: 43, y: 301), clickCount: 1)?.0 == .backward)
+        #expect(click.release(at: NSPoint(x: 43, y: 301))?.direction == .backward)
         click.press(at: NSPoint(x: 40, y: 300), direction: .backward, clickCount: 1, isPlain: true)
         click.drag(to: NSPoint(x: 50, y: 300))
         click.drag(to: NSPoint(x: 40, y: 300))
-        #expect(click.release(at: NSPoint(x: 40, y: 300), clickCount: 1) == nil)
+        #expect(click.release(at: NSPoint(x: 40, y: 300)) == nil)
     }
 
-    private func edgeDesk(_ frame: NSRect) -> (DeskView, () -> [TurnDirection]) {
+    private func edgeDesk(_ frame: NSRect, spot: EdgeSpot = .blank) -> (DeskView, () -> [TurnDirection]) {
         let desk = DeskView(frame: frame, bookFrame: frame.insetBy(dx: 34, dy: 34))
         var turns: [TurnDirection] = []
-        desk.onEdgeClick = { direction, _ in turns.append(direction) }
+        desk.onEdgeClick = { turns.append($0) }
+        desk.spotAt = { _ in Task { spot } }
         return (desk, { turns })
     }
 

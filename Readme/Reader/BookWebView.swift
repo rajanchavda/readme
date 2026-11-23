@@ -313,26 +313,45 @@ final class BookWebView: NSView {
         _ = try? await call("await readmeBridge.removeHighlight(cfi)", arguments: ["cfi": cfi], as: Bool.self)
     }
 
-    /// Follows the link at `point`, in this view's coordinates, if there's one there. True if there was.
-    func followLink(at point: NSPoint) async -> Bool {
+    /// How long an edge click waits to hear what's under it before it leaves the page alone.
+    static let spotTimeout: Duration = .milliseconds(500)
+
+    /// What's under `point`, in this view's coordinates, for a click near the page's edge. The question
+    /// goes to the page before this returns, so ask as the button goes down: it then reaches the page
+    /// ahead of the click, which may follow a link to another page. No answer, or a late one, is taken
+    /// as the page's own click, so the page doesn't turn for it.
+    func spot(at point: NSPoint) -> Task<EdgeSpot, Never> {
         let local = webView.convert(point, from: self)
         let y = webView.isFlipped ? local.y : webView.bounds.height - local.y
-        let followed = try? await call(
-            "return readmeBridge.followLinkAt(x, y)",
-            arguments: ["x": Double(local.x), "y": Double(y)],
-            as: Bool.self)
-        return followed ?? false
+        let (answers, answer) = AsyncStream.makeStream(of: EdgeSpot.self)
+        // Wrapped as `call` wraps its scripts, so the page always answers with a string: WebKit's
+        // overlay traps on a call that answers with neither a result nor an error.
+        webView.callAsyncJavaScript(
+            "return JSON.stringify({ value: globalThis.readmeBridge?.spotAt(x, y) ?? null })",
+            arguments: ["x": Double(local.x), "y": Double(y)], in: nil, in: .page
+        ) { result in
+            answer.yield(Self.spot(fromReply: try? result.get()))
+            answer.finish()
+        }
+        let timer = Task {
+            try? await Task.sleep(for: Self.spotTimeout)
+            answer.yield(.own)
+            answer.finish()
+        }
+        return Task {
+            defer { timer.cancel() }
+            for await spot in answers { return spot }
+            return .own
+        }
     }
 
-    /// Whether a click at `point` is the page's own, as one on a link or a highlight is.
-    func takesClick(at point: NSPoint) async -> Bool {
-        let local = webView.convert(point, from: self)
-        let y = webView.isFlipped ? local.y : webView.bounds.height - local.y
-        let taken = try? await call(
-            "return readmeBridge.takesClickAt(x, y)",
-            arguments: ["x": Double(local.x), "y": Double(y)],
-            as: Bool.self)
-        return taken ?? false
+    /// The spot in `spot(at:)`'s reply, or the page's own click for anything else.
+    nonisolated static func spot(fromReply reply: Any?) -> EdgeSpot {
+        guard let json = (reply as? String)?.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let value = object["value"] as? String
+        else { return .own }
+        return EdgeSpot(rawValue: value) ?? .own
     }
 
     func clearSelection() async {
