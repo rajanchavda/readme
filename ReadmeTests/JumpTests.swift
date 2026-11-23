@@ -56,8 +56,9 @@ private struct Started {
         try await expectCurlsMatchTheBook(turns, [.forward, .backward])
     }
 
-    /// An edge click asks the page first, as links such as the contents' page numbers lie there too.
-    @Test func aClickOnALinkIsFollowedAndAClickBesideOneIsNot() async throws {
+    /// An edge click asks the page what's under it, as links such as the contents' page numbers lie
+    /// there too, and text a double click would select.
+    @Test func theSpotTellsALinkFromTextAndFromNothing() async throws {
         defer { window.orderOut(nil) }
         _ = try await openWithFullBuffer()
         let spot = try #require(try await view.call("""
@@ -67,21 +68,28 @@ private struct Started {
                 const r = p.getClientRects()[0]
                 return r && r.left + frame.left >= 0 && r.right + frame.left <= innerWidth
             })
-            const link = doc.createElement('a')
-            link.setAttribute('href', 'ch20.xhtml')
-            while (shown.firstChild) link.append(shown.firstChild)
-            shown.append(link)
-            const r = link.getClientRects()[0]
+            const span = doc.createElement('span')
+            span.id = 'edge-spot'
+            while (shown.firstChild) span.append(shown.firstChild)
+            shown.append(span)
+            const r = span.getClientRects()[0]
             return { x: r.left + frame.left + r.width / 2, y: r.top + frame.top + r.height / 2 }
             """, as: [String: Double].self))
         let x = try #require(spot["x"]), y = try #require(spot["y"])
         let point = { (y: Double) in NSPoint(x: x, y: view.isFlipped ? y : view.bounds.height - y) }
 
-        #expect(await view.followLink(at: point(1)) == false)
-        let before = view.currentLocation?.cfi
-        #expect(await view.followLink(at: point(y)))
-        try await waitWhile { view.currentLocation?.cfi == before }
-        #expect(view.currentLocation?.chapterTitle == "Chapter 20")
+        #expect(await view.spot(at: point(1)).value == .blank)
+        #expect(await view.spot(at: point(y)).value == .text)
+        _ = try await view.call("""
+            const doc = readmeBridge.currentDocument()
+            const span = doc.getElementById('edge-spot')
+            const link = doc.createElement('a')
+            link.setAttribute('href', 'ch20.xhtml')
+            while (span.firstChild) link.append(span.firstChild)
+            span.replaceWith(link)
+            return true
+            """, as: Bool.self)
+        #expect(await view.spot(at: point(y)).value == .own)
     }
 
     @Test func aLinkWithinTheChapterIsFollowedByTheCurl() async throws {

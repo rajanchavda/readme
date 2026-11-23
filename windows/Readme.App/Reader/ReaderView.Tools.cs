@@ -159,7 +159,9 @@ public sealed partial class ReaderView
     public void SetBehind(bool behind)
     {
         _isBehind = behind;
-        if (behind) SleepToolbar();
+        if (!behind) return;
+        SleepToolbar();
+        CancelEdgeTurn();
     }
 
     void Wake()
@@ -672,7 +674,22 @@ public sealed partial class ReaderView
     }
 
     /// <summary>A page is about to turn: the ribbon leaves it until the turn has landed.</summary>
-    void TurnBegan() => UpdateRibbon(animated: false, turning: true);
+    void TurnBegan()
+    {
+        UpdateRibbon(animated: false, turning: true);
+        DropSelection();
+    }
+
+    /// <summary>
+    /// Words selected and not marked aren't carried to another page, however the page turns, and the
+    /// highlight bar goes with them.
+    /// </summary>
+    void DropSelection()
+    {
+        var wasSelected = _selection != null;
+        HideBar();
+        if (wasSelected) _ = _book.ClearSelectionAsync();
+    }
 
     /// <summary>Shows the ribbon again, if the spread it lands on holds the marker, once every turn has landed.</summary>
     void TurnLanded()

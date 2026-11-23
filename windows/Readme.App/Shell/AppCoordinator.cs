@@ -122,6 +122,7 @@ sealed class AppCoordinator
             if ((change.DidPositionChange || change.DidSizeChange) && _window.AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Restored })
                 _restoredBounds = new RectInt32(_window.AppWindow.Position.X, _window.AppWindow.Position.Y, _window.AppWindow.Size.Width, _window.AppWindow.Size.Height);
         };
+        _window.Activated += (_, e) => _reader.WindowActivated(e.WindowActivationState != WindowActivationState.Deactivated);
         _window.Closed += (_, _) => _exit();
         Program.Activated += paths => _window.DispatcherQueue.TryEnqueue(() => _ = OpenFromOutsideAsync(paths));
     }

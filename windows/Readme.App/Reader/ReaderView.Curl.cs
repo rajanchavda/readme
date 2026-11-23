@@ -105,6 +105,8 @@ public sealed partial class ReaderView
     {
         if (signal is SwipeSignal.Start)
         {
+            // The swipe turns the page, so an edge click's turn still waiting would be one too many.
+            CancelEdgeTurn();
             _places.Turned();
             HideBar();
         }
