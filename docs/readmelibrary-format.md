@@ -48,6 +48,7 @@ decoder refuses fractional seconds, so none are written. A UUID is written in up
 | `addedAt` | date | |
 | `lastReadAt` | date, optional | |
 | `pinnedAt` | date, optional | When it was pinned to the front of the shelf. Absent in bundles from before pins |
+| `collections` | array of strings, optional | The names of the collections it's in, matched ignoring case and accents. Absent when it's in none, and in bundles from before collections |
 
 **`highlights.json`**: an array of highlights, as each app keeps them: `id` (UUID), `cfi`, `text`,
 `chapterTitle` (optional), `fraction` (0 to 1), `created` (date). Possibly empty.

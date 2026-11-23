@@ -35,7 +35,7 @@ struct LibraryExporter {
                 id: book.id,
                 info: BundledBook(
                     title: book.title, author: book.author, addedAt: book.addedAt, lastReadAt: book.lastReadAt,
-                    pinnedAt: book.pinnedAt),
+                    pinnedAt: book.pinnedAt, collections: collectionNames(of: book)),
                 epub: file,
                 highlights: await store.highlights.highlights(bookID: book.id),
                 marker: await store.markers.marker(bookID: book.id),
@@ -53,5 +53,12 @@ struct LibraryExporter {
         }.value
         if let result { throw result }
         return ExportSummary(exported: items.count, missing: missing)
+    }
+
+    /// The names of the book's collections in order, or nil when it's in none, so the key is left out.
+    private func collectionNames(of book: Book) -> [String]? {
+        let names = book.collectionIDs.compactMap { store.collection(id: $0)?.name }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        return names.isEmpty ? nil : names
     }
 }
