@@ -415,3 +415,95 @@ public sealed class SpineShadowTests
         Assert.IsTrue(SpineShadow.ShareAt(5) > SpineShadow.ShareAt(10));
     }
 }
+
+/// <summary>Ported from the edge-click tests in ReaderWindowTests.swift.</summary>
+[TestClass]
+public sealed class EdgeClickTests
+{
+    [TestMethod]
+    public void TheOuterFifthOfTheBookTurns()
+    {
+        Assert.AreEqual(TurnDirection.Backward, EdgeClick.TurnAt(10, 300, 1000, 600));
+        Assert.AreEqual(TurnDirection.Forward, EdgeClick.TurnAt(990, 300, 1000, 600));
+        Assert.IsNull(EdgeClick.TurnAt(500, 300, 1000, 600));
+        Assert.IsNull(EdgeClick.TurnAt(-1, 300, 1000, 600));
+        Assert.IsNull(EdgeClick.TurnAt(10, 601, 1000, 600));
+    }
+
+    [TestMethod]
+    public void WhatAnEdgeClickDoesGoesByWhatsUnderIt()
+    {
+        Assert.AreEqual(EdgeTurn.None, EdgeClick.TurnFor(EdgeSpot.Own, 1));
+        Assert.AreEqual(EdgeTurn.Now, EdgeClick.TurnFor(EdgeSpot.Blank, 1));
+        Assert.AreEqual(EdgeTurn.Now, EdgeClick.TurnFor(EdgeSpot.Blank, 3));
+        Assert.AreEqual(EdgeTurn.AfterDoubleClick, EdgeClick.TurnFor(EdgeSpot.Text, 1));
+        Assert.AreEqual(EdgeTurn.None, EdgeClick.TurnFor(EdgeSpot.Text, 2));
+        Assert.AreEqual(EdgeTurn.Now, EdgeClick.TurnFor(EdgeSpot.Text, 2, runHasTurned: true));
+        Assert.AreEqual(EdgeTurn.None, EdgeClick.TurnFor(EdgeSpot.Own, 2, runHasTurned: true));
+    }
+
+    [TestMethod]
+    public void OnlyAPlainClickOnAnEdgeTurns()
+    {
+        var click = new EdgeClick();
+        click.Press(10, 300, TurnDirection.Backward, 1, isPlain: true, EdgeSpot.Text);
+        Assert.AreEqual((TurnDirection.Backward, EdgeTurn.AfterDoubleClick), click.Release(10, 300));
+
+        click.Press(10, 300, TurnDirection.Backward, 1, isPlain: true, EdgeSpot.Text);
+        click.Drag(300, 300);
+        Assert.IsNull(click.Release(300, 300), "a drag selects");
+
+        for (var count = 2; count <= 3; count++)
+        {
+            click.Press(990, 300, TurnDirection.Forward, count, isPlain: true, EdgeSpot.Text);
+            Assert.IsNull(click.Release(990, 300), "a double or triple click on text selects");
+        }
+
+        click.Press(990, 300, TurnDirection.Forward, 1, isPlain: false, EdgeSpot.Text);
+        Assert.IsNull(click.Release(990, 300), "Shift extends a selection");
+
+        click.Press(500, 300, null, 1, isPlain: true, EdgeSpot.Blank);
+        Assert.IsNull(click.Release(500, 300), "the middle of the book doesn't turn");
+
+        click.Press(990, 300, TurnDirection.Forward, 1, isPlain: true, EdgeSpot.Own);
+        Assert.IsNull(click.Release(990, 300), "a link or a highlight has the click");
+    }
+
+    [TestMethod]
+    public void QuickClicksOnABlankEdgeEachTurn()
+    {
+        var click = new EdgeClick();
+        for (var count = 1; count <= 3; count++)
+        {
+            click.Press(990, 300, TurnDirection.Forward, count, isPlain: true, EdgeSpot.Blank);
+            Assert.AreEqual((TurnDirection.Forward, EdgeTurn.Now), click.Release(990, 300));
+        }
+    }
+
+    [TestMethod]
+    public void ARunThatTurnedKeepsTurningOverText()
+    {
+        var click = new EdgeClick();
+        click.Press(990, 300, TurnDirection.Forward, 1, isPlain: true, EdgeSpot.Blank);
+        Assert.AreEqual((TurnDirection.Forward, EdgeTurn.Now), click.Release(990, 300));
+        click.Press(990, 300, TurnDirection.Forward, 2, isPlain: true, EdgeSpot.Text);
+        Assert.AreEqual((TurnDirection.Forward, EdgeTurn.Now), click.Release(990, 300), "the new page's text doesn't stop the run");
+        click.Press(990, 300, TurnDirection.Forward, 1, isPlain: true, EdgeSpot.Text);
+        Assert.AreEqual((TurnDirection.Forward, EdgeTurn.AfterDoubleClick), click.Release(990, 300), "a new run starts afresh");
+        click.Press(990, 300, TurnDirection.Forward, 2, isPlain: true, EdgeSpot.Text);
+        Assert.IsNull(click.Release(990, 300), "a double click on text that started there selects");
+    }
+
+    [TestMethod]
+    public void AClickTrembleIsStillAClick()
+    {
+        var click = new EdgeClick();
+        click.Press(40, 300, TurnDirection.Backward, 1, isPlain: true, EdgeSpot.Blank);
+        click.Drag(42, 302);
+        Assert.AreEqual(TurnDirection.Backward, click.Release(43, 301)?.Direction);
+        click.Press(40, 300, TurnDirection.Backward, 1, isPlain: true, EdgeSpot.Blank);
+        click.Drag(50, 300);
+        click.Drag(40, 300);
+        Assert.IsNull(click.Release(40, 300));
+    }
+}

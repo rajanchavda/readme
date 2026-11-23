@@ -133,4 +133,30 @@ private func fixture(_ name: String) throws -> URL {
         await waitFor { clicked != nil }
         #expect(clicked == info.cfi)
     }
+
+    /// An edge click on a highlight shows it, so the app mustn't turn the page for it too.
+    @Test func aHighlightTakesItsClick() async throws {
+        _ = try await view.open(fixture("long.epub"), at: nil)
+        var heard: BookWebView.SelectionInfo?
+        view.onSelection = { heard = $0 ?? heard }
+        try await selectFirstWords()
+        await waitFor { heard != nil }
+        let info = try #require(heard)
+        let point = { (x: Double, y: Double) in
+            NSPoint(x: x, y: self.view.isFlipped ? y : self.view.bounds.height - y)
+        }
+        let middle = point(info.rect.midX, info.rect.midY)
+        let below = point(info.rect.midX, info.rect.maxY + 200)
+        // While words are selected, a click anywhere only puts them away.
+        #expect(await view.spot(at: below).value == .own)
+        await view.clearSelection()
+        #expect(await view.spot(at: middle).value == .text)
+        await view.addHighlight(info.cfi)
+        #expect(await view.spot(at: middle).value == .own)
+        #expect(await view.spot(at: below).value != .own)
+        // No bridge, a script error or a stray answer leaves the page alone.
+        #expect(BookWebView.spot(fromReply: nil) == .own)
+        #expect(BookWebView.spot(fromReply: #"{"value":null}"#) == .own)
+        #expect(BookWebView.spot(fromReply: #"{"value":"blank"}"#) == .blank)
+    }
 }

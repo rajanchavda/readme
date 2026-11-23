@@ -120,6 +120,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var isFullscreen = false
     private var keyMonitor: Any?
     private var scrollMonitor: Any?
+    private var clickMonitor: Any?
+    /// The left button went down where it's no click on the page, as one that brings the window
+    /// forward is, so it's ignored until it's let go.
+    private var ignoresClick = false
     private var opening: Task<Void, Never>?
     /// The book being opened, until it's settled at its place.
     private var openingBook: BookWebView?
@@ -239,12 +243,18 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func wire() {
-        desk.onEdgeClick = { [weak self] direction, point in self?.edgeClicked(direction, at: point) }
+        desk.onEdgeClick = { [weak self] direction in self?.edgeClicked(direction) }
+        desk.spotAt = { [weak self] point in
+            guard let self, let book = self.session?.book else { return Task { .own } }
+            return book.spot(at: book.convert(point, from: self.desk))
+        }
         desk.onSwipe = { [weak self] signal in
             guard let self, !self.isCovered, let session = self.session else { return }
             // A swipe may turn the page, which is then where the reader wants to stay.
             switch signal {
             case .start:
+                // The swipe turns the page, so an edge click's turn still waiting would be one too many.
+                self.desk.cancelEdgeTurn()
                 self.closeShortcuts()
                 self.places.turned()
                 self.turnBegan()
@@ -310,6 +320,13 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         // A monitor, because the web view takes keys once it's been clicked.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handle(event) == true ? nil : event
+        }
+        // A monitor, because the web view takes clicks on the book, and should: they select its text.
+        clickMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            self?.followClick(event)
+            return event
         }
         // A monitor, because the web view takes scrolling over the book. Nothing in it scrolls, as
         // the book's in pages.
@@ -478,6 +495,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         desk.addSubview(ribbon, positioned: .below, relativeTo: curl)
         let cache = SpreadCache(visible: book)
         let turns = TurnCoordinator(book: book, cache: cache, curl: curl)
+        desk.cancelEdgeTurn()
         session = Session(book: book, curl: curl, cache: cache, turns: turns, record: record)
         openingBook = book
         places.moved(to: nil)
@@ -497,6 +515,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         // it lands.
         book.onLink = { [weak self, weak book] _ in
             guard let self, let book, self.session?.book === book else { return }
+            // An edge click on a link that's still waiting to turn the page would turn the new one.
+            self.desk.cancelEdgeTurn()
             self.places.turned()
         }
         hint.isHidden = true
@@ -601,6 +621,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private func closeFailed() {
         session?.book.removeFromSuperview()
         session?.curl.removeFromSuperview()
+        desk.cancelEdgeTurn()
         session = nil
         hidePlaceholder()
         setBookMarker(nil)
@@ -634,6 +655,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         closeSearch()
         closeShortcuts()
         desk.abandonSwipe()
+        desk.cancelEdgeTurn()
         sleep()
         if let window, window.firstResponder !== window { window.makeFirstResponder(nil) }
         showTrafficLights(true, animated: animated)
@@ -854,6 +876,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     func perform(_ command: ReaderCommand) {
         // Over the library, only what's about the window does anything.
         if isShowingLibrary && command != .toggleFullscreen && command != .showLibrary { return }
+        // An edge click's turn still waiting would land after whatever the command does.
+        desk.cancelEdgeTurn()
         // The shortcuts are put away once one is used.
         if command != .showShortcuts { closeShortcuts() }
         switch command {
@@ -1059,6 +1083,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
             return false
         }
         if isShortcutsShown, action != .command(.showShortcuts), action != .ignore { closeShortcuts() }
+        // A key that does something comes after an edge click's turn still waiting, which is dropped.
+        if action != .ignore { desk.cancelEdgeTurn() }
         switch action {
         case let .command(command):
             perform(command)
@@ -1076,16 +1102,23 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
-    /// A click on a page's edge follows a link there, such as a page number in the contents, and
-    /// turns the page only if there's none.
-    private func edgeClicked(_ direction: TurnDirection, at point: NSPoint) {
-        guard !isCovered, let book = session?.book else { return }
-        Task { [weak self, weak book] in
-            guard let book else { return }
-            let followed = await book.followLink(at: book.convert(point, from: self?.desk))
-            guard let self, !followed, self.session?.book === book else { return }
-            self.turn(direction)
+    /// Passes the left button on to the desk, which turns the page for a plain click near an edge. A
+    /// click that brings the window forward is only that, as AppKit has it for views, and so is one on
+    /// a window with a sheet, or with the library over the book.
+    private func followClick(_ event: NSEvent) {
+        guard let window, event.window === window else { return }
+        if event.type == .leftMouseDown {
+            ignoresClick = !window.isKeyWindow || window.attachedSheet != nil || isShowingLibrary
         }
+        guard !ignoresClick else { return }
+        desk.follow(event)
+    }
+
+    /// A click on a page's edge turns the page. The desk has already left alone one the page took
+    /// itself: on a link, such as a page number in the contents, or on a highlight.
+    private func edgeClicked(_ direction: TurnDirection) {
+        guard !isCovered, !isShowingLibrary, session != nil else { return }
+        turn(direction)
     }
 
     func turn(_ direction: TurnDirection, isRepeat: Bool = false) {
@@ -1103,6 +1136,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     /// take the reader back to a place captured before it landed.
     private func jump(_ go: @escaping (BookWebView) async -> ReaderLocation?) {
         guard let session else { return }
+        desk.cancelEdgeTurn()
+        dropSelection()
         closeContents()
         closePageField()
         closeSearch()
@@ -1490,6 +1525,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         turnWatch?.cancel()
         isTurning = true
         updateRibbon(animated: false)
+        dropSelection()
+    }
+
+    /// Words selected and not marked aren't carried to another page, however the page turns, and the
+    /// highlight bar goes with them.
+    private func dropSelection() {
+        guard !highlightBar.isHidden || selection != nil else { return }
+        let wasSelected = selection != nil
+        hideHighlightBar()
+        guard wasSelected, let book = session?.book else { return }
+        Task { await book.clearSelection() }
     }
 
     /// Shows the ribbon again, if the spread it lands on holds the marker, once every turn has landed.
@@ -1786,6 +1832,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Window
 
     func windowDidResize(_ notification: Notification) {
+        // The page under an edge click's turn still waiting is being laid out again.
+        desk.cancelEdgeTurn()
         // A resize nobody's dragging, such as zooming, is a layout change too, and the book's landings
         // during it aren't the reader's moves.
         if !places.isChangingLayout {
@@ -1880,16 +1928,20 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
 
     /// Monitors would keep acting for a window that's gone. `show` puts them back.
     func windowWillClose(_ notification: Notification) {
-        for monitor in [keyMonitor, scrollMonitor].compactMap({ $0 }) {
+        desk.cancelEdgeTurn()
+        for monitor in [keyMonitor, scrollMonitor, clickMonitor].compactMap({ $0 }) {
             NSEvent.removeMonitor(monitor)
         }
         keyMonitor = nil
         scrollMonitor = nil
+        clickMonitor = nil
     }
 
     /// The end of a gesture may never reach a window that's lost the keyboard, and no page should stay
     /// held up for that.
     func windowDidResignKey(_ notification: Notification) {
+        // No page turns behind the reader's back once they've gone to another window.
+        desk.cancelEdgeTurn()
         desk.abandonSwipe()
         sleep()
     }

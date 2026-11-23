@@ -62,6 +62,12 @@ public sealed class BookWebView
     public event Action<double, double>? Wheel;
     /// <summary>The pointer moved over the page.</summary>
     public event Action? PointerMoved;
+    /// <summary>The left button pressed in the page: where, which click of a run it is, whether it was plain, and what's under it.</summary>
+    public event Action<double, double, int, bool, EdgeSpot>? Pressed;
+    /// <summary>The pointer pulled away from where the button went down, as a drag that selects does.</summary>
+    public event Action<double, double>? Dragged;
+    /// <summary>The left button let go in the page, and which click of a run it was.</summary>
+    public event Action<double, double, int>? Released;
     /// <summary>Words selected, or null once the selection's gone.</summary>
     public event Action<SelectionInfo?>? SelectionChanged;
     /// <summary>A click on a highlight, with its box in the view.</summary>
@@ -374,14 +380,6 @@ public sealed class BookWebView
         catch (Exception error) when (error is BookWebViewException or TimeoutException or InvalidOperationException) { return null; }
     }
 
-    /// <summary>Follows the link at a point in the view, if there is one, and says whether there was.</summary>
-    public async Task<bool> FollowLinkAtAsync(double x, double y)
-    {
-        if (!IsOpen) return false;
-        try { return (await CallAsync($"readmeBridge.followLinkAt({Js(x)}, {Js(y)})")).ValueKind == JsonValueKind.True; }
-        catch (Exception error) when (error is BookWebViewException or TimeoutException) { return false; }
-    }
-
     public async Task<(string? Title, string? Author)> BookInfoAsync()
     {
         try
@@ -542,6 +540,16 @@ public sealed class BookWebView
             case "pointer":
                 PointerMoved?.Invoke();
                 break;
+            case "press":
+                if (Point(message) is { } press)
+                    Pressed?.Invoke(press.X, press.Y, Count(message), Flag(message, "plain"), Spot(message));
+                break;
+            case "drag":
+                if (Point(message) is { } drag) Dragged?.Invoke(drag.X, drag.Y);
+                break;
+            case "release":
+                if (Point(message) is { } release) Released?.Invoke(release.X, release.Y, Count(message));
+                break;
             case "selection":
                 SelectionChanged?.Invoke(Selection(message));
                 break;
@@ -568,6 +576,21 @@ public sealed class BookWebView
         var label = Text(message, "label")?.Trim();
         return new SelectionInfo(cfi, text, fraction, string.IsNullOrEmpty(label) ? null : label, rect);
     }
+
+    static (double X, double Y)? Point(JsonElement message) =>
+        message.TryGetProperty("x", out var x) && x.ValueKind == JsonValueKind.Number
+        && message.TryGetProperty("y", out var y) && y.ValueKind == JsonValueKind.Number
+            ? (x.GetDouble(), y.GetDouble())
+            : null;
+
+    static int Count(JsonElement message) =>
+        message.TryGetProperty("count", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt32(out var n) ? n : 0;
+
+    /// <summary>What's under a press, or the page's own click when the page didn't say, so it doesn't turn, as on the Mac.</summary>
+    static EdgeSpot Spot(JsonElement message) =>
+        message.TryGetProperty("spot", out var spot) && spot.ValueKind == JsonValueKind.String
+            ? spot.GetString() switch { "blank" => EdgeSpot.Blank, "text" => EdgeSpot.Text, _ => EdgeSpot.Own }
+            : EdgeSpot.Own;
 
     static bool Flag(JsonElement message, string name) =>
         message.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;

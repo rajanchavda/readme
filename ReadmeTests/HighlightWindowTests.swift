@@ -38,6 +38,45 @@ private func fixture(_ name: String) throws -> URL {
         for _ in 0..<100 where !condition() { try? await Task.sleep(for: .milliseconds(50)) }
     }
 
+    /// Words selected and not marked are put away when the page turns, by a key as by a click.
+    @Test func aTurnPutsAnUnmarkedSelectionAway() async throws {
+        let folder = try positionsFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let reader = ReaderWindowController(
+            positions: PositionStore(directory: folder.appendingPathComponent("Positions")),
+            library: LibraryStore(directory: folder))
+        defer { reader.window?.close() }
+        await reader.open(try fixture("long.epub"), at: nil)
+        await reader.settled()
+        let book = try #require(reader.book)
+        _ = try await book.call("""
+            const doc = document.querySelector('foliate-view').renderer.getContents()[0].doc
+            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+            let node = walker.nextNode()
+            while (node && node.textContent.trim().length < 30) node = walker.nextNode()
+            const range = doc.createRange(); range.setStart(node, 0); range.setEnd(node, 20)
+            const selection = doc.getSelection(); selection.removeAllRanges(); selection.addRange(range)
+            doc.dispatchEvent(new Event('pointerup'))
+            return true
+            """, as: Bool.self)
+        await waitFor { reader.highlightBarMode != nil }
+        #expect(reader.highlightBarMode == .add)
+
+        reader.turn(.forward)
+        await waitFor { reader.highlightBarMode == nil }
+        #expect(reader.highlightBarMode == nil)
+        var selected: Bool? = true
+        for _ in 0..<100 where selected != false {
+            selected = try await book.call("""
+                return document.querySelector('foliate-view').renderer.getContents()
+                    .some(({ doc }) => doc.getSelection()?.isCollapsed === false)
+                """, as: Bool.self)
+            if selected != false { try? await Task.sleep(for: .milliseconds(50)) }
+        }
+        #expect(selected == false)
+        #expect(book.highlightCFIs.isEmpty)
+    }
+
     @Test func highlightingASelectionKeepsItAndListsIt() async throws {
         let saved = ReaderSettings.store.data(forKey: ReaderSettings.key)
         defer { ReaderSettings.store.set(saved, forKey: ReaderSettings.key) }
