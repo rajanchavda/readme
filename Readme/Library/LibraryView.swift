@@ -68,6 +68,8 @@ struct LibraryView: View {
                     onOpen: onOpen,
                     onRemove: { library.remove(id: $0.id) }, onExport: onExport
                 )
+                // Clear of the chip row, when there is one.
+                .padding(.top, library.collections.isEmpty ? 0 : 20)
                 .frame(minHeight: geometry.size.height, alignment: .top)
                 // A click on the shelf itself, not on a book, puts the selection down.
                 .background(Color.clear.contentShape(Rectangle()).onTapGesture { selection.clear() })
@@ -97,6 +99,16 @@ struct LibraryView: View {
                     .transition(.opacity)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if !library.collections.isEmpty {
+                GeometryReader { geometry in
+                    CollectionChips(library: library, collections: collections, available: chipRoom(geometry.size.width))
+                        .padding(.top, 12)
+                        .padding(.leading, ChipRowLayout.leading)
+                }
+                .animation(reduceMotion ? nil : ShelfStyle.lift, value: search.isOpen)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             ShelfSearchField(search: search) {
                 let found = Shelves.found(library, query: search.query, collection: activeID)
@@ -115,6 +127,14 @@ struct LibraryView: View {
         .animation(.easeOut(duration: 0.25), value: drops.working)
         .environment(\.colorScheme, .dark)
         .environmentObject(collections)
+        .alert(
+            deleteText?.title ?? "", isPresented: confirmingDelete, presenting: collections.confirmingDelete
+        ) { id in
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) { collections.delete(id, from: library) }
+        } message: { _ in
+            Text(deleteText?.message ?? "")
+        }
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
             guard !files.isEmpty else { return false }
@@ -135,6 +155,24 @@ struct LibraryView: View {
     }
 
     private var settle: Animation? { reduceMotion ? nil : ShelfStyle.settle }
+
+    /// The room the chip row has in a window `width` wide: up to the search, open or folded.
+    private func chipRoom(_ width: CGFloat) -> CGFloat {
+        width - ChipRowLayout.leading - (search.isOpen ? 240 : 28) - 20 - ChipRowLayout.searchGap
+    }
+
+    private var confirmingDelete: Binding<Bool> {
+        Binding(
+            get: { collections.confirmingDelete != nil },
+            set: { if !$0 { collections.confirmingDelete = nil } })
+    }
+
+    /// "Delete Self-Help?", with how many books stay, for the collection waiting on it.
+    private var deleteText: (title: String, message: String)? {
+        guard let collection = collections.confirmingDelete.flatMap(library.collection(id:)) else { return nil }
+        return ShelfCollections.deleteText(
+            name: collection.name, count: ShelfCollections.shown(library.books, in: collection.id).count)
+    }
 
     /// The collection showing, or nil for All, as it is when the one that was showing has gone.
     private var activeID: UUID? { collections.active(in: library)?.id }
