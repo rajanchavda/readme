@@ -61,6 +61,17 @@ final class ShelfSelection: ObservableObject {
         }
     }
 
+    /// The finished item for `count` books: it unmarks when every one of them is finished, and marks
+    /// them finished otherwise, leaving the dates of those that were.
+    static func finishMenuTitle(count: Int, allFinished: Bool) -> String {
+        switch (allFinished, count > 1) {
+        case (true, true): "Mark \(count) Books as Not Finished"
+        case (true, false): "Mark as Not Finished"
+        case (false, true): "Mark \(count) Books as Finished"
+        case (false, false): "Mark as Finished"
+        }
+    }
+
     /// Whether every one of the books is in the collection, which ticks it in Add to Collection. None
     /// at all isn't.
     static func isEveryBook(_ books: [Book], in collection: UUID) -> Bool {

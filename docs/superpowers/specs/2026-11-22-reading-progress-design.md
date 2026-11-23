@@ -2,7 +2,7 @@
 
 Show on the shelf how far through each book you are, mark books as finished (automatically, or by hand), and let the shelf filter to what you're reading and what you've finished.
 
-Status: spec, not built yet. Builds on the Collections spec (`2026-11-22-collections-design.md`), which adds the chip row.
+Status: built on `feat/reading-progress` (Nov 23, 2026). Builds on the Collections spec (`2026-11-22-collections-design.md`), which adds the chip row.
 
 ## Why
 
