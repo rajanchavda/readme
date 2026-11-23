@@ -14,12 +14,20 @@ enum CollectionSheet: Identifiable, Equatable {
     }
 }
 
-/// Which collection the shelf is showing, and what's being asked about one. Kept for as long as the
-/// app runs, never saved, so the app always opens on All.
+/// Which chip the shelf is showing, and what's being asked about a collection. Kept for as long as
+/// the app runs, never saved, so the app always opens on All.
 @MainActor
 final class ShelfCollections: ObservableObject {
-    /// The collection whose chip is on, or nil for All.
-    @Published var activeID: UUID?
+    /// The chip that's on.
+    @Published var filter: ShelfFilter = .all
+
+    /// The collection whose chip is on, or nil for any other chip. Setting nil goes back to All.
+    var activeID: UUID? {
+        get {
+            if case .collection(let id) = filter { id } else { nil }
+        }
+        set { filter = newValue.map(ShelfFilter.collection) ?? .all }
+    }
     @Published var sheet: CollectionSheet?
     /// A collection with books in it that's waiting on "Delete <Name>?".
     @Published var confirmingDelete: UUID?
@@ -29,8 +37,18 @@ final class ShelfCollections: ObservableObject {
         activeID.flatMap(library.collection(id:))
     }
 
+    /// What the shelf shows: the chip that's on, or All when its collection has gone or its built-in
+    /// chip has no books left and is hidden.
+    func filter(in library: LibraryStore) -> ShelfFilter {
+        switch filter {
+        case .all: .all
+        case .reading, .finished: Self.builtInChips(library.books).contains(filter) ? filter : .all
+        case .collection(let id): library.collection(id: id) == nil ? .all : filter
+        }
+    }
+
     func showAll() {
-        activeID = nil
+        filter = .all
     }
 
     /// Deletes the collection, and goes back to All if it was the one showing.
@@ -56,14 +74,34 @@ final class ShelfCollections: ObservableObject {
 
     /// The books as the shelf shows them, the current one first, for picking out a run with Shift-click:
     /// only those in `collection` while it's showing.
-    static func shelfOrder(_ library: LibraryStore, collection: UUID?) -> [String] {
-        shown([library.current].compactMap { $0 } + library.others, in: collection).map(\.id)
+    static func shelfOrder(_ library: LibraryStore, filter: ShelfFilter) -> [String] {
+        let current = [library.current].compactMap { $0 }
+        return (shown(current, filter: filter) + shown(library.others, filter: filter)).map(\.id)
     }
 
     /// The books in `collection`, in the order they came; all of them for nil.
     nonisolated static func shown(_ books: [Book], in collection: UUID?) -> [Book] {
-        guard let collection else { return books }
-        return books.filter { $0.collectionIDs.contains(collection) }
+        shown(books, filter: collection.map(ShelfFilter.collection) ?? .all)
+    }
+
+    /// The books `filter` shows, in the order they came, except finished ones, newest finished first.
+    nonisolated static func shown(_ books: [Book], filter: ShelfFilter) -> [Book] {
+        switch filter {
+        case .all: books
+        case .reading: books.filter { $0.isStarted && !$0.isFinished }
+        case .finished: books.filter(\.isFinished).sorted { $0.finishedAt! > $1.finishedAt! }
+        case .collection(let id): books.filter { $0.collectionIDs.contains(id) }
+        }
+    }
+
+    /// Reading and Finished, each only when it has books.
+    nonisolated static func builtInChips(_ books: [Book]) -> [ShelfFilter] {
+        [ShelfFilter.reading, .finished].filter { !shown(books, filter: $0).isEmpty }
+    }
+
+    /// The chip row shows once there's a collection, or once a book has been opened.
+    static func showsChipRow(_ library: LibraryStore) -> Bool {
+        !library.collections.isEmpty || library.books.contains(where: \.isStarted)
     }
 
     /// Esc over the shelf: it clears an open search, then the selection, then goes back to All.

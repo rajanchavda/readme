@@ -63,13 +63,13 @@ struct LibraryView: View {
             // the window's edge. The scroll view is made that much wider and the excess is clipped away.
             ScrollView(.vertical) {
                 Shelves(
-                    library: library, query: search.query, collection: activeID, size: geometry.size, animation: settle,
+                    library: library, query: search.query, filter: filter, size: geometry.size, animation: settle,
                     selection: selection,
                     onOpen: onOpen,
                     onRemove: { library.remove(id: $0.id) }, onExport: onExport
                 )
                 // Clear of the chip row, when there is one.
-                .padding(.top, library.collections.isEmpty ? 0 : 20)
+                .padding(.top, ShelfCollections.showsChipRow(library) ? 20 : 0)
                 .frame(minHeight: geometry.size.height, alignment: .top)
                 // A click on the shelf itself, not on a book, puts the selection down.
                 .background(Color.clear.contentShape(Rectangle()).onTapGesture { selection.clear() })
@@ -100,7 +100,7 @@ struct LibraryView: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            if !library.collections.isEmpty {
+            if ShelfCollections.showsChipRow(library) {
                 GeometryReader { geometry in
                     CollectionChips(library: library, collections: collections, available: chipRoom(geometry.size.width))
                         .padding(.top, 12)
@@ -111,7 +111,7 @@ struct LibraryView: View {
         }
         .overlay(alignment: .topTrailing) {
             ShelfSearchField(search: search) {
-                let found = Shelves.found(library, query: search.query, collection: activeID)
+                let found = Shelves.found(library, query: search.query, filter: filter)
                 if found.count == 1 { onOpen(found[0]) }
             }
             .padding(.top, 12)
@@ -177,13 +177,13 @@ struct LibraryView: View {
             name: collection.name, count: ShelfCollections.shown(library.books, in: collection.id).count)
     }
 
-    /// The collection showing, or nil for All, as it is when the one that was showing has gone.
-    private var activeID: UUID? { collections.active(in: library)?.id }
+    /// The chip showing, or All when its collection has gone or its built-in chip has emptied.
+    private var filter: ShelfFilter { collections.filter(in: library) }
 
     /// The quiet line in place of books: nothing matches the search, or the collection showing is empty.
     private var emptyLine: String? {
         if search.isActive {
-            let found = Shelves.found(library, query: search.query, collection: activeID)
+            let found = Shelves.found(library, query: search.query, filter: filter)
             return found.isEmpty
                 ? "No books match \u{201C}\(search.query.trimmingCharacters(in: .whitespaces))\u{201D}" : nil
         }
@@ -211,8 +211,8 @@ private struct Shelves: View {
     @ObservedObject var library: LibraryStore
     /// What's typed in the search field; blank shows every book.
     let query: String
-    /// The collection showing, or nil for All.
-    let collection: UUID?
+    /// The chip showing.
+    let filter: ShelfFilter
     let size: CGSize
     let animation: Animation?
     let selection: ShelfSelection
@@ -221,14 +221,14 @@ private struct Shelves: View {
     let onExport: ([Book]) -> Void
 
     var body: some View {
-        let others = ShelfSearch.filter(ShelfCollections.shown(library.others, in: collection), query: query)
+        let others = ShelfSearch.filter(ShelfCollections.shown(library.others, filter: filter), query: query)
         let rows = ShelfLayout.rows(others, width: size.width)
         let empties = max(0, ShelfLayout.emptyRowCount(height: size.height) - rows.count)
         let current = library.current
         // While searching, the current book's shelf stays only if that book is one it finds, and while a
-        // collection shows, only if the book is in it.
-        let showsCurrent = current.map { Self.shows($0, query: query, collection: collection) }
-            ?? (!Self.isSearching(query) && collection == nil)
+        // chip other than All shows, only if the book is under it.
+        let showsCurrent = current.map { Self.shows($0, query: query, filter: filter) }
+            ?? (!Self.isSearching(query) && filter == .all)
         LazyVStack(spacing: ShelfLayout.shelfGap) {
             if showsCurrent {
                 CurrentBookShelf(
@@ -257,17 +257,18 @@ private struct Shelves: View {
         // search finds, so books step aside and come back as it changes.
         .animation(
             animation,
-            value: library.books.map(\.id) + others.map(\.id) + [showsCurrent ? "current" : "", collection?.uuidString ?? ""])
+            value: library.books.map(\.id) + others.map(\.id) + [showsCurrent ? "current" : "", "\(filter)"])
     }
 
-    /// The books a search finds in the collection showing, the current one first, in the shelf's order.
-    static func found(_ library: LibraryStore, query: String, collection: UUID?) -> [Book] {
+    /// The books a search finds under the chip showing, the current one first, in the shelf's order.
+    static func found(_ library: LibraryStore, query: String, filter: ShelfFilter) -> [Book] {
         let current = library.current.map { [$0] } ?? []
-        return ShelfSearch.filter(ShelfCollections.shown(current + library.others, in: collection), query: query)
+        let shown = ShelfCollections.shown(current, filter: filter) + ShelfCollections.shown(library.others, filter: filter)
+        return ShelfSearch.filter(shown, query: query)
     }
 
-    private static func shows(_ book: Book, query: String, collection: UUID?) -> Bool {
-        ShelfSearch.matches(book, query: query) && !ShelfCollections.shown([book], in: collection).isEmpty
+    private static func shows(_ book: Book, query: String, filter: ShelfFilter) -> Bool {
+        ShelfSearch.matches(book, query: query) && !ShelfCollections.shown([book], filter: filter).isEmpty
     }
 
     private static func isSearching(_ query: String) -> Bool {

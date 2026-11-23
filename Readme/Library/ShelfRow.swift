@@ -72,7 +72,7 @@ struct ShelfBook: View {
 
     /// The books as the shelf shows them.
     private var order: [String] {
-        ShelfCollections.shelfOrder(library, collection: collections.active(in: library)?.id)
+        ShelfCollections.shelfOrder(library, filter: collections.filter(in: library))
     }
 
     var body: some View {
