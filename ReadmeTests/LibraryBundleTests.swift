@@ -97,6 +97,19 @@ func bundleDate(_ seconds: Double) -> Date { Date(timeIntervalSince1970: seconds
         #expect(throws: BundleError.notABundle) { try LibraryBundle.open(url) }
     }
 
+    @Test func collectionsKeyLeftOutWhenNone() throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let none = BundledBook(title: "Long", author: nil, addedAt: bundleDate(1000), lastReadAt: nil)
+        let json = String(decoding: try encoder.encode(none), as: UTF8.self)
+        #expect(!json.contains("collections"))
+        var some = none
+        some.collections = ["Self-Help"]
+        #expect(String(decoding: try encoder.encode(some), as: UTF8.self).contains(#""collections":["Self-Help"]"#))
+        let old = #"{"title":"Long","addedAt":"1970-01-01T00:16:40Z"}"#
+        #expect(try OpenedBundle.decoder.decode(BundledBook.self, from: Data(old.utf8)).collections == nil)
+    }
+
     @Test func messages() {
         #expect(BundleError.notABundle.message == "This file isn't a Readme library.")
         #expect(BundleError.newerVersion.message == "This library was made by a newer Readme. Update Readme to import it.")

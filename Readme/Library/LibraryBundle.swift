@@ -24,6 +24,9 @@ struct BundledBook: Codable, Equatable, Sendable {
     var lastReadAt: Date?
     /// When it was pinned to the front of the shelf. Bundles from before pins have none.
     var pinnedAt: Date? = nil
+    /// The names of the collections it's in, not their IDs, which mean something only in one
+    /// library. Left out when it's in none, and missing from bundles from before collections.
+    var collections: [String]? = nil
 }
 
 /// One book to put in a bundle.

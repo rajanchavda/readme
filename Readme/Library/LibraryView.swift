@@ -12,6 +12,8 @@ struct LibraryView: View {
     let onBundles: ([URL]) -> Void
     /// What's being looked for on the shelf.
     @ObservedObject var search: ShelfSearch
+    /// Which collection the shelf shows.
+    @ObservedObject var collections: ShelfCollections
 
     @StateObject private var drops: ShelfDrops
     @State private var targeted = false
@@ -25,7 +27,8 @@ struct LibraryView: View {
     /// With notices the app can add to, as it does when a book on the shelf won't open.
     init(
         library: LibraryStore, importer: BookImporter, drops: ShelfDrops, selection: ShelfSelection = ShelfSelection(),
-        search: ShelfSearch = ShelfSearch(), onOpen: @escaping (Book) -> Void, onExport: @escaping ([Book]) -> Void = { _ in },
+        search: ShelfSearch = ShelfSearch(), collections: ShelfCollections = ShelfCollections(),
+        onOpen: @escaping (Book) -> Void, onExport: @escaping ([Book]) -> Void = { _ in },
         onBundles: @escaping ([URL]) -> Void = { _ in }
     ) {
         self.library = library
@@ -35,6 +38,7 @@ struct LibraryView: View {
         self.onExport = onExport
         self.onBundles = onBundles
         self.search = search
+        self.collections = collections
         _drops = StateObject(wrappedValue: drops)
     }
 
@@ -47,6 +51,7 @@ struct LibraryView: View {
         onExport = { _ in }
         onBundles = { _ in }
         search = ShelfSearch()
+        collections = ShelfCollections()
         let drops = ShelfDrops(importAll: { await importer.importAll($0) })
         if !previewing.isEmpty { drops.showForPreview(previewing) }
         _drops = StateObject(wrappedValue: drops)
@@ -58,10 +63,13 @@ struct LibraryView: View {
             // the window's edge. The scroll view is made that much wider and the excess is clipped away.
             ScrollView(.vertical) {
                 Shelves(
-                    library: library, query: search.query, size: geometry.size, animation: settle, selection: selection,
+                    library: library, query: search.query, collection: activeID, size: geometry.size, animation: settle,
+                    selection: selection,
                     onOpen: onOpen,
                     onRemove: { library.remove(id: $0.id) }, onExport: onExport
                 )
+                // Clear of the chip row, when there is one.
+                .padding(.top, library.collections.isEmpty ? 0 : 20)
                 .frame(minHeight: geometry.size.height, alignment: .top)
                 // A click on the shelf itself, not on a book, puts the selection down.
                 .background(Color.clear.contentShape(Rectangle()).onTapGesture { selection.clear() })
@@ -80,18 +88,30 @@ struct LibraryView: View {
                 .animation(.easeOut(duration: 0.15), value: targeted)
         }
         .overlay(alignment: .top) {
-            if search.isActive && Shelves.found(library, query: search.query).isEmpty {
-                Text("No books match \u{201C}\(search.query.trimmingCharacters(in: .whitespaces))\u{201D}")
+            if let line = emptyLine {
+                Text(line)
                     .font(ShelfStyle.body(16, italic: true))
                     .foregroundStyle(ShelfStyle.text)
+                    .multilineTextAlignment(.center)
                     .padding(.top, 80)
+                    .padding(.horizontal, 40)
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if !library.collections.isEmpty {
+                GeometryReader { geometry in
+                    CollectionChips(library: library, collections: collections, available: chipRoom(geometry.size.width))
+                        .padding(.top, 12)
+                        .padding(.leading, ChipRowLayout.leading)
+                }
+                .animation(reduceMotion ? nil : ShelfStyle.lift, value: search.isOpen)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             ShelfSearchField(search: search) {
-                let found = Shelves.found(library, query: search.query)
+                let found = Shelves.found(library, query: search.query, collection: activeID)
                 if found.count == 1 { onOpen(found[0]) }
             }
             .padding(.top, 12)
@@ -106,6 +126,18 @@ struct LibraryView: View {
         .animation(.easeOut(duration: 0.25), value: drops.adding)
         .animation(.easeOut(duration: 0.25), value: drops.working)
         .environment(\.colorScheme, .dark)
+        .environmentObject(collections)
+        .sheet(item: $collections.sheet) { sheet in
+            CollectionNameSheet(sheet: sheet, library: library)
+        }
+        .alert(
+            deleteText?.title ?? "", isPresented: confirmingDelete, presenting: collections.confirmingDelete
+        ) { id in
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) { collections.delete(id, from: library) }
+        } message: { _ in
+            Text(deleteText?.message ?? "")
+        }
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
             guard !files.isEmpty else { return false }
@@ -127,6 +159,40 @@ struct LibraryView: View {
 
     private var settle: Animation? { reduceMotion ? nil : ShelfStyle.settle }
 
+    /// The room the chip row has in a window `width` wide: up to the search, open or folded.
+    private func chipRoom(_ width: CGFloat) -> CGFloat {
+        width - ChipRowLayout.leading - (search.isOpen ? 240 : 28) - 20 - ChipRowLayout.searchGap
+    }
+
+    private var confirmingDelete: Binding<Bool> {
+        Binding(
+            get: { collections.confirmingDelete != nil },
+            set: { if !$0 { collections.confirmingDelete = nil } })
+    }
+
+    /// "Delete Self-Help?", with how many books stay, for the collection waiting on it.
+    private var deleteText: (title: String, message: String)? {
+        guard let collection = collections.confirmingDelete.flatMap(library.collection(id:)) else { return nil }
+        return ShelfCollections.deleteText(
+            name: collection.name, count: ShelfCollections.shown(library.books, in: collection.id).count)
+    }
+
+    /// The collection showing, or nil for All, as it is when the one that was showing has gone.
+    private var activeID: UUID? { collections.active(in: library)?.id }
+
+    /// The quiet line in place of books: nothing matches the search, or the collection showing is empty.
+    private var emptyLine: String? {
+        if search.isActive {
+            let found = Shelves.found(library, query: search.query, collection: activeID)
+            return found.isEmpty
+                ? "No books match \u{201C}\(search.query.trimmingCharacters(in: .whitespaces))\u{201D}" : nil
+        }
+        if let active = collections.active(in: library), ShelfCollections.shown(library.books, in: active.id).isEmpty {
+            return ShelfCollections.emptyLine(name: active.name)
+        }
+        return nil
+    }
+
     private static func reservedScrollerWidth() -> CGFloat {
         NSScroller.preferredScrollerStyle == .legacy
             ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
@@ -145,6 +211,8 @@ private struct Shelves: View {
     @ObservedObject var library: LibraryStore
     /// What's typed in the search field; blank shows every book.
     let query: String
+    /// The collection showing, or nil for All.
+    let collection: UUID?
     let size: CGSize
     let animation: Animation?
     let selection: ShelfSelection
@@ -153,12 +221,14 @@ private struct Shelves: View {
     let onExport: ([Book]) -> Void
 
     var body: some View {
-        let others = ShelfSearch.filter(library.others, query: query)
+        let others = ShelfSearch.filter(ShelfCollections.shown(library.others, in: collection), query: query)
         let rows = ShelfLayout.rows(others, width: size.width)
         let empties = max(0, ShelfLayout.emptyRowCount(height: size.height) - rows.count)
         let current = library.current
-        // While searching, the current book's shelf stays only if that book is one it finds.
-        let showsCurrent = current.map { ShelfSearch.matches($0, query: query) } ?? !Self.isSearching(query)
+        // While searching, the current book's shelf stays only if that book is one it finds, and while a
+        // collection shows, only if the book is in it.
+        let showsCurrent = current.map { Self.shows($0, query: query, collection: collection) }
+            ?? (!Self.isSearching(query) && collection == nil)
         LazyVStack(spacing: ShelfLayout.shelfGap) {
             if showsCurrent {
                 CurrentBookShelf(
@@ -185,13 +255,19 @@ private struct Shelves: View {
         .frame(maxWidth: .infinity)
         // On the shelf's order too, so a book pinned or unpinned glides to its new place, and on what a
         // search finds, so books step aside and come back as it changes.
-        .animation(animation, value: library.books.map(\.id) + others.map(\.id) + [showsCurrent ? "current" : ""])
+        .animation(
+            animation,
+            value: library.books.map(\.id) + others.map(\.id) + [showsCurrent ? "current" : "", collection?.uuidString ?? ""])
     }
 
-    /// The books a search finds, the current one first, in the shelf's order.
-    static func found(_ library: LibraryStore, query: String) -> [Book] {
+    /// The books a search finds in the collection showing, the current one first, in the shelf's order.
+    static func found(_ library: LibraryStore, query: String, collection: UUID?) -> [Book] {
         let current = library.current.map { [$0] } ?? []
-        return ShelfSearch.filter(current + library.others, query: query)
+        return ShelfSearch.filter(ShelfCollections.shown(current + library.others, in: collection), query: query)
+    }
+
+    private static func shows(_ book: Book, query: String, collection: UUID?) -> Bool {
+        ShelfSearch.matches(book, query: query) && !ShelfCollections.shown([book], in: collection).isEmpty
     }
 
     private static func isSearching(_ query: String) -> Bool {

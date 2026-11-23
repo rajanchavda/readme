@@ -116,6 +116,7 @@ struct LibraryImporter {
         store.applyImported(id: id, addedAt: contents.info.addedAt, lastReadAt: contents.info.lastReadAt, location: contents.position)
         // Only a book new here takes the bundle's pin: how this shelf is arranged is this Mac's own.
         if let pinnedAt = contents.info.pinnedAt { store.restorePin(id: id, at: pinnedAt) }
+        store.joinCollections(named: contents.info.collections ?? [], id: id)
         await store.highlights.merge(contents.highlights, bookID: id)
         if let marker = contents.marker { await store.markers.setIfNone(marker, bookID: id) }
         if let position = contents.position, ImportMerge.isFurther(position, than: await store.positions.location(bookID: id)) {
@@ -137,6 +138,8 @@ struct LibraryImporter {
             further = position
         }
         store.applyImported(id: id, addedAt: nil, lastReadAt: contents.info.lastReadAt, location: further)
+        // Unlike pins, collections only add up: joining one moves nothing, and nothing here is taken away.
+        store.joinCollections(named: contents.info.collections ?? [], id: id)
         // The picture of where it was left may no longer be where it opens.
         if further != nil { await store.spreads.remove(bookID: id) }
         return true

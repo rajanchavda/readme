@@ -28,10 +28,11 @@ import Testing
 
     /// long.epub on Mac A with h, m and a place halfway, added at 1000 and read at 2000, exported.
     @discardableResult
-    private func exportFromA(pinnedAt: Date? = nil) async throws -> String {
+    private func exportFromA(pinnedAt: Date? = nil, collections: [String] = []) async throws -> String {
         let book = try await BookImporter(store: storeA).importBook(from: exportFixture("long.epub"))
         storeA.applyImported(id: book.id, addedAt: bundleDate(1000), lastReadAt: bundleDate(2000), location: nil)
         if let pinnedAt { storeA.restorePin(id: book.id, at: pinnedAt) }
+        storeA.joinCollections(named: collections, id: book.id)
         await storeA.highlights.add(h, bookID: book.id)
         await storeA.markers.set(m, bookID: book.id)
         await storeA.positions.save(bundlePlace(0.5), bookID: book.id)
@@ -100,6 +101,47 @@ import Testing
         _ = try await LibraryExporter(store: storeA).export(storeA.books, to: url)
         _ = await importerB.run(try await importerB.prepare(url), choice: choice)
         #expect(storeB.book(id: id)?.pinnedAt == bundleDate(4000))
+    }
+
+    /// The names of the collections the book is in on B.
+    private func collectionsOnB(_ id: String) -> Set<String> {
+        Set((storeB.book(id: id)?.collectionIDs ?? []).compactMap { storeB.collection(id: $0)?.name })
+    }
+
+    @Test func newBooksJoinTheirCollections() async throws {
+        defer { clean() }
+        let id = try await exportFromA(collections: ["Self-Help", "Investing"])
+        _ = await importerB.run(try await importerB.prepare(url), choice: .keepMine)
+        #expect(Set(storeB.collections.map(\.name)) == ["Self-Help", "Investing"])
+        #expect(collectionsOnB(id) == ["Self-Help", "Investing"])
+    }
+
+    @Test func namesMatchAcrossCase() async throws {
+        defer { clean() }
+        storeB.createCollection(name: "investing")
+        let id = try await exportFromA(collections: ["INVESTING"])
+        _ = await importerB.run(try await importerB.prepare(url), choice: .keepMine)
+        #expect(storeB.collections.map(\.name) == ["investing"])
+        #expect(collectionsOnB(id) == ["investing"])
+    }
+
+    @Test(arguments: [ImportChoice.keepMine, .combine])
+    func existingBooksAndCollections(choice: ImportChoice) async throws {
+        defer { clean() }
+        let id = try await exportFromA(collections: ["History"])
+        _ = try await haveOnB(fraction: 0.2)
+        storeB.joinCollections(named: ["Fiction"], id: id)
+        _ = await importerB.run(try await importerB.prepare(url), choice: choice)
+        // Combine gains the bundle's; keep mine leaves the book exactly as it was.
+        #expect(collectionsOnB(id) == (choice == .combine ? ["Fiction", "History"] : ["Fiction"]))
+    }
+
+    @Test func bundleWithoutCollections() async throws {
+        defer { clean() }
+        let id = try await exportFromA()
+        _ = await importerB.run(try await importerB.prepare(url), choice: .keepMine)
+        #expect(storeB.book(id: id)?.collectionIDs == [])
+        #expect(storeB.collections.isEmpty)
     }
 
     @Test func keepMineLeavesExistingBooksAlone() async throws {

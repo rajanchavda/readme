@@ -86,6 +86,8 @@ final class AppCoordinator {
     let selection = ShelfSelection()
     /// What's being looked for on the shelf.
     let search = ShelfSearch()
+    /// Which collection the shelf shows.
+    let collections: ShelfCollections
     let exporter: LibraryExporter
     let libraryImporter: LibraryImporter
     /// The books an import under way is combining into, which mustn't be opened until it's done.
@@ -111,12 +113,19 @@ final class AppCoordinator {
         self.positions = positions
         let importer = BookImporter(store: library)
         self.importer = importer
-        drops = ShelfDrops(importAll: { await importer.importAll($0) })
+        let collections = ShelfCollections()
+        self.collections = collections
+        drops = ShelfDrops(importAll: { urls in
+            let results = await importer.importAll(urls)
+            collections.addImported(results, to: library)
+            return results
+        })
         exporter = LibraryExporter(store: library)
         libraryImporter = LibraryImporter(store: library, importer: importer)
         reader = ReaderWindowController(defaults: defaults, positions: positions, library: library)
         let shelf = NSHostingView(rootView: LibraryView(
             library: library, importer: importer, drops: drops, selection: selection, search: search,
+            collections: collections,
             onOpen: { [weak self] book in
                 guard let self else { return }
                 Task { await self.open(book) }
@@ -142,7 +151,7 @@ final class AppCoordinator {
         reader.onMarkerChange = { [weak self] has in self?.state.hasMarker = has }
         reader.onLibraryEscape = { [weak self] in
             guard let self else { return }
-            ShelfSearch.escape(self.search) { self.selection.clear() }
+            ShelfCollections.escape(search: self.search, selection: self.selection, collections: self.collections)
         }
         reader.onLibraryFind = { [weak self] in self?.search.open() }
         state.hasBooks = !library.books.isEmpty
@@ -331,6 +340,8 @@ final class AppCoordinator {
             if choice == .combine { combiningIDs = Set(prepared.existingIDs) }
             drops.setWorking(ShelfDrops.workingLine("Importing", prepared.bundle.manifest.bookIDs.count))
             let summary = await libraryImporter.run(prepared, choice: choice)
+            // Books new here join the collection showing, or they'd seem not to have arrived.
+            collections.addImported(ids: prepared.newIDs, to: library)
             combiningIDs = []
             let waiting = waitingForCombine
             waitingForCombine = []
