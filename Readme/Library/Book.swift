@@ -16,4 +16,25 @@ struct Book: Codable, Identifiable, Equatable, Sendable {
     var chapterMinutesLeft: Double?
     /// When the reader pinned it to the front of the shelf, or nil if it isn't pinned.
     var pinnedAt: Date? = nil
+    /// The collections it's in. Library files from before collections have none.
+    var collectionIDs: [UUID] = []
+}
+
+extension Book {
+    /// Written out by hand only so that a missing `collectionIDs` reads as none, as the synthesized
+    /// decoder would refuse the whole library over it.
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        author = try c.decodeIfPresent(String.self, forKey: .author)
+        fileName = try c.decode(String.self, forKey: .fileName)
+        hasCover = try c.decode(Bool.self, forKey: .hasCover)
+        addedAt = try c.decode(Date.self, forKey: .addedAt)
+        lastReadAt = try c.decodeIfPresent(Date.self, forKey: .lastReadAt)
+        chapterTitle = try c.decodeIfPresent(String.self, forKey: .chapterTitle)
+        chapterMinutesLeft = try c.decodeIfPresent(Double.self, forKey: .chapterMinutesLeft)
+        pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt)
+        collectionIDs = try c.decodeIfPresent([UUID].self, forKey: .collectionIDs) ?? []
+    }
 }

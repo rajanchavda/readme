@@ -47,7 +47,8 @@ final class ShelfSearch: ObservableObject {
         query.split(whereSeparator: \.isWhitespace).map { fold(String($0)) }
     }
 
-    private nonisolated static func fold(_ text: String) -> String {
+    /// Text as it's compared: case and accents aside.
+    nonisolated static func fold(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 }

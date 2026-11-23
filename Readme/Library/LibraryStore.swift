@@ -1,13 +1,15 @@
 import Foundation
 import OSLog
 
-/// The books in the library, kept in `directory`: `library.json`, the copies in `Books` and the
-/// covers in `Covers`. Every change is written at once, replacing the file whole. A library file
+/// The books in the library, kept in `directory`: `library.json`, the collections in
+/// `collections.json`, the copies in `Books` and the covers in `Covers`. Every change is written at once, replacing the file whole. A library file
 /// that can't be read is as good as none. Files are written off the main thread, so a change is on
 /// disk a moment after it's made; `saved()` returns when it is.
 @MainActor
 final class LibraryStore: ObservableObject {
     @Published private(set) var books: [Book] = []
+    /// The reader's collections, by name.
+    @Published private(set) var collections: [BookCollection] = []
 
     private let directory: URL
     /// Where the reader left each book.
@@ -20,9 +22,8 @@ final class LibraryStore: ObservableObject {
     let spreads: LastSpreadCache
     private let now: () -> Date
     private var removing: Task<Void, Never>?
-    private let file: LibraryFile
-    private var unsaved: [Book]?
-    private var saving: Task<Void, Never>?
+    private let library: Writer<[Book]>
+    private let collectionsFile: Writer<[BookCollection]>
     /// Imports under way, by book ID, so the same book imported twice at once is imported once.
     var imports: [String: Task<Book, any Error>] = [:]
     private static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "LibraryStore")
@@ -41,8 +42,18 @@ final class LibraryStore: ObservableObject {
         self.positions = positions ?? PositionStore(directory: directory.appendingPathComponent("Positions", isDirectory: true))
         self.now = now
         spreads = LastSpreadCache(directory: directory.appendingPathComponent("LastSpreads", isDirectory: true))
-        file = LibraryFile(directory: directory)
+        library = Writer(JSONFile(directory: directory, name: "library.json"))
+        collectionsFile = Writer(JSONFile(directory: directory, name: "collections.json"))
         books = Self.load(from: directory.appendingPathComponent("library.json", isDirectory: false))
+        let (collections, readable) = Self.loadCollections(
+            from: directory.appendingPathComponent("collections.json", isDirectory: false))
+        self.collections = collections.sorted(by: Self.byName)
+        // A book pointing at a collection that's gone lets go of it, and the next save drops it. Not
+        // when the collections couldn't be read, though, or one bad file would empty every collection.
+        if readable {
+            let known = Set(collections.map(\.id))
+            for index in books.indices { books[index].collectionIDs.removeAll { !known.contains($0) } }
+        }
     }
 
     var booksDirectory: URL { directory.appendingPathComponent("Books", isDirectory: true) }
@@ -170,6 +181,86 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
+    // MARK: Collections
+
+    func collection(id: UUID) -> BookCollection? {
+        collections.first { $0.id == id }
+    }
+
+    /// The collection with this name, whatever its case and accents.
+    func collection(named name: String) -> BookCollection? {
+        let key = BookCollection.key(name)
+        return collections.first { BookCollection.key($0.name) == key }
+    }
+
+    /// Makes a collection, or, if one has this name already, whatever its case and accents, returns
+    /// that one. Nil for a name with nothing in it.
+    @discardableResult
+    func createCollection(name: String) -> BookCollection? {
+        guard let name = BookCollection.cleanName(name) else { return nil }
+        if let existing = collection(named: name) { return existing }
+        let collection = BookCollection(id: UUID(), name: name, createdAt: now())
+        collections = (collections + [collection]).sorted(by: Self.byName)
+        saveCollections()
+        return collection
+    }
+
+    /// False, changing nothing, for a name with nothing in it or one another collection has.
+    @discardableResult
+    func renameCollection(id: UUID, to name: String) -> Bool {
+        guard let name = BookCollection.cleanName(name),
+              let index = collections.firstIndex(where: { $0.id == id }),
+              collection(named: name).map({ $0.id == id }) ?? true
+        else { return false }
+        collections[index].name = name
+        collections.sort(by: Self.byName)
+        saveCollections()
+        return true
+    }
+
+    /// Takes the collection away, and every book out of it. The books stay in the library.
+    func deleteCollection(id: UUID) {
+        guard collections.contains(where: { $0.id == id }) else { return }
+        collections.removeAll { $0.id == id }
+        saveCollections()
+        var changed = false
+        for index in books.indices where books[index].collectionIDs.contains(id) {
+            books[index].collectionIDs.removeAll { $0 == id }
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    /// Puts the books in the collection, or takes them out. IDs not in the library are passed over.
+    func setCollection(_ id: UUID, member: Bool, ids: [String]) {
+        guard collection(id: id) != nil else { return }
+        var changed = false
+        for index in books.indices where ids.contains(books[index].id) {
+            let has = books[index].collectionIDs.contains(id)
+            if member && !has {
+                books[index].collectionIDs.append(id)
+                changed = true
+            } else if !member && has {
+                books[index].collectionIDs.removeAll { $0 == id }
+                changed = true
+            }
+        }
+        if changed { save() }
+    }
+
+    /// Puts the book in the collections with these names, making any there are none of. It's never
+    /// taken out of one, for an import.
+    func joinCollections(named names: [String], id bookID: String) {
+        for name in names {
+            guard let collection = createCollection(name: name) else { continue }
+            setCollection(collection.id, member: true, ids: [bookID])
+        }
+    }
+
+    private nonisolated static func byName(_ a: BookCollection, _ b: BookCollection) -> Bool {
+        a.name.localizedStandardCompare(b.name) == .orderedAscending
+    }
+
     func fileURL(for book: Book) -> URL {
         booksDirectory.appendingPathComponent(book.fileName, isDirectory: false)
     }
@@ -180,19 +271,26 @@ final class LibraryStore: ObservableObject {
 
     /// Returns once every change made so far is written.
     func saved() async {
-        await saving?.value
+        await library.saved()
+        await collectionsFile.saved()
     }
 
-    /// Of the changes waiting, only the newest is written.
     private func save() {
-        unsaved = books
-        guard saving == nil else { return }
-        saving = Task { [weak self, file] in
-            while let self, let snapshot = self.unsaved {
-                self.unsaved = nil
-                await file.write(snapshot)
-            }
-            self?.saving = nil
+        library.save(books)
+    }
+
+    private func saveCollections() {
+        collectionsFile.save(collections)
+    }
+
+    /// The collections, and whether the file could be read: a missing file can, as there are none yet.
+    private static func loadCollections(from file: URL) -> ([BookCollection], readable: Bool) {
+        guard let data = try? Data(contentsOf: file) else { return ([], !FileManager.default.fileExists(atPath: file.path)) }
+        do {
+            return (try JSONDecoder().decode([BookCollection].self, from: data), true)
+        } catch {
+            log.error("The collections file could not be read: \(String(describing: error), privacy: .public)")
+            return ([], false)
         }
     }
 
@@ -211,22 +309,53 @@ private extension Book {
     var recency: Date { lastReadAt ?? addedAt }
 }
 
-/// Writes `library.json`, whole and atomically, off the main thread.
-private actor LibraryFile {
-    private let directory: URL
-    private static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "LibraryStore")
+/// Keeps one file up to date: of the changes waiting, only the newest is written.
+@MainActor
+private final class Writer<Value: Encodable & Sendable> {
+    private let file: JSONFile
+    private var unsaved: Value?
+    private var saving: Task<Void, Never>?
 
-    init(directory: URL) {
-        self.directory = directory
+    init(_ file: JSONFile) {
+        self.file = file
     }
 
-    func write(_ books: [Book]) {
+    func save(_ value: Value) {
+        unsaved = value
+        guard saving == nil else { return }
+        saving = Task { [weak self, file] in
+            while let self, let snapshot = self.unsaved {
+                self.unsaved = nil
+                await file.write(snapshot)
+            }
+            self?.saving = nil
+        }
+    }
+
+    /// Returns once every change made so far is written.
+    func saved() async {
+        await saving?.value
+    }
+}
+
+/// Writes one of the library's files, whole and atomically, off the main thread.
+private actor JSONFile {
+    private let directory: URL
+    private let name: String
+    private static let log = Logger(subsystem: "com.rajanchavda.Readme", category: "LibraryStore")
+
+    init(directory: URL, name: String) {
+        self.directory = directory
+        self.name = name
+    }
+
+    func write(_ value: some Encodable & Sendable) {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(books)
-                .write(to: directory.appendingPathComponent("library.json", isDirectory: false), options: .atomic)
+            try JSONEncoder().encode(value)
+                .write(to: directory.appendingPathComponent(name, isDirectory: false), options: .atomic)
         } catch {
-            Self.log.error("Saving the library failed: \(String(describing: error), privacy: .public)")
+            Self.log.error("Saving \(self.name, privacy: .public) failed: \(String(describing: error), privacy: .public)")
         }
     }
 }
