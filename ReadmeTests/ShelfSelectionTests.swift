@@ -54,6 +54,13 @@ import Testing
         #expect(ShelfSelection.pinMenuTitle(count: 3, allPinned: true) == "Unpin 3 Books")
     }
 
+    @Test func finishMenuTitles() {
+        #expect(ShelfSelection.finishMenuTitle(count: 1, allFinished: false) == "Mark as Finished")
+        #expect(ShelfSelection.finishMenuTitle(count: 3, allFinished: false) == "Mark 3 Books as Finished")
+        #expect(ShelfSelection.finishMenuTitle(count: 1, allFinished: true) == "Mark as Not Finished")
+        #expect(ShelfSelection.finishMenuTitle(count: 3, allFinished: true) == "Mark 3 Books as Not Finished")
+    }
+
     @Test func clearEmptiesIt() {
         let selection = ShelfSelection()
         _ = selection.click("c", modifiers: .command, order: order)

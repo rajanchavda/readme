@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// The row of collection chips on the search's line: All, the collections by name, then +. Chips
-/// that don't fit go into a More menu, and the active one is always on the row.
+/// The row of chips on the search's line: All, Reading and Finished when they have books, the
+/// collections by name, then +. Chips that don't fit go into a More menu, and the active one is
+/// always on the row.
 struct CollectionChips: View {
     @ObservedObject var library: LibraryStore
     @ObservedObject var collections: ShelfCollections
@@ -10,8 +11,10 @@ struct CollectionChips: View {
     let available: CGFloat
 
     var body: some View {
-        let chips = [Chip.all] + library.collections.map(Chip.collection)
-        let activeIndex = chips.firstIndex { $0.id == collections.active(in: library)?.id } ?? 0
+        let chips = [Chip.all] + ShelfCollections.builtInChips(library.books).map(Chip.builtIn)
+            + library.collections.map(Chip.collection)
+        let active = collections.filter(in: library)
+        let activeIndex = chips.firstIndex { $0.id == active } ?? 0
         let fit = ChipRowLayout.fit(
             widths: chips.map { Self.width(of: $0.name) }, active: activeIndex, available: available,
             moreWidth: Self.width(of: "99 more") + 16, addWidth: Self.height)
@@ -38,15 +41,15 @@ struct CollectionChips: View {
 
     private func chipButton(_ chip: Chip, isActive: Bool) -> some View {
         Button {
-            collections.activeID = chip.id
+            collections.filter = chip.id
         } label: {
             Text(chip.name).lineLimit(1)
         }
         .buttonStyle(ChipStyle(isActive: isActive))
-        .accessibilityLabel(chip.id == nil ? chip.name : "\(chip.name), collection")
+        .accessibilityLabel(chip.collectionID == nil ? chip.name : "\(chip.name), collection")
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .contextMenu {
-            if let id = chip.id {
+            if let id = chip.collectionID {
                 Button("Rename…") { collections.sheet = .rename(id) }
                 Button("Delete Collection") { askToDelete(id) }
             }
@@ -56,7 +59,7 @@ struct CollectionChips: View {
     private func moreMenu(_ chips: [Chip]) -> some View {
         Menu {
             ForEach(chips) { chip in
-                Button(chip.name) { collections.activeID = chip.id }
+                Button(chip.name) { collections.filter = chip.id }
             }
         } label: {
             HStack(spacing: 6) {
@@ -90,13 +93,19 @@ struct CollectionChips: View {
     }
 }
 
-/// One chip: All, which is no collection, or a collection.
+/// One chip: All, Reading, Finished, or a collection.
 private struct Chip: Identifiable {
-    let id: UUID?
+    let id: ShelfFilter
     let name: String
 
-    static let all = Chip(id: nil, name: "All")
-    static func collection(_ collection: BookCollection) -> Chip { Chip(id: collection.id, name: collection.name) }
+    /// The collection it is, if it's one: only those can be renamed or deleted.
+    var collectionID: UUID? {
+        if case .collection(let id) = id { id } else { nil }
+    }
+
+    static let all = Chip(id: .all, name: "All")
+    static func builtIn(_ filter: ShelfFilter) -> Chip { Chip(id: filter, name: filter == .reading ? "Reading" : "Finished") }
+    static func collection(_ collection: BookCollection) -> Chip { Chip(id: .collection(collection.id), name: collection.name) }
 
     func index(in chips: [Chip]) -> Int? { chips.firstIndex { $0.id == id } }
 }
@@ -117,6 +126,8 @@ struct ChipStyle: ButtonStyle {
                 if isActive {
                     Capsule().fill(ShelfStyle.text)
                 } else {
+                    // Solid, as the search field is, so covers scrolling under the row don't show through.
+                    Capsule().fill(ShelfStyle.field)
                     Capsule().fill(ShelfStyle.text.opacity(configuration.isPressed ? 0.12 : 0))
                     Capsule().strokeBorder(ShelfStyle.text.opacity(0.14))
                 }

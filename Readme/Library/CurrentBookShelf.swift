@@ -14,8 +14,8 @@ struct CurrentBookShelf: View {
         ShelfRow(height: ShelfLayout.ledgeHeight, gap: 28) {
             if let book {
                 ShelfBook(
-                    book: book, width: 150, library: library, extraShadow: true, selection: selection,
-                    onOpen: onOpen, onRemove: onRemove, onExport: onExport)
+                    book: book, width: 150, library: library, extraShadow: true, showsTooltip: false,
+                    selection: selection, onOpen: onOpen, onRemove: onRemove, onExport: onExport)
                     .id(book.id)
                     .transition(.opacity)
                 info(book)
@@ -57,7 +57,7 @@ struct CurrentBookShelf: View {
                     .foregroundStyle(ShelfStyle.soft)
                     .lineLimit(1)
             }
-            if let line = Self.progressLine(for: book) {
+            if let line = ReadingMarks.ledgeLine(for: book) {
                 Text(line)
                     .font(ShelfStyle.body(15))
                     .foregroundStyle(ShelfStyle.soft)
@@ -70,13 +70,13 @@ struct CurrentBookShelf: View {
     }
 
     /// "Chapter 1, Loomings · 23 min left", with whichever of the two parts the book has. Nil if neither.
-    static func progressLine(for book: Book) -> String? {
+    nonisolated static func progressLine(for book: Book) -> String? {
         let parts = [book.chapterTitle.flatMap { $0.isEmpty ? nil : $0 }, book.chapterMinutesLeft.map(timeLeft)]
         let line = parts.compactMap { $0 }.joined(separator: " · ")
         return line.isEmpty ? nil : line
     }
 
-    static func timeLeft(_ minutes: Double) -> String {
+    nonisolated static func timeLeft(_ minutes: Double) -> String {
         let total = max(1, Int(minutes.rounded(.up)))
         if total < 60 { return "\(total) min left" }
         let (hours, rest) = total.quotientAndRemainder(dividingBy: 60)

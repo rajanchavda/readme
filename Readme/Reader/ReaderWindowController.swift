@@ -29,8 +29,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     }
 
     var onShowLibrary: (() -> Void)?
-    /// Hears where the reader is in a library book: when it has opened, and at each place kept.
-    var onRead: ((_ bookID: String, ReaderLocation) -> Void)?
+    /// Hears where the reader is in a library book: when it has opened, and at each place kept, with
+    /// whether turning pages to that place finished the book.
+    var onRead: ((_ bookID: String, ReaderLocation, _ finishing: Bool) -> Void)?
     /// Hears that a library book couldn't be opened, as when its file is no longer a book.
     var onOpenFailed: ((Book) -> Void)?
     /// Esc pressed over the library, which clears a search or puts down the books picked out on the shelf.
@@ -150,6 +151,13 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
     private var isContentsShown = false
     private var isPageFieldShown = false
     private var jumping: Task<Void, Never>?
+    /// The jumps going on now, from the moment each starts moving the book (after the turns before
+    /// it) until it has landed. A place reached meanwhile is a jump's, and never finishes a book.
+    private var jumpsLanding = 0
+    /// Whether a link in the book is being followed, from its click until it has landed.
+    private var followingLink = false
+    /// The place before the one just arrived at, to see whether that move crossed the finish line.
+    private var lastPlace: ReaderLocation?
 
     private var idle = IdleTimer()
     private var idleCheck: Task<Void, Never>?
@@ -497,6 +505,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         let turns = TurnCoordinator(book: book, cache: cache, curl: curl)
         desk.cancelEdgeTurn()
         session = Session(book: book, curl: curl, cache: cache, turns: turns, record: record)
+        jumpsLanding = 0
+        followingLink = false
+        lastPlace = nil
         openingBook = book
         places.moved(to: nil)
         book.onRelocate = { [weak self, weak book] location in
@@ -513,11 +524,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         }
         // A link is a jump the window didn't make, so it counts as one: when it's followed and when
         // it lands.
-        book.onLink = { [weak self, weak book] _ in
+        book.onLink = { [weak self, weak book] landed in
             guard let self, let book, self.session?.book === book else { return }
             // An edge click on a link that's still waiting to turn the page would turn the new one.
             self.desk.cancelEdgeTurn()
             self.places.turned()
+            self.followingLink = !landed
         }
         hint.isHidden = true
         placeViews()
@@ -573,7 +585,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
                 if isLost || self.places.hasTurned(since: opened), let here = book.currentLocation {
                     self.keep(here, in: book)
                 } else if let bookID, let here = book.currentLocation {
-                    self.onRead?(bookID, here)
+                    self.onRead?(bookID, here, false)
                 }
                 // The library stays until there's a book to show instead, so one that won't open
                 // leaves it where it is.
@@ -841,17 +853,22 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         hideHighlightBar()
         show(location)
         updateRibbon(animated: true)
-        if !isLayingOut { keep(location, in: book) }
+        // While laying out too, so the place a book opens on is the one its first turn starts from.
+        // Outside laying out, a place no jump or link brought is a page turned, by key, click or swipe.
+        let byTurning = jumpsLanding == 0 && !followingLink
+        let finishing = FinishRule.finishes(from: lastPlace, to: location, byTurning: byTurning)
+        lastPlace = location
+        if !isLayingOut { keep(location, in: book, finishing: finishing) }
     }
 
     /// The reader is at `location` in `book` now: layout changes go back to it, and it's saved under
     /// that book's ID. A place from a book that's no longer the one open is nobody's.
-    private func keep(_ location: ReaderLocation, in book: BookWebView) {
+    private func keep(_ location: ReaderLocation, in book: BookWebView, finishing: Bool = false) {
         guard let session, session.book === book else { return }
         places.moved(to: location.cfi)
         guard let bookID = session.bookID else { return }
         writer?.save(location, bookID: bookID)
-        onRead?(bookID, location)
+        onRead?(bookID, location, finishing)
         rememberSpread()
     }
 
@@ -1143,7 +1160,13 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate {
         closeSearch()
         places.turned()
         jumping = Task { [weak self] in
-            _ = await session.turns.jump { await go(session.book) }
+            // Counted from when the jump moves the book, not when it's asked for: a turn asked for
+            // before it lands first, and one asked for after it waits for it to land.
+            _ = await session.turns.jump { [weak self] in
+                self?.jumpsLanding += 1
+                defer { self?.jumpsLanding -= 1 }
+                return await go(session.book)
+            }
             self?.places.turned()
         }
     }

@@ -18,10 +18,23 @@ struct Book: Codable, Identifiable, Equatable, Sendable {
     var pinnedAt: Date? = nil
     /// The collections it's in. Library files from before collections have none.
     var collectionIDs: [UUID] = []
+    /// How far through the book the reader is, 0 to 1, or nil if it's never been opened.
+    var progress: Double? = nil
+    /// When it was finished, by turning past the end or by hand, or nil if it isn't.
+    var finishedAt: Date? = nil
+
+    var isStarted: Bool { progress != nil }
+    var isFinished: Bool { finishedAt != nil }
+
+    /// How far through the book a place is: all the way on the last spread, as `fraction` stays below 1.
+    nonisolated static func progress(of location: ReaderLocation) -> Double {
+        location.isAtEnd ? 1 : min(max(location.fraction, 0), 1)
+    }
 }
 
 extension Book {
-    /// Written out by hand only so that a missing `collectionIDs` reads as none, as the synthesized
+    /// Written out by hand only so that a missing `collectionIDs` reads as none (and a missing
+    /// `progress` or `finishedAt` as nil), as the synthesized
     /// decoder would refuse the whole library over it.
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -36,5 +49,7 @@ extension Book {
         chapterMinutesLeft = try c.decodeIfPresent(Double.self, forKey: .chapterMinutesLeft)
         pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt)
         collectionIDs = try c.decodeIfPresent([UUID].self, forKey: .collectionIDs) ?? []
+        progress = try c.decodeIfPresent(Double.self, forKey: .progress)
+        finishedAt = try c.decodeIfPresent(Date.self, forKey: .finishedAt)
     }
 }

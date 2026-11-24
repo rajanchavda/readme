@@ -2,7 +2,7 @@
 
 Group books into collections, such as Self-Help or Investing, and filter the shelf by them with a row of chips. A book can be in any number of collections, and people make their own.
 
-Status: spec, not built yet.
+Status: built (PR #26, Nov 23, 2026).
 
 ## Why
 

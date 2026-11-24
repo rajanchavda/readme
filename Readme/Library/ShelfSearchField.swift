@@ -48,7 +48,7 @@ struct ShelfSearchField: View {
         .frame(width: search.isOpen ? 240 : nil, height: 30)
         .background {
             if search.isOpen {
-                Capsule().fill(Color(red: 0x24 / 255, green: 0x1F / 255, blue: 0x1A / 255))
+                Capsule().fill(ShelfStyle.field)
                 Capsule().strokeBorder(ShelfStyle.text.opacity(0.1))
             }
         }

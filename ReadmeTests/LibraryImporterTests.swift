@@ -28,11 +28,12 @@ import Testing
 
     /// long.epub on Mac A with h, m and a place halfway, added at 1000 and read at 2000, exported.
     @discardableResult
-    private func exportFromA(pinnedAt: Date? = nil, collections: [String] = []) async throws -> String {
+    private func exportFromA(pinnedAt: Date? = nil, collections: [String] = [], finishedAt: Date? = nil) async throws -> String {
         let book = try await BookImporter(store: storeA).importBook(from: exportFixture("long.epub"))
         storeA.applyImported(id: book.id, addedAt: bundleDate(1000), lastReadAt: bundleDate(2000), location: nil)
         if let pinnedAt { storeA.restorePin(id: book.id, at: pinnedAt) }
         storeA.joinCollections(named: collections, id: book.id)
+        if let finishedAt { storeA.restoreFinished(id: book.id, at: finishedAt) }
         await storeA.highlights.add(h, bookID: book.id)
         await storeA.markers.set(m, bookID: book.id)
         await storeA.positions.save(bundlePlace(0.5), bookID: book.id)
@@ -134,6 +135,34 @@ import Testing
         _ = await importerB.run(try await importerB.prepare(url), choice: choice)
         // Combine gains the bundle's; keep mine leaves the book exactly as it was.
         #expect(collectionsOnB(id) == (choice == .combine ? ["Fiction", "History"] : ["Fiction"]))
+    }
+
+    @Test func newBooksKeepTheirFinishedDateAndProgress() async throws {
+        defer { clean() }
+        let id = try await exportFromA(finishedAt: bundleDate(5000))
+        _ = await importerB.run(try await importerB.prepare(url), choice: .keepMine)
+        #expect(storeB.book(id: id)?.finishedAt == bundleDate(5000))
+        // From position.json, as the chapter is.
+        #expect(storeB.book(id: id)?.progress == 0.5)
+    }
+
+    @Test(arguments: [ImportChoice.keepMine, .combine])
+    func anUnfinishedBookHere(choice: ImportChoice) async throws {
+        defer { clean() }
+        let id = try await exportFromA(finishedAt: bundleDate(5000))
+        _ = try await haveOnB(fraction: 0.2)
+        _ = await importerB.run(try await importerB.prepare(url), choice: choice)
+        // Combine takes the bundle's date; keep mine leaves the book as it was.
+        #expect(storeB.book(id: id)?.finishedAt == (choice == .combine ? bundleDate(5000) : nil))
+    }
+
+    @Test func aBookFinishedHereKeepsItsDate() async throws {
+        defer { clean() }
+        let id = try await exportFromA(finishedAt: bundleDate(5000))
+        _ = try await haveOnB(fraction: 0.2)
+        storeB.restoreFinished(id: id, at: bundleDate(4000))
+        _ = await importerB.run(try await importerB.prepare(url), choice: .combine)
+        #expect(storeB.book(id: id)?.finishedAt == bundleDate(4000))
     }
 
     @Test func bundleWithoutCollections() async throws {

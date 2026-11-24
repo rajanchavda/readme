@@ -54,6 +54,19 @@ final class LibraryStore: ObservableObject {
             let known = Set(collections.map(\.id))
             for index in books.indices { books[index].collectionIDs.removeAll { !known.contains($0) } }
         }
+        fillProgress()
+    }
+
+    /// Books from before reading progress take it from their saved places, so their bars show at
+    /// once. Nothing is finished by it: a book left at 98% long ago may not have been.
+    private func fillProgress() {
+        var changed = false
+        for index in books.indices where books[index].progress == nil {
+            guard let place = positions.locationNow(bookID: books[index].id) else { continue }
+            books[index].progress = Book.progress(of: place)
+            changed = true
+        }
+        if changed { save() }
     }
 
     var booksDirectory: URL { directory.appendingPathComponent("Books", isDirectory: true) }
@@ -150,11 +163,36 @@ final class LibraryStore: ObservableObject {
         await removing?.value
     }
 
-    func markRead(id: String, location: ReaderLocation) {
+    func markRead(id: String, location: ReaderLocation, finishing: Bool = false) {
         guard let index = books.firstIndex(where: { $0.id == id }) else { return }
         books[index].lastReadAt = now()
         books[index].chapterTitle = location.chapterTitle
         books[index].chapterMinutesLeft = location.chapterMinutesLeft
+        books[index].progress = Book.progress(of: location)
+        // Finished once, by turning past the line; reading it again never takes that back.
+        if finishing, books[index].finishedAt == nil { books[index].finishedAt = now() }
+        save()
+    }
+
+    /// Marks the books finished now, leaving the dates of those finished already, or not finished.
+    /// Their places stay where they are.
+    func setFinished(ids: [String], finished: Bool) {
+        let moment = now()
+        var changed = false
+        for index in books.indices where ids.contains(books[index].id) {
+            let value = finished ? books[index].finishedAt ?? moment : nil
+            guard books[index].finishedAt != value else { continue }
+            books[index].finishedAt = value
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    /// The date a bundle says the book was finished, if it isn't finished here. An import never
+    /// unfinishes a book, or moves the date it has.
+    func restoreFinished(id: String, at date: Date) {
+        guard let index = books.firstIndex(where: { $0.id == id }), books[index].finishedAt == nil else { return }
+        books[index].finishedAt = date
         save()
     }
 
@@ -169,6 +207,7 @@ final class LibraryStore: ObservableObject {
         if let location {
             books[index].chapterTitle = location.chapterTitle
             books[index].chapterMinutesLeft = location.chapterMinutesLeft
+            books[index].progress = Book.progress(of: location)
         }
         save()
     }

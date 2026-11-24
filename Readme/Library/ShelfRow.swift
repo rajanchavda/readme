@@ -10,6 +10,8 @@ enum ShelfStyle {
     static let muted = Color(red: 0xB8 / 255, green: 0xA9 / 255, blue: 0x8F / 255)
     static let woodTop = Color(red: 0x6B / 255, green: 0x5A / 255, blue: 0x46 / 255)
     static let woodBottom = Color(red: 0x4A / 255, green: 0x3D / 255, blue: 0x2F / 255)
+    /// The solid ground of the search field and the chips, which float over the shelves as they scroll.
+    static let field = Color(red: 0x24 / 255, green: 0x1F / 255, blue: 0x1A / 255)
 
     /// The easing of a cover lifting under the pointer.
     static let lift = Animation.easeOut(duration: 0.2)
@@ -55,12 +57,15 @@ struct ShelfRow<Content: View>: View {
 }
 
 /// A cover that lifts a little under the pointer and opens its book when clicked. ⌘- and Shift-clicks
-/// pick it out instead, and a picked-out cover has a ring round it.
+/// pick it out instead, and a picked-out cover has a ring round it. Under it, a bar shows how far
+/// through the book the reader is; a finished book has ticks in its corner instead.
 struct ShelfBook: View {
     let book: Book
     let width: CGFloat
     let library: LibraryStore
     var extraShadow = false
+    /// The ledge's book has none, as its title is written beside it.
+    var showsTooltip = true
     @ObservedObject var selection: ShelfSelection
     let onOpen: (Book) -> Void
     let onRemove: (Book) -> Void
@@ -72,33 +77,25 @@ struct ShelfBook: View {
 
     /// The books as the shelf shows them.
     private var order: [String] {
-        ShelfCollections.shelfOrder(library, collection: collections.active(in: library)?.id)
+        ShelfCollections.shelfOrder(library, filter: collections.filter(in: library))
     }
 
     var body: some View {
         Button {
             if selection.click(book.id, modifiers: NSEvent.modifierFlags, order: order) == .open { onOpen(book) }
         } label: {
-            BookCoverView(book: book, width: width, library: library)
-                .shadow(color: .black.opacity(extraShadow ? 0.3 : 0), radius: 12, x: 0, y: 8)
-                .overlay(alignment: .topTrailing) {
-                    if book.pinnedAt != nil {
-                        let scale = width / 112
-                        PinRibbon()
-                            .fill(PinRibbon.color)
-                            .frame(width: 10 * scale, height: 26 * scale)
-                            .padding(.trailing, 10 * scale)
-                            .shadow(color: .black.opacity(0.25), radius: 1.5, x: 0, y: 1)
-                            .accessibilityHidden(true)
-                    }
+            VStack(spacing: ProgressBar.gap) {
+                cover
+                if book.isStarted && !book.isFinished, let progress = book.progress {
+                    ProgressBar(progress: progress)
+                } else {
+                    Color.clear.frame(height: ProgressBar.height)
                 }
-                .overlay {
-                    if selection.ids.contains(book.id) {
-                        RoundedRectangle(cornerRadius: 3).strokeBorder(Color.accentColor, lineWidth: 3)
-                    }
-                }
+            }
+            .frame(width: width)
         }
         .buttonStyle(.plain)
+        .help(showsTooltip ? ReadingMarks.tooltip(for: book) : "")
         .offset(y: hovering ? -8 : 0)
         .animation(reduceMotion ? nil : ShelfStyle.lift, value: hovering)
         .onHover { hovering = $0 }
@@ -114,16 +111,48 @@ struct ShelfBook: View {
                 onExport(targetIDs.compactMap(library.book(id:)))
             }
             pinButton
+            finishButton
             Divider()
             Button("Remove", role: .destructive) { onRemove(book) }
         }
-        .accessibilityLabel(
-            ([book.title, book.author].compactMap { $0 } + (book.pinnedAt != nil ? ["pinned"] : [])).joined(separator: ", "))
+        .accessibilityLabel(ReadingMarks.accessibilityLabel(for: book))
         .accessibilityHint("Opens the book")
         .accessibilityAction(named: book.pinnedAt == nil ? "Pin to Front" : "Unpin") {
             library.setPinned(ids: [book.id], pinned: book.pinnedAt == nil)
         }
+        .accessibilityAction(named: book.isFinished ? "Mark as Not Finished" : "Mark as Finished") {
+            library.setFinished(ids: [book.id], finished: !book.isFinished)
+        }
         .accessibilityAction(named: "Remove") { onRemove(book) }
+    }
+
+    private var cover: some View {
+            BookCoverView(book: book, width: width, library: library)
+                .shadow(color: .black.opacity(extraShadow ? 0.3 : 0), radius: 12, x: 0, y: 8)
+                .overlay(alignment: .topTrailing) {
+                    if book.pinnedAt != nil {
+                        let scale = width / 112
+                        PinRibbon()
+                            .fill(PinRibbon.color)
+                            .frame(width: 10 * scale, height: 26 * scale)
+                            .padding(.trailing, 10 * scale)
+                            .shadow(color: .black.opacity(0.25), radius: 1.5, x: 0, y: 1)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if book.isFinished {
+                        FinishedTicks(width: width)
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                            .transition(.opacity)
+                    }
+                }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: book.isFinished)
+                .overlay {
+                    if selection.ids.contains(book.id) {
+                        RoundedRectangle(cornerRadius: 3).strokeBorder(Color.accentColor, lineWidth: 3)
+                    }
+                }
     }
 
     /// What a right-click here acts on: the selection if this book is in it, else this book.
@@ -144,6 +173,16 @@ struct ShelfBook: View {
             }
             if !library.collections.isEmpty { Divider() }
             Button("New Collection…") { collections.sheet = .create(bookIDs: targets.map(\.id)) }
+        }
+    }
+
+    /// Marks finished, or not, what a right-click here acts on. A mix is marked finished, and the books
+    /// finished already keep their dates.
+    private var finishButton: some View {
+        let targets = targetIDs.compactMap(library.book(id:))
+        let allFinished = !targets.isEmpty && targets.allSatisfy(\.isFinished)
+        return Button(ShelfSelection.finishMenuTitle(count: targets.count, allFinished: allFinished)) {
+            library.setFinished(ids: targets.map(\.id), finished: !allFinished)
         }
     }
 
