@@ -126,6 +126,8 @@ struct ChipStyle: ButtonStyle {
                 if isActive {
                     Capsule().fill(ShelfStyle.text)
                 } else {
+                    // Solid, as the search field is, so covers scrolling under the row don't show through.
+                    Capsule().fill(ShelfStyle.field)
                     Capsule().fill(ShelfStyle.text.opacity(configuration.isPressed ? 0.12 : 0))
                     Capsule().strokeBorder(ShelfStyle.text.opacity(0.14))
                 }

@@ -10,6 +10,8 @@ enum ShelfStyle {
     static let muted = Color(red: 0xB8 / 255, green: 0xA9 / 255, blue: 0x8F / 255)
     static let woodTop = Color(red: 0x6B / 255, green: 0x5A / 255, blue: 0x46 / 255)
     static let woodBottom = Color(red: 0x4A / 255, green: 0x3D / 255, blue: 0x2F / 255)
+    /// The solid ground of the search field and the chips, which float over the shelves as they scroll.
+    static let field = Color(red: 0x24 / 255, green: 0x1F / 255, blue: 0x1A / 255)
 
     /// The easing of a cover lifting under the pointer.
     static let lift = Animation.easeOut(duration: 0.2)
