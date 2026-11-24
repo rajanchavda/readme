@@ -68,8 +68,8 @@ struct LibraryView: View {
                     onOpen: onOpen,
                     onRemove: { library.remove(id: $0.id) }, onExport: onExport
                 )
-                // Clear of the chip row, when there is one.
-                .padding(.top, ShelfCollections.showsChipRow(library) ? 20 : 0)
+                // Clear of the chip row, when there is one, with room for the first cover to lift.
+                .padding(.top, ShelfCollections.showsChipRow(library) ? 36 : 0)
                 .frame(minHeight: geometry.size.height, alignment: .top)
                 // A click on the shelf itself, not on a book, puts the selection down.
                 .background(Color.clear.contentShape(Rectangle()).onTapGesture { selection.clear() })
