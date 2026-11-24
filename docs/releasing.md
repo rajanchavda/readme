@@ -71,9 +71,10 @@ two packages as artifacts, for a check that they build on a clean machine.
 
 ### The GitHub installers
 
-The tag that releases the Mac app also releases Windows on GitHub: once the Release workflow has
-published the DMG, its `windows` job runs `scripts/windows-installer.ps1` and adds
-`Readme-Setup-<version>-x64.exe` and `-arm64.exe`, each with a `.sha256`, to the same release.
+The tag that releases the Mac app also releases Windows on GitHub: the Release workflow's `windows`
+job runs `scripts/windows-installer.ps1` while the Mac job builds the DMG, and once the Mac job has
+published the release, `windows-release` adds `Readme-Setup-<version>-x64.exe` and `-arm64.exe`,
+each with a `.sha256`, to it.
 Nothing else to do. They aren't signed, so SmartScreen asks once before running them
 (`docs/install-windows.md`); a code-signing certificate would end that.
 

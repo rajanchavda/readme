@@ -1,8 +1,9 @@
 name: Release
 
 # Pushing a tag v<version> builds the DMG, publishes it as a GitHub release and points the
-# Homebrew cask in rajanchavda/homebrew-tap at it. Then the Windows installers are built and added
-# to the same release (scripts/windows-installer.ps1), and winget is offered the new version.
+# Homebrew cask in rajanchavda/homebrew-tap at it. The Windows installers are built at the same time
+# (scripts/windows-installer.ps1) and added to that release once it exists, and then winget is
+# offered the new version.
 #
 # Needs the repository secrets:
 #   HOMEBREW_TAP_TOKEN   Token allowed to push to rajanchavda/homebrew-tap
@@ -83,11 +84,11 @@ jobs:
 
   windows:
     name: Windows installers
-    # After the release exists, so these are added to it rather than racing to make a second one.
-    needs: release
+    # Built alongside the Mac job, and kept as an artifact: windows-release adds them to the release
+    # once the Mac job has made it, so the two never race to make a second one.
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
     defaults:
       run:
         shell: pwsh
@@ -114,21 +115,42 @@ jobs:
       - name: Build the installers
         run: scripts/windows-installer.ps1
 
-      - name: Add them to the release
-        uses: softprops/action-gh-release@v3
+      - name: Keep them for the release
+        uses: actions/upload-artifact@v5
         with:
-          files: |
+          name: windows-installers
+          if-no-files-found: error
+          retention-days: 1
+          path: |
             windows/dist/Readme-Setup-${{ env.VERSION }}-x64.exe
             windows/dist/Readme-Setup-${{ env.VERSION }}-x64.exe.sha256
             windows/dist/Readme-Setup-${{ env.VERSION }}-arm64.exe
             windows/dist/Readme-Setup-${{ env.VERSION }}-arm64.exe.sha256
+
+  windows-release:
+    name: Add the Windows installers
+    # Waits for both: the release the Mac job made, and the installers built beside it.
+    needs: [release, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: windows-installers
+          path: dist
+
+      - name: Add them to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
 
   winget:
     name: winget
     # Once the installers are on the release, opens a pull request to microsoft/winget-pkgs that
     # moves rajanchavda.Readme to this version. The first version had to be submitted by hand
     # (docs/releasing.md, "winget"); until that's merged, or without the token, this only warns.
-    needs: windows
+    needs: windows-release
     runs-on: windows-latest
     defaults:
       run:
